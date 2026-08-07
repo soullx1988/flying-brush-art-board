@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS oauth_states (state_hash TEXT PRIMARY KEY, verifier_ciphertext TEXT NOT NULL, return_to TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_sessions (session_hash TEXT PRIMARY KEY, open_id TEXT NOT NULL, name TEXT NOT NULL, department TEXT, position TEXT, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, absolute_expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS realtime_room_snapshots (board_id TEXT PRIMARY KEY REFERENCES boards(id) ON DELETE CASCADE, room_version INTEGER NOT NULL, snapshot_json TEXT NOT NULL, update_count INTEGER NOT NULL, compacted_at TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS realtime_room_updates (board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, payload TEXT NOT NULL, actor_open_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(board_id, sequence));
+CREATE TABLE IF NOT EXISTS board_checkpoints (id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE, snapshot_json TEXT NOT NULL, reason TEXT NOT NULL, actor_open_id TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS comment_threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE, shape_id TEXT, x REAL, y REAL, status TEXT NOT NULL CHECK(status IN ('open', 'resolved')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS comment_messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES comment_threads(id) ON DELETE CASCADE, author_open_id TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT);
+CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, actor_open_id TEXT NOT NULL, project_id TEXT, board_id TEXT REFERENCES boards(id) ON DELETE SET NULL, action TEXT NOT NULL, summary_json TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_sessions_open_id ON app_sessions(open_id);
+CREATE INDEX IF NOT EXISTS idx_room_updates_board_sequence ON realtime_room_updates(board_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_comments_board_status ON comment_threads(board_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_audit_project_created ON audit_events(project_id, created_at DESC);

@@ -1,0 +1,20 @@
+http://{$APP_DOMAIN} {
+  encode zstd gzip
+
+  route {
+    @mcp path /mcp /mcp/* /oauth/* /.well-known/*
+    reverse_proxy @mcp 127.0.0.1:8787 {
+      # Disable response buffering so Streamable HTTP/SSE frames are flushed.
+      flush_interval -1
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto {scheme}
+    }
+
+    @backend path /api/* /auth/* /realtime* /health
+    reverse_proxy @backend 127.0.0.1:8787
+
+    root * {$WEB_ROOT}
+    try_files {path} /index.html
+    file_server
+  }
+}

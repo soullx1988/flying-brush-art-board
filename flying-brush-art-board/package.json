@@ -1,0 +1,60 @@
+{
+  "name": "infinite-board",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.13 <23",
+    "pnpm": "11.9.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @infinite-board/local-api --filter @infinite-board/web dev",
+    "dev:web": "pnpm --filter @infinite-board/web dev",
+    "dev:api": "pnpm --filter @infinite-board/local-api dev",
+    "dev:api:e2e": "tsx scripts/start-e2e-api.ts",
+    "cleanup:test-projects": "node --env-file-if-exists=.env.local --import tsx scripts/cleanup-automation-projects.ts",
+    "pretest": "tsx scripts/report-feishu-default-skip.ts",
+    "test": "vitest run",
+    "pretest:feishu": "tsx scripts/report-feishu-default-skip.ts",
+    "test:feishu": "vitest run --project feishu",
+    "test:security": "vitest run --project unit tests/security",
+    "test:realtime:load": "vitest run --config vitest.realtime.config.ts",
+    "bench:performance": "vitest bench --run --config vitest.performance.config.ts",
+    "smoke:feishu:real": "node --env-file-if-exists=.env.local --import tsx scripts/feishu-real-smoke.ts",
+    "smoke:mcp": "pnpm --filter @infinite-board/local-api smoke:mcp",
+    "typecheck": "tsc -p tsconfig.tests.json --noEmit && pnpm -r --if-present typecheck",
+    "build": "pnpm -r --workspace-concurrency=1 --if-present build",
+    "pree2e": "tsx scripts/report-feishu-default-skip.ts",
+    "e2e": "playwright test --grep-invert @feishu-real",
+    "pree2e:feishu:real": "node --env-file-if-exists=.env.local --import tsx scripts/feishu-real-smoke.ts --gate-only",
+    "e2e:feishu:real": "node --env-file-if-exists=.env.local ./node_modules/@playwright/test/cli.js test --grep @feishu-real",
+    "smoke": "pnpm test && pnpm typecheck && pnpm build && pnpm e2e"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.1",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.10.0",
+    "pdfjs-dist": "6.1.200",
+    "react": "19.2.1",
+    "react-dom": "19.2.1",
+    "tldraw": "5.2.5",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.18.12",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
+    "fflate": "0.8.3",
+    "jsdom": "29.1.1",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

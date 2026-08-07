@@ -1,0 +1,341 @@
+diff --git a/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbar.js b/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbar.js
+index 555637f9afbe7d28a385a4a3baa67f33268ea307..0cfe5904974c30243065f619ae12fd854cf58ed6 100644
+--- a/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbar.js
++++ b/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbar.js
+@@ -90,6 +90,14 @@ function ContextualToolbarInner({
+     }
+   );
+ }
++function getMountedTextEditorDom(textEditor) {
++  if (!textEditor.isInitialized || textEditor.isDestroyed) return null;
++  try {
++    return textEditor.view.dom;
++  } catch {
++    return null;
++  }
++}
+ function useEditingLinkBehavior(textEditor) {
+   const [isEditingLink, setIsEditingLink] = (0, import_react.useState)(false);
+   (0, import_react.useEffect)(() => {
+@@ -101,11 +109,11 @@ function useEditingLinkBehavior(textEditor) {
+       const isLinkActive = textEditor.isActive("link");
+       setIsEditingLink(isLinkActive);
+     };
+-    textEditor.view.dom.addEventListener("click", handleClick);
++    const dom = getMountedTextEditorDom(textEditor);
++    if (!dom) return;
++    dom.addEventListener("click", handleClick);
+     return () => {
+-      if (textEditor.isInitialized) {
+-        textEditor.view.dom.removeEventListener("click", handleClick);
+-      }
++      dom.removeEventListener("click", handleClick);
+     };
+   }, [textEditor, isEditingLink]);
+   (0, import_react.useEffect)(() => {
+@@ -143,6 +151,8 @@ function useIsMousingDownOnTextEditor(textEditor) {
+   const [isMousingDown, setIsMousingDown] = (0, import_react.useState)(false);
+   (0, import_react.useEffect)(() => {
+     if (!textEditor) return;
++    const dom = getMountedTextEditorDom(textEditor);
++    if (!dom) return;
+     const handlePointingStateChange = (0, import_editor.debounce)(({ isPointing }) => {
+       setIsMousingDown(isPointing);
+     }, 16);
+@@ -151,17 +161,15 @@ function useIsMousingDownOnTextEditor(textEditor) {
+     const touchDownEvents = ["touchstart", "pointerdown", "mousedown"];
+     const touchUpEvents = ["touchend", "pointerup", "mouseup"];
+     touchDownEvents.forEach((eventName) => {
+-      textEditor.view.dom.addEventListener(eventName, handlePointingDown);
++      dom.addEventListener(eventName, handlePointingDown);
+     });
+-    const doc = textEditor.view.dom.ownerDocument;
++    const doc = dom.ownerDocument;
+     touchUpEvents.forEach((eventName) => {
+       doc.body.addEventListener(eventName, handlePointingUp);
+     });
+     return () => {
+       touchDownEvents.forEach((eventName) => {
+-        if (textEditor.isInitialized) {
+-          textEditor.view.dom.removeEventListener(eventName, handlePointingDown);
+-        }
++        dom.removeEventListener(eventName, handlePointingDown);
+       });
+       touchUpEvents.forEach((eventName) => {
+         doc.body.removeEventListener(eventName, handlePointingUp);
+diff --git a/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.js b/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.js
+index bfa4c56917c4f73285a51ecc2ac2a54db49c5a49..ada6c7e49d70a462963ffdc52d4d3985650b486a 100644
+--- a/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.js
++++ b/dist-cjs/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.js
+@@ -28,6 +28,14 @@ var import_events = require("../../context/events");
+ var import_useTranslation = require("../../hooks/useTranslation/useTranslation");
+ var import_TldrawUiButtonIcon = require("../primitives/Button/TldrawUiButtonIcon");
+ var import_TldrawUiToolbar = require("../primitives/TldrawUiToolbar");
++function hasMountedTextEditorView(textEditor) {
++  if (!textEditor.isInitialized || textEditor.isDestroyed) return false;
++  try {
++    return Boolean(textEditor.view);
++  } catch {
++    return false;
++  }
++}
+ function DefaultRichTextToolbarContent({
+   textEditor,
+   onEditLinkStart
+@@ -44,6 +52,10 @@ function DefaultRichTextToolbarContent({
+       }
+       textEditor.on("update", forceUpdate);
+       textEditor.on("selectionUpdate", forceUpdate);
++      return () => {
++        textEditor.off("update", forceUpdate);
++        textEditor.off("selectionUpdate", forceUpdate);
++      };
+     },
+     [textEditor]
+   );
+@@ -62,7 +74,7 @@ function DefaultRichTextToolbarContent({
+   }, [editor, onEditLinkStart]);
+   const actions = (0, import_react.useMemo)(() => {
+     function handleOp(name, op) {
+-      if (!textEditor.view) return;
++      if (!hasMountedTextEditorView(textEditor)) return;
+       trackEvent("rich-text", { operation: name, source });
+       textEditor.chain().focus()[op]().run();
+     }
+@@ -110,7 +122,7 @@ function DefaultRichTextToolbarContent({
+     ].filter(Boolean);
+   }, [textEditor, trackEvent, onEditLinkStart]);
+   return actions.map(({ name, attrs, onSelect }) => {
+-    const isActive = textEditor.view ? textEditor.isActive(name, attrs) : false;
++    const isActive = hasMountedTextEditorView(textEditor) ? textEditor.isActive(name, attrs) : false;
+     return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+       import_TldrawUiToolbar.TldrawUiToolbarButton,
+       {
+diff --git a/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbar.mjs b/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbar.mjs
+index 0cbb1e675101318b7671004d421d805840768b50..ff879db1b554200c28e4e2073e49b2eef91d700d 100644
+--- a/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbar.mjs
++++ b/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbar.mjs
+@@ -67,6 +67,14 @@ function ContextualToolbarInner({
+     }
+   );
+ }
++function getMountedTextEditorDom(textEditor) {
++  if (!textEditor.isInitialized || textEditor.isDestroyed) return null;
++  try {
++    return textEditor.view.dom;
++  } catch {
++    return null;
++  }
++}
+ function useEditingLinkBehavior(textEditor) {
+   const [isEditingLink, setIsEditingLink] = useState(false);
+   useEffect(() => {
+@@ -78,11 +86,11 @@ function useEditingLinkBehavior(textEditor) {
+       const isLinkActive = textEditor.isActive("link");
+       setIsEditingLink(isLinkActive);
+     };
+-    textEditor.view.dom.addEventListener("click", handleClick);
++    const dom = getMountedTextEditorDom(textEditor);
++    if (!dom) return;
++    dom.addEventListener("click", handleClick);
+     return () => {
+-      if (textEditor.isInitialized) {
+-        textEditor.view.dom.removeEventListener("click", handleClick);
+-      }
++      dom.removeEventListener("click", handleClick);
+     };
+   }, [textEditor, isEditingLink]);
+   useEffect(() => {
+@@ -120,6 +128,8 @@ function useIsMousingDownOnTextEditor(textEditor) {
+   const [isMousingDown, setIsMousingDown] = useState(false);
+   useEffect(() => {
+     if (!textEditor) return;
++    const dom = getMountedTextEditorDom(textEditor);
++    if (!dom) return;
+     const handlePointingStateChange = debounce(({ isPointing }) => {
+       setIsMousingDown(isPointing);
+     }, 16);
+@@ -128,17 +138,15 @@ function useIsMousingDownOnTextEditor(textEditor) {
+     const touchDownEvents = ["touchstart", "pointerdown", "mousedown"];
+     const touchUpEvents = ["touchend", "pointerup", "mouseup"];
+     touchDownEvents.forEach((eventName) => {
+-      textEditor.view.dom.addEventListener(eventName, handlePointingDown);
++      dom.addEventListener(eventName, handlePointingDown);
+     });
+-    const doc = textEditor.view.dom.ownerDocument;
++    const doc = dom.ownerDocument;
+     touchUpEvents.forEach((eventName) => {
+       doc.body.addEventListener(eventName, handlePointingUp);
+     });
+     return () => {
+       touchDownEvents.forEach((eventName) => {
+-        if (textEditor.isInitialized) {
+-          textEditor.view.dom.removeEventListener(eventName, handlePointingDown);
+-        }
++        dom.removeEventListener(eventName, handlePointingDown);
+       });
+       touchUpEvents.forEach((eventName) => {
+         doc.body.removeEventListener(eventName, handlePointingUp);
+diff --git a/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.mjs b/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.mjs
+index b03bada763aa23dcd02329768623d023a80f6d3d..db0f4d748aab6c941850c115995e7691b284a720 100644
+--- a/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.mjs
++++ b/dist-esm/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.mjs
+@@ -5,6 +5,14 @@ import { useUiEvents } from "../../context/events.mjs";
+ import { useTranslation } from "../../hooks/useTranslation/useTranslation.mjs";
+ import { TldrawUiButtonIcon } from "../primitives/Button/TldrawUiButtonIcon.mjs";
+ import { TldrawUiToolbarButton } from "../primitives/TldrawUiToolbar.mjs";
++function hasMountedTextEditorView(textEditor) {
++  if (!textEditor.isInitialized || textEditor.isDestroyed) return false;
++  try {
++    return Boolean(textEditor.view);
++  } catch {
++    return false;
++  }
++}
+ function DefaultRichTextToolbarContent({
+   textEditor,
+   onEditLinkStart
+@@ -21,6 +29,10 @@ function DefaultRichTextToolbarContent({
+       }
+       textEditor.on("update", forceUpdate);
+       textEditor.on("selectionUpdate", forceUpdate);
++      return () => {
++        textEditor.off("update", forceUpdate);
++        textEditor.off("selectionUpdate", forceUpdate);
++      };
+     },
+     [textEditor]
+   );
+@@ -39,7 +51,7 @@ function DefaultRichTextToolbarContent({
+   }, [editor, onEditLinkStart]);
+   const actions = useMemo(() => {
+     function handleOp(name, op) {
+-      if (!textEditor.view) return;
++      if (!hasMountedTextEditorView(textEditor)) return;
+       trackEvent("rich-text", { operation: name, source });
+       textEditor.chain().focus()[op]().run();
+     }
+@@ -87,7 +99,7 @@ function DefaultRichTextToolbarContent({
+     ].filter(Boolean);
+   }, [textEditor, trackEvent, onEditLinkStart]);
+   return actions.map(({ name, attrs, onSelect }) => {
+-    const isActive = textEditor.view ? textEditor.isActive(name, attrs) : false;
++    const isActive = hasMountedTextEditorView(textEditor) ? textEditor.isActive(name, attrs) : false;
+     return /* @__PURE__ */ jsx(
+       TldrawUiToolbarButton,
+       {
+diff --git a/src/lib/ui/components/Toolbar/DefaultRichTextToolbar.tsx b/src/lib/ui/components/Toolbar/DefaultRichTextToolbar.tsx
+index 3d23927780ddba2b50b4543d852eb49b060a59f7..d2325b303ab1047b4ae91b471aa0e1e12bbfc194 100644
+--- a/src/lib/ui/components/Toolbar/DefaultRichTextToolbar.tsx
++++ b/src/lib/ui/components/Toolbar/DefaultRichTextToolbar.tsx
+@@ -101,6 +101,15 @@ function ContextualToolbarInner({
+ 	)
+ }
+ 
++function getMountedTextEditorDom(textEditor: TiptapEditor): HTMLElement | null {
++	if (!textEditor.isInitialized || textEditor.isDestroyed) return null
++	try {
++		return textEditor.view.dom
++	} catch {
++		return null
++	}
++}
++
+ function useEditingLinkBehavior(textEditor?: TiptapEditor) {
+ 	const [isEditingLink, setIsEditingLink] = useState(false)
+ 
+@@ -116,11 +125,11 @@ function useEditingLinkBehavior(textEditor?: TiptapEditor) {
+ 			setIsEditingLink(isLinkActive)
+ 		}
+ 
+-		textEditor.view.dom.addEventListener('click', handleClick)
++		const dom = getMountedTextEditorDom(textEditor)
++		if (!dom) return
++		dom.addEventListener('click', handleClick)
+ 		return () => {
+-			if (textEditor.isInitialized) {
+-				textEditor.view.dom.removeEventListener('click', handleClick)
+-			}
++			dom.removeEventListener('click', handleClick)
+ 		}
+ 	}, [textEditor, isEditingLink])
+ 
+@@ -179,6 +188,8 @@ function useIsMousingDownOnTextEditor(textEditor: TiptapEditor) {
+ 	// Set up general event listeners for text selection.
+ 	useEffect(() => {
+ 		if (!textEditor) return
++		const dom = getMountedTextEditorDom(textEditor)
++		if (!dom) return
+ 
+ 		const handlePointingStateChange = debounce(({ isPointing }: { isPointing: boolean }) => {
+ 			setIsMousingDown(isPointing)
+@@ -189,17 +200,15 @@ function useIsMousingDownOnTextEditor(textEditor: TiptapEditor) {
+ 		const touchDownEvents = ['touchstart', 'pointerdown', 'mousedown']
+ 		const touchUpEvents = ['touchend', 'pointerup', 'mouseup']
+ 		touchDownEvents.forEach((eventName: string) => {
+-			textEditor.view.dom.addEventListener(eventName, handlePointingDown)
++			dom.addEventListener(eventName, handlePointingDown)
+ 		})
+-		const doc = textEditor.view.dom.ownerDocument
++		const doc = dom.ownerDocument
+ 		touchUpEvents.forEach((eventName: string) => {
+ 			doc.body.addEventListener(eventName, handlePointingUp)
+ 		})
+ 		return () => {
+ 			touchDownEvents.forEach((eventName: string) => {
+-				if (textEditor.isInitialized) {
+-					textEditor.view.dom.removeEventListener(eventName, handlePointingDown)
+-				}
++				dom.removeEventListener(eventName, handlePointingDown)
+ 			})
+ 			touchUpEvents.forEach((eventName: string) => {
+ 				doc.body.removeEventListener(eventName, handlePointingUp)
+diff --git a/src/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.tsx b/src/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.tsx
+index 579748d1ebe526d69f46b590cf59750e46e444af..a4ab9467d8a964dd4dfd7b5b63f0ec25b2b00079 100644
+--- a/src/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.tsx
++++ b/src/lib/ui/components/Toolbar/DefaultRichTextToolbarContent.tsx
+@@ -11,6 +11,15 @@ export interface DefaultRichTextToolbarContentProps {
+ 	textEditor: TiptapEditor
+ }
+ 
++function hasMountedTextEditorView(textEditor: TiptapEditor): boolean {
++	if (!textEditor.isInitialized || textEditor.isDestroyed) return false
++	try {
++		return Boolean(textEditor.view)
++	} catch {
++		return false
++	}
++}
++
+ /**
+  * Rich text toolbar items that have the basics.
+  *
+@@ -34,6 +43,10 @@ export function DefaultRichTextToolbarContent({
+ 			}
+ 			textEditor.on('update', forceUpdate)
+ 			textEditor.on('selectionUpdate', forceUpdate)
++			return () => {
++				textEditor.off('update', forceUpdate)
++				textEditor.off('selectionUpdate', forceUpdate)
++			}
+ 		},
+ 		[textEditor]
+ 	)
+@@ -57,7 +70,7 @@ export function DefaultRichTextToolbarContent({
+ 	const actions = useMemo(() => {
+ 		function handleOp(name: string, op: string) {
+ 			// Check if the editor view is available before calling operations
+-			if (!textEditor.view) return
++			if (!hasMountedTextEditorView(textEditor)) return
+ 
+ 			trackEvent('rich-text', { operation: name as any, source })
+ 			// @ts-expect-error typing this is annoying at the moment.
+@@ -114,7 +127,7 @@ export function DefaultRichTextToolbarContent({
+ 	}, [textEditor, trackEvent, onEditLinkStart])
+ 
+ 	return actions.map(({ name, attrs, onSelect }) => {
+-		const isActive = textEditor.view ? textEditor.isActive(name, attrs) : false
++		const isActive = hasMountedTextEditorView(textEditor) ? textEditor.isActive(name, attrs) : false
+ 		return (
+ 			<TldrawUiToolbarButton
+ 				key={name}

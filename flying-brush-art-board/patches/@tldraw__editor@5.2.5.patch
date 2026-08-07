@@ -1,0 +1,24 @@
+diff --git a/dist-esm/lib/components/MenuClickCapture.mjs b/dist-esm/lib/components/MenuClickCapture.mjs
+index ce8385a..06936d0 100644
+--- a/dist-esm/lib/components/MenuClickCapture.mjs
++++ b/dist-esm/lib/components/MenuClickCapture.mjs
+@@ -71,7 +71,6 @@ function MenuClickCapture() {
+         swallowNextNativeContextMenu();
+         return;
+       }
+-      editor.menus.clearOpenMenus();
+     },
+     [canvasEvents, editor, swallowNextNativeContextMenu]
+   );
+diff --git a/dist-cjs/lib/components/MenuClickCapture.js b/dist-cjs/lib/components/MenuClickCapture.js
+index 046b361..8e8fd41 100644
+--- a/dist-cjs/lib/components/MenuClickCapture.js
++++ b/dist-cjs/lib/components/MenuClickCapture.js
+@@ -94,7 +94,6 @@ function MenuClickCapture() {
+         swallowNextNativeContextMenu();
+         return;
+       }
+-      editor.menus.clearOpenMenus();
+     },
+     [canvasEvents, editor, swallowNextNativeContextMenu]
+   );

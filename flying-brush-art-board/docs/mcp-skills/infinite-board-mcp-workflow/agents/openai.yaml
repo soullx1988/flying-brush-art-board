@@ -1,0 +1,4 @@
+interface:
+  display_name: "Infinite Board MCP Workflow"
+  short_description: "Safely operate Infinite Board through its MCP tools"
+  default_prompt: "Use $infinite-board-mcp-workflow to inspect and update an Infinite Board safely."

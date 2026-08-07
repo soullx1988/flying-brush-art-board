@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  better-sqlite3: false
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@vitejs/plugin-react@6.0.4'
+
+patchedDependencies:
+  '@tldraw/editor@5.2.5': patches/@tldraw__editor@5.2.5.patch
+  tldraw@5.2.5: patches/tldraw@5.2.5.patch

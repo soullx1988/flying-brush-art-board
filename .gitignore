@@ -1,0 +1,28 @@
+# Node.js 二进制分发包
+node-v22.13.1-win-x64/
+node-v22.13.1-win-x64.zip
+node-v22.18.0-win-x64/
+node-v22.18.0-win-x64.zip
+
+# Corepack 缓存
+.corepack/
+
+# 证书文件（敏感）
+certs/
+
+# 数据库文件（用户数据）
+InfiniteBoardData/
+InfiniteBoardBackups/
+
+# 运行时日志
+runtime-logs/
+*.log
+*.err.log
+
+# 环境配置文件
+.env.local
+.env
+
+# 系统文件
+.DS_Store
+Thumbs.db

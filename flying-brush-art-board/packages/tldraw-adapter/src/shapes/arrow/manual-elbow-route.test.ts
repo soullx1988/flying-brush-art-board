@@ -1,0 +1,77 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  createManualElbowRoute,
+  dragManualElbowSegment,
+  normalizeManualElbowRoute,
+  readManualElbowRoute,
+  resolveManualElbowRoute,
+  withManualElbowRoute,
+  withoutManualElbowRoute,
+} from './manual-elbow-route.js'
+
+const ids = (prefix = 'segment') => (index: number) => `${prefix}:${index}`
+
+describe('manual elbow routes', () => {
+  it('creates an alternating route and resolves terminal-following segments', () => {
+    const route = createManualElbowRoute([
+      { x: 0, y: 10 }, { x: 40, y: 10 }, { x: 40, y: 80 }, { x: 120, y: 80 },
+    ], ids())!
+    const resolved = resolveManualElbowRoute(route, { x: 0, y: 20 }, { x: 140, y: 90 }, ids('new'))
+
+    expect(route.segments.map((segment) => segment.orientation)).toEqual(['horizontal', 'vertical', 'horizontal'])
+    expect(resolved.points).toEqual([
+      { x: 0, y: 20 }, { x: 40, y: 20 }, { x: 40, y: 90 }, { x: 140, y: 90 },
+    ])
+  })
+
+  it('moves an interior segment only on its perpendicular axis', () => {
+    const route = createManualElbowRoute([
+      { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 80 }, { x: 120, y: 80 },
+    ], ids())!
+    const moved = dragManualElbowSegment(route, 'segment:1', { x: 65, y: 999 }, { x: 0, y: 0 }, { x: 120, y: 80 }, ids('new'))
+    const resolved = resolveManualElbowRoute(moved, { x: 0, y: 0 }, { x: 120, y: 80 })
+
+    expect(resolved.points).toEqual([
+      { x: 0, y: 0 }, { x: 65, y: 0 }, { x: 65, y: 80 }, { x: 120, y: 80 },
+    ])
+  })
+
+  it('adds a terminal leg when the first or last segment is moved', () => {
+    const route = createManualElbowRoute([
+      { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 80 }, { x: 120, y: 80 },
+    ], ids())!
+    const firstMoved = dragManualElbowSegment(route, 'segment:0', { x: 10, y: 24 }, { x: 0, y: 0 }, { x: 120, y: 80 }, ids('first'))
+    const lastMoved = dragManualElbowSegment(route, 'segment:2', { x: 10, y: 110 }, { x: 0, y: 0 }, { x: 120, y: 80 }, ids('last'))
+
+    expect(resolveManualElbowRoute(firstMoved, { x: 0, y: 0 }, { x: 120, y: 80 }).points).toEqual([
+      { x: 0, y: 0 }, { x: 0, y: 24 }, { x: 40, y: 24 }, { x: 40, y: 80 }, { x: 120, y: 80 },
+    ])
+    expect(resolveManualElbowRoute(lastMoved, { x: 0, y: 0 }, { x: 120, y: 80 }).points).toEqual([
+      { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 110 }, { x: 120, y: 110 }, { x: 120, y: 80 },
+    ])
+  })
+
+  it('simplifies zero-length turns and rejects malformed metadata', () => {
+    const route = createManualElbowRoute([
+      { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 80 }, { x: 120, y: 80 },
+    ], ids())!
+    const collapsed = dragManualElbowSegment(route, 'segment:1', { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 120, y: 80 }, ids('drag'))
+    const normalized = normalizeManualElbowRoute(collapsed, { x: 0, y: 0 }, { x: 120, y: 80 }, ids('normalized'))!
+
+    expect(normalized.segments).toHaveLength(2)
+    expect(readManualElbowRoute({ manualElbowRoute: { version: 2, segments: [] } })).toBeUndefined()
+    expect(readManualElbowRoute({ manualElbowRoute: { version: 1, segments: [
+      { id: 'a', orientation: 'horizontal', position: 0 },
+      { id: 'b', orientation: 'horizontal', position: 10 },
+    ] } })).toBeUndefined()
+  })
+
+  it('writes and clears route metadata without disturbing other metadata', () => {
+    const route = createManualElbowRoute([{ x: 0, y: 0 }, { x: 40, y: 0 }], ids())!
+    const meta = withManualElbowRoute({ source: 'test' }, route)
+
+    expect(readManualElbowRoute(meta)).toEqual(route)
+    expect(withoutManualElbowRoute(meta)).toEqual({ source: 'test' })
+  })
+})

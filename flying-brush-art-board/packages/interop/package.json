@@ -1,0 +1,39 @@
+{
+  "name": "@infinite-board/interop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./drawio/export-drawio": "./dist/drawio/export-drawio.js",
+    "./drawio/import-drawio": "./dist/drawio/import-drawio.js",
+    "./drawio/style-map": "./dist/drawio/style-map.js",
+    "./scene/compatibility-report": "./dist/scene/compatibility-report.js",
+    "./scene/schema": "./dist/scene/schema.js",
+    "./visual/sanitize-svg": "./dist/visual/sanitize-svg.js",
+    "./pdf/project-pdf": "./dist/pdf/project-pdf.js",
+    "./tldraw/import-tldr": "./dist/tldraw/import-tldr.js",
+    "./feishu/map-nodes": "./dist/feishu/map-nodes.js",
+    "./feishu/theme-map": "./dist/feishu/theme-map.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "test": "pnpm -C ../.. exec vitest run --project unit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@infinite-board/board-core": "workspace:*",
+    "@tldraw/tlschema": "5.2.5",
+    "fast-xml-parser": "5.10.1",
+    "fflate": "0.8.3",
+    "pdfjs-dist": "6.1.200",
+    "pdfkit": "0.19.1",
+    "svg-to-pdfkit": "0.1.8",
+    "tldraw": "5.2.5",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

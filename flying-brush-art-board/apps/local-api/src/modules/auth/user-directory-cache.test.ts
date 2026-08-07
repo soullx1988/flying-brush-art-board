@@ -1,0 +1,3 @@
+import { describe, expect, it, vi } from 'vitest'
+import { UserDirectoryCache } from './user-directory-cache.js'
+describe('UserDirectoryCache', () => it('caches for five minutes and supports invalidation', async () => { let time = 0; const findByOpenId = vi.fn(async () => ({ openId: 'o', name: 'N' })); const cache = new UserDirectoryCache({ findByOpenId, checkHealth: async () => 'ok', close: async () => undefined }, () => time); await cache.requireAllowed('o'); await cache.requireAllowed('o'); expect(findByOpenId).toHaveBeenCalledTimes(1); time = 300_001; await cache.requireAllowed('o'); cache.invalidate('o'); await cache.requireAllowed('o'); expect(findByOpenId).toHaveBeenCalledTimes(3) }))
