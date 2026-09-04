@@ -7,6 +7,7 @@ import Fastify from 'fastify'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createBoardReferenceShape } from '@infinite-board/tldraw-adapter'
+import { createPngFixture } from '../../../../../packages/test-fixtures/src/media.js'
 
 import { buildApp } from '../../app.js'
 import { createDatabase, type LocalDatabase } from '../../db/schema.js'
@@ -251,8 +252,11 @@ describe('clipboard command routes', () => {
     expect(boards.get('B')).toMatchObject({ revision: 0 })
   })
 
-  it('serializes paste behind realtime projection and preserves the newer room snapshot', async () => {
+  it('serializes paste behind realtime projection and rejects its stale revision without losing the edit', async () => {
     const directApp = Fastify()
+    directApp.addHook('onRequest', async (request) => {
+      request.user = { openId: 'local-acceptance-user', name: 'Local acceptance user' }
+    })
     const queue = new BoardOperationQueue()
     let release!: () => void
     const pendingProjection = queue.run('B', async () => {
@@ -287,12 +291,13 @@ describe('clipboard command routes', () => {
 
       expect(response.statusCode).toBe(409)
       expect(response.json()).toEqual({ code: 'REVISION_CONFLICT', currentRevision: 1 })
-      expect(boards.get('B')?.tldrawSnapshot).toEqual({
+      expect(boards.get('B')?.tldrawSnapshot).toMatchObject({
         store: {
           'page:page': { id: 'page:page', typeName: 'page' },
           'shape:realtime': shape('shape:realtime'),
         },
       })
+      expect(Object.keys((boards.get('B')?.tldrawSnapshot as { store: Record<string, unknown> }).store)).toHaveLength(2)
     } finally {
       await directApp.close()
     }
@@ -394,7 +399,7 @@ describe('clipboard command routes', () => {
   })
 
   it('reuses stored asset bytes by hash while creating distinct pasted usages', async () => {
-    const bytes = new Uint8Array([1, 2, 3, 4])
+    const bytes = createPngFixture()
     const uploaded = await app.inject({
       method: 'POST',
       url: '/api/assets',

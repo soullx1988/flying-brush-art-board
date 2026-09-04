@@ -23,6 +23,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@embedpdf/fonts-sc": "1.0.0",
     "@infinite-board/board-core": "workspace:*",
     "@tldraw/tlschema": "5.2.5",
     "fast-xml-parser": "5.10.1",

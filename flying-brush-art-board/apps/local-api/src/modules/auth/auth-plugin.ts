@@ -20,7 +20,7 @@ declare module 'fastify' {
 
 function needsAuthentication(request: FastifyRequest): boolean {
   const path = request.routeOptions.url ?? request.url.split('?')[0] ?? '/'
-  return path.startsWith('/api/') || path.startsWith('/realtime/')
+  return path.startsWith('/api/') || path.startsWith('/realtime/') || path.startsWith('/auth/feishu/import/')
 }
 
 export function registerAuthenticationPlugin(app: FastifyInstance, dependencies: AuthenticationDependencies): void {

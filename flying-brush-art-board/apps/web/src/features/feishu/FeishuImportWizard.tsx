@@ -95,35 +95,48 @@ export function FeishuImportWizard({ client, defaultProjectId, onCommitted }: Fe
   const inspectionGeneration = useRef(0)
 
   useEffect(() => {
+    let current = true
+    setBusy(false)
+    setInspection(undefined)
     void Promise.all([client.status(), client.projects()]).then(([status, loadedProjects]) => {
+      if (!current) return
       const options = Array.isArray(loadedProjects) ? loadedProjects : []
       setConnected(status.connected)
       setProjects(options)
       setProjectId(options.some((project) => project.id === defaultProjectId) ? defaultProjectId! : options[0]?.id ?? '')
       setTargetKind(options.length ? 'existing' : 'new')
-    }, () => setError('无法加载飞书导入配置，请稍后重试。'))
+    }, () => { if (current) setError('无法加载飞书导入配置，请稍后重试。') })
+    return () => { current = false }
   }, [client, defaultProjectId])
 
   useEffect(() => () => {
-    if (sessionRef.current) void client.cancel(sessionRef.current).catch(() => undefined)
+    inspectionGeneration.current += 1
+    const sessionId = sessionRef.current
+    sessionRef.current = undefined
+    if (sessionId) void client.cancel(sessionId).catch(() => undefined)
   }, [client])
 
   const inspect = async () => {
     const generation = ++inspectionGeneration.current
+    const originatingClient = client
     setBusy(true); setError(undefined)
-    if (sessionRef.current) await client.cancel(sessionRef.current).catch(() => undefined)
+    if (sessionRef.current) await originatingClient.cancel(sessionRef.current).catch(() => undefined)
+    if (generation !== inspectionGeneration.current) return
     try {
-      const result = await client.inspect(url)
+      const result = await originatingClient.inspect(url)
       if (generation !== inspectionGeneration.current) {
-        await client.cancel(result.sessionId).catch(() => undefined)
+        await originatingClient.cancel(result.sessionId).catch(() => undefined)
         return
       }
       sessionRef.current = result.sessionId
       setInspection(result)
     } catch (cause) {
+      if (generation !== inspectionGeneration.current) return
       setError(chineseErrorMessage(cause, '飞书白板预检失败。'))
       setInspection(undefined)
-    } finally { setBusy(false) }
+    } finally {
+      if (generation === inspectionGeneration.current) setBusy(false)
+    }
   }
 
   const commit = async () => {
@@ -155,6 +168,7 @@ export function FeishuImportWizard({ client, defaultProjectId, onCommitted }: Fe
           const nextUrl = event.currentTarget.value
           setUrl(nextUrl)
           inspectionGeneration.current += 1
+          setBusy(false)
           setInspection(undefined)
           setError(undefined)
           const previousSessionId = sessionRef.current

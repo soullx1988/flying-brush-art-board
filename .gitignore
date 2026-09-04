@@ -13,6 +13,7 @@ certs/
 # 数据库文件（用户数据）
 InfiniteBoardData/
 InfiniteBoardBackups/
+.uat-backups/
 
 # 运行时日志
 runtime-logs/

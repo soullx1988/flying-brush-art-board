@@ -4,6 +4,7 @@ import {
   type BoardSessionApi,
   type BoardSessionFlushResult,
   type BoardSessionStatus,
+  type BoardSnapshotAccess,
 } from '../boards/board-session'
 import type { BoardReferenceRecord } from '@infinite-board/board-core'
 import {
@@ -45,6 +46,7 @@ export interface WorkspaceBoardTabSession {
   lastKnownRevision: number
   pendingSnapshot?: unknown
   status: BoardSessionStatus
+  snapshotAccess: BoardSnapshotAccess
 }
 
 export interface WorkspaceTab {
@@ -78,6 +80,7 @@ export interface WorkspaceTabsOptions {
 export type EditableInputResult =
   | { applied: true }
   | { applied: false; holderTabId: string }
+  | { applied: false; reason: 'projected-read-only' }
 
 export type CloseTabDecision = 'save' | 'copy-recovery' | 'discard'
 
@@ -234,7 +237,7 @@ export class WorkspaceTabs {
     releaseEditingLease(this.projectId, currentTab.boardId, currentTab.tabId)
 
     currentTab.boardId = boardId
-    currentTab.readOnly = !this.realtime
+    currentTab.readOnly = true
     delete currentTab.leaseHolderTabId
     delete currentTab.serializedSnapshot
     currentTab.session.history = currentTab.session.history.slice(
@@ -245,6 +248,7 @@ export class WorkspaceTabs {
     currentTab.session.historyIndex = currentTab.session.history.length - 1
     currentTab.session.lastKnownRevision = 0
     currentTab.session.status = 'loading'
+    currentTab.session.snapshotAccess = 'unknown'
     delete currentTab.session.pendingSnapshot
     this.installSession(currentTab)
     this.activeTabId = currentTabId
@@ -320,11 +324,12 @@ export class WorkspaceTabs {
     } else {
       delete tab.source
     }
-    tab.readOnly = !this.realtime
+    tab.readOnly = true
     delete tab.leaseHolderTabId
     delete tab.serializedSnapshot
     tab.session.lastKnownRevision = 0
     tab.session.status = 'loading'
+    tab.session.snapshotAccess = 'unknown'
     delete tab.session.pendingSnapshot
     this.installSession(tab)
     this.activeTabId = tabId
@@ -346,7 +351,7 @@ export class WorkspaceTabs {
 
     currentTab.boardId = boardId
     currentTab.source = source
-    currentTab.readOnly = !this.realtime
+    currentTab.readOnly = true
     delete currentTab.leaseHolderTabId
     delete currentTab.serializedSnapshot
     currentTab.session.history = currentTab.session.history.slice(
@@ -357,6 +362,7 @@ export class WorkspaceTabs {
     currentTab.session.historyIndex = currentTab.session.history.length - 1
     currentTab.session.lastKnownRevision = 0
     currentTab.session.status = 'loading'
+    currentTab.session.snapshotAccess = 'unknown'
     delete currentTab.session.pendingSnapshot
     this.installSession(currentTab)
     this.activeTabId = currentTabId
@@ -405,6 +411,14 @@ export class WorkspaceTabs {
       throw new Error(`Tab ${tabId} does not own the active editor`)
     }
 
+    if (tab.session.snapshotAccess !== 'full') {
+      tab.readOnly = true
+      delete tab.leaseHolderTabId
+      this.activeEditor.setReadOnly?.(true)
+      this.emit()
+      return { applied: false, reason: 'projected-read-only' }
+    }
+
     if (this.realtime) {
       tab.readOnly = false
       delete tab.leaseHolderTabId
@@ -415,7 +429,7 @@ export class WorkspaceTabs {
 
     const lease = acquireEditingLease(this.projectId, tab.boardId, tabId)
     if (!lease.acquired) {
-      tab.readOnly = !this.realtime
+      tab.readOnly = true
       tab.leaseHolderTabId = lease.holderTabId
       this.activeEditor.setReadOnly?.(true, lease.holderTabId)
       this.emit()
@@ -443,10 +457,23 @@ export class WorkspaceTabs {
   adoptCommandCommit(tabId: string, snapshot: unknown, revision: number): void {
     const tab = this.requireTab(tabId)
     const session = this.requireSession(tabId)
-    session.adoptServerCommit(snapshot, revision)
+    if (this.realtime) {
+      session.observeServerCommit(snapshot, revision, 'full', 'local-command')
+    } else {
+      session.adoptServerCommit(snapshot, revision)
+    }
     tab.serializedSnapshot = session.serializeSnapshot()
     this.syncTab(tab)
     this.emit()
+  }
+
+  async syncBeforeStructuralCommand(tabId: string): Promise<BoardSessionFlushResult> {
+    const tab = this.requireTab(tabId)
+    const result = await this.requireSession(tabId).syncBeforeStructuralCommand()
+    tab.serializedSnapshot = this.requireSession(tabId).serializeSnapshot()
+    this.syncTab(tab)
+    this.emit()
+    return result
   }
 
   async retryTabSave(tabId: string): Promise<BoardSessionFlushResult> {
@@ -582,7 +609,7 @@ export class WorkspaceTabs {
         if (!result.ok) throw new WorkspaceNavigationBlockedError(result)
         if (!session.hasPendingChanges) {
           releaseEditingLease(this.projectId, tab.boardId, tab.tabId)
-          tab.readOnly = !this.realtime
+          tab.readOnly = this.defaultReadOnly(tab)
           delete tab.leaseHolderTabId
         }
       }
@@ -628,8 +655,9 @@ export class WorkspaceTabs {
         historyIndex: 0,
         lastKnownRevision: 0,
         status: 'loading',
+        snapshotAccess: 'unknown',
       },
-      readOnly: !this.realtime,
+      readOnly: true,
     }
     if (source) tab.source = source
     this.installSession(tab)
@@ -702,11 +730,11 @@ export class WorkspaceTabs {
         if (lease?.holderTabId === tab.tabId) {
           await session.flush()
         } else if (lease) {
-          tab.readOnly = !this.realtime
+          tab.readOnly = this.defaultReadOnly(tab)
           tab.leaseHolderTabId = lease.holderTabId
         }
       } else if (serverCommit.revision !== session.currentRevision) {
-        session.adoptServerCommit(serverCommit.snapshot, serverCommit.revision)
+        session.adoptServerCommit(serverCommit.snapshot, serverCommit.revision, serverCommit.snapshotAccess)
       }
       tab.serializedSnapshot = session.serializeSnapshot()
       this.syncTab(tab)
@@ -723,8 +751,8 @@ export class WorkspaceTabs {
     }
     tab.serializedSnapshot = session.serializeSnapshot()
     editor.setViewState(this.currentHistoryEntry(tab).viewState)
-    editor.setReadOnly?.(tab.readOnly, tab.leaseHolderTabId)
     this.syncTab(tab)
+    editor.setReadOnly?.(tab.readOnly, tab.leaseHolderTabId)
   }
 
   private async deactivateActiveTab(): Promise<void> {
@@ -738,7 +766,7 @@ export class WorkspaceTabs {
     tab.serializedSnapshot = session.serializeSnapshot()
     if (result.ok && !session.hasPendingChanges) {
       releaseEditingLease(this.projectId, tab.boardId, tab.tabId)
-      tab.readOnly = !this.realtime
+      tab.readOnly = this.defaultReadOnly(tab)
       delete tab.leaseHolderTabId
     }
     this.syncTab(tab)
@@ -777,6 +805,17 @@ export class WorkspaceTabs {
     if (!session) return
     tab.session.lastKnownRevision = session.currentRevision
     tab.session.status = session.status
+    tab.session.snapshotAccess = session.snapshotAccess
+    if (session.snapshotAccess !== 'full') {
+      releaseEditingLease(this.projectId, tab.boardId, tab.tabId)
+      tab.readOnly = true
+      delete tab.leaseHolderTabId
+      if (this.activeTabId === tab.tabId) this.activeEditor?.setReadOnly?.(true)
+    } else if (this.realtime) {
+      tab.readOnly = false
+      delete tab.leaseHolderTabId
+      if (this.activeTabId === tab.tabId) this.activeEditor?.setReadOnly?.(false)
+    }
     if (session.pendingSnapshot === undefined) {
       delete tab.session.pendingSnapshot
     } else {
@@ -788,6 +827,10 @@ export class WorkspaceTabs {
     const entry = tab.session.history[tab.session.historyIndex]
     if (!entry) throw new Error(`Tab ${tab.tabId} has no current history entry`)
     return entry
+  }
+
+  private defaultReadOnly(tab: WorkspaceTab): boolean {
+    return !this.realtime || tab.session.snapshotAccess !== 'full'
   }
 
   private requireTab(tabId: string): WorkspaceTab {

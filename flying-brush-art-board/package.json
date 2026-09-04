@@ -9,8 +9,10 @@
     "pnpm": "11.9.0"
   },
   "scripts": {
-    "dev": "pnpm --parallel --filter @infinite-board/local-api --filter @infinite-board/web dev",
+    "predev": "pnpm -r --filter \"./packages/**\" --workspace-concurrency=1 --if-present build",
+    "dev": "tsx scripts/dev-local.ts",
     "dev:web": "pnpm --filter @infinite-board/web dev",
+    "dev:lan:web": "vite --config vite.lan-https.config.ts",
     "dev:api": "pnpm --filter @infinite-board/local-api dev",
     "dev:api:e2e": "tsx scripts/start-e2e-api.ts",
     "cleanup:test-projects": "node --env-file-if-exists=.env.local --import tsx scripts/cleanup-automation-projects.ts",
@@ -26,9 +28,10 @@
     "typecheck": "tsc -p tsconfig.tests.json --noEmit && pnpm -r --if-present typecheck",
     "build": "pnpm -r --workspace-concurrency=1 --if-present build",
     "pree2e": "tsx scripts/report-feishu-default-skip.ts",
-    "e2e": "playwright test --grep-invert @feishu-real",
+    "e2e": "playwright test --grep-invert \"@feishu-real|@trading-live\"",
+    "e2e:trading:live": "playwright test --config playwright.trading-live.config.ts",
     "pree2e:feishu:real": "node --env-file-if-exists=.env.local --import tsx scripts/feishu-real-smoke.ts --gate-only",
-    "e2e:feishu:real": "node --env-file-if-exists=.env.local ./node_modules/@playwright/test/cli.js test --grep @feishu-real",
+    "e2e:feishu:real": "node --env-file-if-exists=.env.local ./node_modules/@playwright/test/cli.js test --config playwright.feishu-real.config.ts --grep @feishu-real",
     "smoke": "pnpm test && pnpm typecheck && pnpm build && pnpm e2e"
   },
   "dependencies": {

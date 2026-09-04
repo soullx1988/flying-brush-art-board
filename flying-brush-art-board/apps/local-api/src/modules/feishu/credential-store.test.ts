@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,9 +25,14 @@ describe('EncryptedCredentialStore', () => {
     return { directory, store: new EncryptedCredentialStore({ directory }) }
   }
 
+  const credentialPath = (directory: string, openId: string) => join(
+    directory,
+    `feishu-import-credentials-${createHash('sha256').update(openId).digest('hex')}.json`,
+  )
+
   it('persists only DPAPI-protected key material and decrypts it for the current Windows user', () => {
     const { directory, store } = createStore()
-    store.replace(credentials)
+    store.replace('user-a', credentials)
 
     const keyEnvelope = JSON.parse(readFileSync(join(directory, 'feishu-import-credentials.key'), 'utf8')) as {
       version: number
@@ -36,18 +42,24 @@ describe('EncryptedCredentialStore', () => {
     expect(keyEnvelope).toMatchObject({ version: 1, protection: 'windows-dpapi-current-user' })
     expect(Buffer.from(keyEnvelope.protectedKey, 'base64url')).not.toHaveLength(32)
     expect(JSON.stringify(keyEnvelope)).not.toContain(credentials.accessToken)
-    expect(new EncryptedCredentialStore({ directory }).read()).toEqual(credentials)
+    expect(new EncryptedCredentialStore({ directory }).read('user-a')).toEqual(credentials)
   })
 
-  it('supports encrypted replace, read, and clear without persisting token plaintext', () => {
+  it('partitions encrypted replace, read, and clear by openId without persisting token plaintext', () => {
     const { directory, store } = createStore()
-    expect(store.read()).toBeUndefined()
+    const other = { ...credentials, accessToken: 'user-b-access', refreshToken: 'user-b-refresh' }
+    expect(store.read('user-a')).toBeUndefined()
+    expect(store.read('user-b')).toBeUndefined()
 
-    store.replace(credentials)
-    expect(store.read()).toEqual(credentials)
-    expect(readFileSync(join(directory, 'feishu-import-credentials.json'), 'utf8')).not.toContain('private-')
+    store.replace('user-a', credentials)
+    store.replace('user-b', other)
+    expect(store.read('user-a')).toEqual(credentials)
+    expect(store.read('user-b')).toEqual(other)
+    expect(readFileSync(credentialPath(directory, 'user-a'), 'utf8')).not.toContain('private-')
+    expect(readFileSync(credentialPath(directory, 'user-b'), 'utf8')).not.toContain('user-b-')
 
-    store.clear()
-    expect(store.read()).toBeUndefined()
+    store.clear('user-a')
+    expect(store.read('user-a')).toBeUndefined()
+    expect(store.read('user-b')).toEqual(other)
   })
 })

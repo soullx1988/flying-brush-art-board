@@ -78,6 +78,27 @@ export class StaleClipboardCommandError extends Error {
   }
 }
 
+function canonicalSnapshotJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null'
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalSnapshotJson(item)).join(',')}]`
+  }
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record)
+    .sort()
+    .filter((key) => record[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${canonicalSnapshotJson(record[key])}`)
+    .join(',')}}`
+}
+
+function snapshotsMatch(current: unknown, expected: unknown): boolean {
+  const currentFingerprint = createHash('sha256').update(canonicalSnapshotJson(current)).digest('hex')
+  const expectedFingerprint = createHash('sha256').update(canonicalSnapshotJson(expected)).digest('hex')
+  return currentFingerprint === expectedFingerprint
+}
+
 export class ClipboardReferenceInvalidError extends Error {
   readonly code = 'CLIPBOARD_REFERENCE_INVALID'
 
@@ -250,17 +271,24 @@ export class ClipboardCommandService {
     const board = this.boards.get(receipt.boardId)
     if (!board) throw new ClipboardCommandExpiredError()
     if (board.revision !== expectedRevision) throw new RevisionConflictError(board.revision)
-    const usageRepository = new AssetUsageRepository(this.database)
+    // A caller may have synchronized to a newer collaborative revision before
+    // requesting undo. CAS alone would then permit restoring a whole historic
+    // snapshot and silently erase that newer work. The command is reversible
+    // only while the board still equals this receipt's applied boundary.
+    if (!snapshotsMatch(board.tldrawSnapshot, receipt.afterSnapshot)) {
+      throw new StaleClipboardCommandError()
+    }
 
     const commit = this.database.transaction(() => {
       const savedBoard = this.boards.saveSnapshot(receipt.boardId, expectedRevision, receipt.beforeSnapshot)
       for (const usage of receipt.assetUsages) {
-        this.database
+        const removed = this.database
           .prepare(
             `DELETE FROM asset_usages
              WHERE project_id = ? AND board_id = ? AND shape_id = ? AND asset_record_id = ? AND sha256 = ?`,
           )
           .run(board.projectId, receipt.boardId, usage.shapeId, usage.assetRecordId, usage.sha256)
+        if (removed.changes !== 1) throw new StaleClipboardCommandError()
       }
       for (const reference of receipt.references) {
         if (!this.references.remove(reference.id)) throw new StaleClipboardCommandError()
@@ -268,7 +296,6 @@ export class ClipboardCommandService {
       return savedBoard
     })
     const savedBoard = commit()
-    void usageRepository
     receipt.state = 'undone'
 
     return {
@@ -287,6 +314,12 @@ export class ClipboardCommandService {
     const board = this.boards.get(receipt.boardId)
     if (!board) throw new ClipboardCommandExpiredError()
     if (board.revision !== expectedRevision) throw new RevisionConflictError(board.revision)
+    // The inverse transition has the same fail-closed boundary. This still
+    // supports stacked LIFO undo/redo because snapshots, unlike revisions,
+    // return to the preceding command boundary after each transition.
+    if (!snapshotsMatch(board.tldrawSnapshot, receipt.beforeSnapshot)) {
+      throw new StaleClipboardCommandError()
+    }
     const usages = new AssetUsageRepository(this.database)
 
     const commit = this.database.transaction(() => {

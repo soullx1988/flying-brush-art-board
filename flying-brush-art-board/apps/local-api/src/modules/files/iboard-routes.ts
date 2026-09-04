@@ -18,6 +18,12 @@ import { AssetRepository, AssetUsageRepository } from '../assets/asset-repositor
 import { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import { BoardRepository } from '../boards/board-repository.js'
 import { ProjectRepository } from '../projects/project-repository.js'
+import { canAccessProject, projectPrivacyProjection, projectWithProjectedRoot } from '../../privacy/board-access-policy.js'
+import {
+  IBOARD_BOARD_SNAPSHOT_UNSUPPORTED,
+  IboardBoardSnapshotUnsupportedError,
+  analyzeIboardForImport,
+} from './iboard-runtime-compatibility.js'
 import { commitIboardMerge } from './import-iboard-service.js'
 
 interface IboardImportSession {
@@ -29,6 +35,7 @@ interface IboardImportSession {
   committing: boolean
   expiresAt: number
   byteSize: number
+  actorOpenId?: string
 }
 
 export interface IboardImportSessionStoreOptions {
@@ -66,13 +73,13 @@ export class IboardImportSessionStore {
     this.maxBytes = options.maxBytes ?? DEFAULT_IBOARD_IMPORT_SESSION_MAX_BYTES
     this.now = options.now ?? Date.now
     this.measureArchive = options.measureArchive ?? ((bytes) => measureIboardArchive(bytes).retainedBytes)
-    this.analyzeArchive = options.analyzeArchive ?? inspectAndDecodeIboard
+    this.analyzeArchive = options.analyzeArchive ?? analyzeIboardForImport
     if (this.ttlMs <= 0 || this.maxSessions <= 0 || this.maxBytes <= 0) {
       throw new Error('IBOARD_IMPORT_SESSION_LIMIT_INVALID')
     }
   }
 
-  create(bytes: Uint8Array, fileName: string): IboardImportSession {
+  create(bytes: Uint8Array, fileName: string, actorOpenId?: string): IboardImportSession {
     this.cleanupExpired()
     const { inspection, decoded } = this.analyzeArchive(bytes)
     const byteSize = decoded === undefined ? bytes.byteLength : this.reservedByteSize(bytes)
@@ -91,6 +98,7 @@ export class IboardImportSessionStore {
       committing: false,
       expiresAt: now + this.ttlMs,
       byteSize,
+      ...(actorOpenId ? { actorOpenId } : {}),
     }
     this.sessions.set(session.sessionId, session)
     this.totalBytes += session.byteSize
@@ -108,10 +116,11 @@ export class IboardImportSessionStore {
     }
   }
 
-  claim(sessionId: string): IboardImportSession | undefined {
+  claim(sessionId: string, actorOpenId?: string): IboardImportSession | undefined {
     this.cleanupExpired()
     const session = this.sessions.get(sessionId)
-    if (!session || session.committing) return undefined
+    if (!session || session.committing
+      || (actorOpenId !== undefined && session.actorOpenId && session.actorOpenId !== actorOpenId)) return undefined
     session.committing = true
     return session
   }
@@ -121,9 +130,9 @@ export class IboardImportSessionStore {
     if (session) session.committing = false
   }
 
-  remove(sessionId: string): boolean {
+  remove(sessionId: string, actorOpenId?: string): boolean {
     const session = this.sessions.get(sessionId)
-    if (!session) return false
+    if (!session || (actorOpenId !== undefined && session.actorOpenId && session.actorOpenId !== actorOpenId)) return false
     this.sessions.delete(sessionId)
     this.totalBytes -= session.byteSize
     return true
@@ -197,9 +206,15 @@ function rfc5987FileName(value: string): string {
   )
 }
 
-function exportAssets(database: LocalDatabase, assets: AssetRepository, projectId: string): IboardAssetInputV1[] {
+function exportAssets(
+  database: LocalDatabase,
+  assets: AssetRepository,
+  projectId: string,
+  redactedBoardIds: ReadonlySet<string>,
+): IboardAssetInputV1[] {
   const usagesByHash = new Map<string, ReturnType<AssetUsageRepository['listByProject']>>()
   for (const usage of new AssetUsageRepository(database).listByProject(projectId)) {
+    if (redactedBoardIds.has(usage.boardId)) continue
     const usages = usagesByHash.get(usage.sha256) ?? []
     usages.push(usage)
     usagesByHash.set(usage.sha256, usages)
@@ -245,13 +260,22 @@ export function registerIboardRoutes(
 
     const project = new ProjectRepository(database).get(params.data.projectId)
     if (!project) return reply.code(404).send({ code: 'PROJECT_NOT_FOUND' })
+    const projects = new ProjectRepository(database)
+    if (!canAccessProject(project, request.user?.openId, projects.isMember(project.id, request.user?.openId))) {
+      return reply.code(403).send({ code: 'PROJECT_ACCESS_DENIED' })
+    }
 
     try {
+      const projection = projectPrivacyProjection(
+        new BoardRepository(database).listByProject(project.id),
+        new BoardReferenceRepository(database).listByProject(project.id),
+        'export',
+      )
       const archive = exportProjectToIboard({
-        project,
-        boards: new BoardRepository(database).listByProject(project.id),
-        references: new BoardReferenceRepository(database).listByProject(project.id),
-        assets: exportAssets(database, assets, project.id),
+        project: projectWithProjectedRoot(project, projection.boards),
+        boards: projection.boards,
+        references: projection.references,
+        assets: exportAssets(database, assets, project.id, projection.redactedBoardIds),
       })
       const downloadName = `${project.title.trim() || project.id}.iboard`
       return reply
@@ -277,6 +301,7 @@ export function registerIboardRoutes(
       session = sessions.create(
         new Uint8Array(request.body.buffer, request.body.byteOffset, request.body.byteLength),
         fileNameFromHeader(request.headers['x-iboard-file-name']),
+        request.user?.openId,
       )
     } catch (error) {
       if (error instanceof Error && error.message === 'IBOARD_IMPORT_SESSION_CAPACITY_EXCEEDED') {
@@ -290,7 +315,15 @@ export function registerIboardRoutes(
   app.post('/api/import/iboard/commit', async (request, reply) => {
     const input = commitSchema.safeParse(request.body)
     if (!input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: input.error.issues })
-    const session = sessions.claim(input.data.sessionId)
+    const projects = new ProjectRepository(database)
+    const targetProject = projects.get(input.data.targetProjectId)
+    if (!targetProject) return reply.code(404).send({ code: 'IBOARD_TARGET_PROJECT_NOT_FOUND' })
+    if (!canAccessProject(
+      targetProject,
+      request.user?.openId,
+      projects.isMember(targetProject.id, request.user?.openId),
+    )) return reply.code(403).send({ code: 'PROJECT_ACCESS_DENIED' })
+    const session = sessions.claim(input.data.sessionId, request.user?.openId)
     if (!session) return reply.code(404).send({ code: 'IBOARD_IMPORT_SESSION_NOT_FOUND' })
     if (!session.decoded) {
       sessions.release(session.sessionId)
@@ -307,13 +340,19 @@ export function registerIboardRoutes(
         assets,
         namespace: session.sessionId,
       })
-      sessions.remove(session.sessionId)
+      sessions.remove(session.sessionId, request.user?.openId)
       const { idMap: _idMap, ...publicResult } = result
       return reply.code(201).send(publicResult)
     } catch (error) {
       sessions.release(session.sessionId)
       if (error instanceof Error && error.message === 'IBOARD_TARGET_PROJECT_NOT_FOUND') {
         return reply.code(404).send({ code: error.message })
+      }
+      if (error instanceof IboardBoardSnapshotUnsupportedError) {
+        return reply.code(409).send({
+          code: IBOARD_BOARD_SNAPSHOT_UNSUPPORTED,
+          boardId: error.boardId,
+        })
       }
       return reply.code(409).send({
         code: 'IBOARD_IMPORT_COMMIT_FAILED',
@@ -326,7 +365,7 @@ export function registerIboardRoutes(
   app.delete('/api/import/sessions/:sessionId', async (request, reply) => {
     const params = sessionParamsSchema.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: params.error.issues })
-    sessions.remove(params.data.sessionId)
+    sessions.remove(params.data.sessionId, request.user?.openId)
     return reply.code(204).send()
   })
 }

@@ -59,6 +59,7 @@ const SUPPORTED_SHAPE_TYPES = new Set([
   'board-reference',
   'table',
   'mind-map',
+  'trading-panel',
 ])
 
 interface IndexedLegacyRecord {

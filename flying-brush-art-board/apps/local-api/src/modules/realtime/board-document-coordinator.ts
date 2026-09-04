@@ -58,10 +58,16 @@ export class BoardDocumentCoordinator {
       return this.boards.saveSnapshot(input.boardId, board.revision, mutation.snapshot)
     })()
     if (this.realtime) {
-      if (this.realtime.applyCommittedSnapshotWithinQueue) {
-        await this.realtime.applyCommittedSnapshotWithinQueue(input.boardId, saved.tldrawSnapshot)
-      } else {
-        await this.realtime.applyCommittedSnapshot(input.boardId, saved.tldrawSnapshot)
+      try {
+        if (this.realtime.applyCommittedSnapshotWithinQueue) {
+          await this.realtime.applyCommittedSnapshotWithinQueue(input.boardId, saved.tldrawSnapshot)
+        } else {
+          await this.realtime.applyCommittedSnapshot(input.boardId, saved.tldrawSnapshot)
+        }
+      } catch {
+        // The durable command already committed. Report the successful result
+        // so callers do not retry a non-idempotent command. The production
+        // realtime manager invalidates stale rooms before returning here.
       }
     }
     return { snapshot: saved.tldrawSnapshot, revision: saved.revision, result: mutation.result }

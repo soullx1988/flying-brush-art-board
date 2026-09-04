@@ -22,3 +22,33 @@ index 046b361..8e8fd41 100644
      },
      [canvasEvents, editor, swallowNextNativeContextMenu]
    );
+diff --git a/dist-esm/lib/editor/managers/FontManager/FontManager.mjs b/dist-esm/lib/editor/managers/FontManager/FontManager.mjs
+--- a/dist-esm/lib/editor/managers/FontManager/FontManager.mjs
++++ b/dist-esm/lib/editor/managers/FontManager/FontManager.mjs
+@@ -81,9 +81,11 @@ class FontManager {
+       state: "loading",
+       instance,
+       loadingPromise: instance.load().then(() => {
++        if (!this.getFontState(font)) return;
+         this.editor.getContainerDocument().fonts.add(instance);
+         this.fontStates.update(font, (s) => ({ ...s, state: "ready" }));
+       }).catch((err) => {
++        if (!this.getFontState(font)) return;
+         console.error(err);
+         this.fontStates.update(font, (s) => ({ ...s, state: "error" }));
+       })
+diff --git a/dist-cjs/lib/editor/managers/FontManager/FontManager.js b/dist-cjs/lib/editor/managers/FontManager/FontManager.js
+--- a/dist-cjs/lib/editor/managers/FontManager/FontManager.js
++++ b/dist-cjs/lib/editor/managers/FontManager/FontManager.js
+@@ -99,9 +99,11 @@ class FontManager {
+       state: "loading",
+       instance,
+       loadingPromise: instance.load().then(() => {
++        if (!this.getFontState(font)) return;
+         this.editor.getContainerDocument().fonts.add(instance);
+         this.fontStates.update(font, (s) => ({ ...s, state: "ready" }));
+       }).catch((err) => {
++        if (!this.getFontState(font)) return;
+         console.error(err);
+         this.fontStates.update(font, (s) => ({ ...s, state: "error" }));
+       })

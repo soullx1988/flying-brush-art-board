@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react'
 
 import type { BoardReferenceRecord } from '@infinite-board/board-core'
+import type { TradingPanelKind } from '@infinite-board/tldraw-adapter'
 
 import type { UseWorkspaceTabsResult } from '../board-tabs/use-workspace-tabs'
 import type { WorkspaceTab } from '../board-tabs/workspace-tabs'
@@ -25,12 +26,20 @@ function referencePathIds(tab: WorkspaceTab): string[] {
   return referenceIds
 }
 
-export function boardNavigationUrl(projectId: string, tab: WorkspaceTab): string {
+export function boardNavigationUrl(
+  projectId: string,
+  tab: WorkspaceTab,
+  options: { includePath?: boolean; focusPanelKind?: TradingPanelKind } = {},
+): string {
   const path = `/projects/${encodeURIComponent(projectId)}/boards/${encodeURIComponent(tab.boardId)}`
-  const referenceIds = referencePathIds(tab)
-  if (referenceIds.length === 0) return path
-  const query = new URLSearchParams({ path: referenceIds.join(',') })
-  return `${path}?${query.toString()}`
+  const query = new URLSearchParams()
+  if (options.includePath) {
+    const referenceIds = referencePathIds(tab)
+    if (referenceIds.length > 0) query.set('path', referenceIds.join(','))
+  }
+  if (options.focusPanelKind) query.set('focusPanel', options.focusPanelKind)
+  const search = query.toString()
+  return search ? `${path}?${search}` : path
 }
 
 export function useBoardNavigation(
@@ -38,10 +47,14 @@ export function useBoardNavigation(
   workspace: UseWorkspaceTabsResult,
   navigate: BoardNavigationNavigate,
 ) {
-  const commitTab = useCallback((tab: WorkspaceTab, replace = false) => {
+  const commitTab = useCallback((
+    tab: WorkspaceTab,
+    replace = false,
+    options: { includePath?: boolean; focusPanelKind?: TradingPanelKind } = {},
+  ) => {
     const entry = tab.session.history[tab.session.historyIndex]
     if (!entry) return
-    navigate(boardNavigationUrl(projectId, tab), {
+    navigate(boardNavigationUrl(projectId, tab, options), {
       replace,
       state: projectBrowserHistoryState(tab.tabId, entry),
     })

@@ -17,6 +17,7 @@ import {
   type ProjectRecord,
   type StoredBoard,
 } from '../../packages/board-core/src/index.js'
+import { createPngFixture } from '../../packages/test-fixtures/src/media.js'
 import {
   createIboardMergePlan,
   exportProjectToIboard,
@@ -98,7 +99,7 @@ function createGraphFixture(): GraphFixture {
     ))
   }
 
-  const assetBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 7, 8, 9])
+  const assetBytes = createPngFixture()
   const sha256 = createHash('sha256').update(assetBytes).digest('hex')
   const usages = [0, 1].map((index) => ({
     boardId: boardIds[index]!,

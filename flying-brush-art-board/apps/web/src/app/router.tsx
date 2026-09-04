@@ -28,6 +28,10 @@ import type {
   IboardInspectSession,
 } from '../features/import-export/IboardImportWizard'
 import { ProjectCenterPage, type CreateProjectInput, type ProjectSummary } from '../features/projects/ProjectCenterPage'
+import {
+  parseTradingPanelFocus,
+  TRADING_PANEL_FOCUS_QUERY,
+} from '../features/trading/trading-panel-navigation'
 import { requestWorkspaceExit } from './workspace-exit-guard'
 import { createBrowserUuid } from './browser-uuid'
 
@@ -69,6 +73,13 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
 
   async listProjects(): Promise<ProjectSummary[]> {
     return responseJson(await fetch('/api/projects'))
+  }
+
+  async ensureTradingWorkspace(): Promise<
+    | { status: 'retired' }
+    | { status: 'created' | 'existing'; project: ProjectRecord; rootBoard: StoredBoard; boards: StoredBoard[] }
+  > {
+    return responseJson(await fetch('/api/bootstrap/personal-trading-workspace', { method: 'PUT' }))
   }
 
   async listThreads(boardId: string): Promise<CommentThreadView[]> {
@@ -193,18 +204,30 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
     )
   }
 
-  async loadBoard(boardId: string): Promise<{ snapshot: unknown; revision: number }> {
+  async loadBoard(boardId: string): Promise<{
+    snapshot: unknown
+    revision: number
+    snapshotAccess: 'full' | 'projected' | 'redacted'
+  }> {
     const board = await responseJson<StoredBoard>(
       await fetch(`/api/boards/${encodeURIComponent(boardId)}`),
     )
-    return { snapshot: board.tldrawSnapshot, revision: board.revision }
+    return {
+      snapshot: board.tldrawSnapshot,
+      revision: board.revision,
+      snapshotAccess: board.snapshotAccess ?? 'full',
+    }
   }
 
   async saveSnapshot(
     boardId: string,
     expectedRevision: number,
     snapshot: unknown,
-  ): Promise<{ snapshot: unknown; revision: number }> {
+  ): Promise<{
+    snapshot: unknown
+    revision: number
+    snapshotAccess: 'full' | 'projected' | 'redacted'
+  }> {
     const board = await responseJson<StoredBoard>(
       await fetch(`/api/boards/${encodeURIComponent(boardId)}/snapshot`, {
         method: 'PUT',
@@ -212,7 +235,11 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
         body: JSON.stringify({ expectedRevision, snapshot }),
       }),
     )
-    return { snapshot: board.tldrawSnapshot, revision: board.revision }
+    return {
+      snapshot: board.tldrawSnapshot,
+      revision: board.revision,
+      snapshotAccess: board.snapshotAccess ?? 'full',
+    }
   }
 
   async pasteClipboard(
@@ -235,19 +262,19 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
   }
 
   async undoClipboard(commandId: string, expectedRevision: number): Promise<ClipboardCommandReceipt> {
-    return retryRevisionMutation(expectedRevision, async (revision) => responseJson(await fetch(`/api/clipboard/commands/${encodeURIComponent(commandId)}/undo`, {
+    return responseJson(await fetch(`/api/clipboard/commands/${encodeURIComponent(commandId)}/undo`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedRevision: revision, sessionId: this.clipboardSessionId }),
-    })))
+      body: JSON.stringify({ expectedRevision, sessionId: this.clipboardSessionId }),
+    }))
   }
 
   async redoClipboard(commandId: string, expectedRevision: number): Promise<ClipboardCommandReceipt> {
-    return retryRevisionMutation(expectedRevision, async (revision) => responseJson(await fetch(`/api/clipboard/commands/${encodeURIComponent(commandId)}/redo`, {
+    return responseJson(await fetch(`/api/clipboard/commands/${encodeURIComponent(commandId)}/redo`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedRevision: revision, sessionId: this.clipboardSessionId }),
-    })))
+      body: JSON.stringify({ expectedRevision, sessionId: this.clipboardSessionId }),
+    }))
   }
 
   async createBoardReference(
@@ -421,7 +448,9 @@ export function AppRouter() {
   }
   const route = parseProjectRoute(location.pathname)
   if (route) {
-    const routePathReferenceIds = new URLSearchParams(location.search)
+    const routeSearch = new URLSearchParams(location.search)
+    const routeFocusPanelKind = parseTradingPanelFocus(routeSearch.get(TRADING_PANEL_FOCUS_QUERY))
+    const routePathReferenceIds = routeSearch
       .get('path')
       ?.split(',')
       .map((referenceId) => referenceId.trim())
@@ -434,6 +463,7 @@ export function AppRouter() {
           {...(route.boardId ? { routeBoardId: route.boardId } : {})}
           routePathReferenceIds={routePathReferenceIds}
           routeHistoryState={location.historyState}
+          {...(routeFocusPanelKind ? { routeFocusPanelKind } : {})}
           client={client}
           navigate={navigate}
           enableRealtime={
@@ -445,7 +475,18 @@ export function AppRouter() {
     )
   }
   if (location.pathname === '/') {
-    return <ProjectCenterPage client={client} onOpenProject={(projectId) => navigate(`/projects/${projectId}`)} />
+    return <ProjectCenterPage
+      client={client}
+      onOpenProject={(projectId, boardId, options) => {
+        const path = boardId
+          ? `/projects/${encodeURIComponent(projectId)}/boards/${encodeURIComponent(boardId)}`
+          : `/projects/${encodeURIComponent(projectId)}`
+        const search = options?.focusPanelKind
+          ? `?${TRADING_PANEL_FOCUS_QUERY}=${encodeURIComponent(options.focusPanelKind)}`
+          : ''
+        navigate(`${path}${search}`)
+      }}
+    />
   }
   return (
     <main className="not-found-page">

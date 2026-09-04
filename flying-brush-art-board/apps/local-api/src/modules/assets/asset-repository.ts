@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from 'node:path'
 
 import type { LocalDatabase } from '../../db/schema.js'
+import { assertAssetContentValid, AssetContentValidationError } from './asset-content-validation.js'
 
 export interface StoredAsset {
   sha256: string
@@ -23,7 +24,10 @@ export interface AssetUsageRecord {
 export interface PutAssetMetadata {
   mime: string
   createdAt: string
+  ownerOpenId?: string
 }
+
+export type RemoveOwnedAssetResult = 'not-owned' | 'in-use' | 'released' | 'removed'
 
 export interface TransactionalAssetPut {
   asset: StoredAsset
@@ -83,6 +87,15 @@ export class AssetHashMetadataMismatchError extends Error {
   }
 }
 
+export class AssetStoredContentMismatchError extends Error {
+  readonly code = 'ASSET_STORED_CONTENT_MISMATCH'
+
+  constructor() {
+    super('ASSET_STORED_CONTENT_MISMATCH')
+    this.name = 'AssetStoredContentMismatchError'
+  }
+}
+
 export class AssetUsageRepository {
   constructor(private readonly database: LocalDatabase) {}
 
@@ -126,9 +139,19 @@ export class AssetRepository {
   }
 
   readBytes(sha256: string): Uint8Array | undefined {
-    if (!this.get(sha256)) return undefined
+    const asset = this.get(sha256)
+    if (!asset) return undefined
     const path = join(this.assetDirectory, sha256)
-    return existsSync(path) ? new Uint8Array(readFileSync(path)) : undefined
+    if (!existsSync(path)) return undefined
+    const bytes = new Uint8Array(readFileSync(path))
+    if (bytes.byteLength !== asset.size || this.hash(bytes) !== sha256) return undefined
+    try {
+      assertAssetContentValid(bytes, asset.mime)
+      return bytes
+    } catch (error) {
+      if (error instanceof AssetContentValidationError) return undefined
+      throw error
+    }
   }
 
   putByHash(bytes: Uint8Array, metadata: PutAssetMetadata): StoredAsset {
@@ -136,12 +159,18 @@ export class AssetRepository {
   }
 
   putByHashWithResult(bytes: Uint8Array, metadata: PutAssetMetadata): StoredAssetPutResult {
+    assertAssetContentValid(bytes, metadata.mime)
     const sha256 = this.hash(bytes)
     const existedBefore = Boolean(this.get(sha256))
     const createdFile = this.writeContentIfMissing(sha256, bytes)
 
     try {
-      const asset = this.insertOrValidateAsset(sha256, bytes, metadata)
+      const persist = this.database.transaction(() => {
+        const asset = this.insertOrValidateAsset(sha256, bytes, metadata)
+        if (metadata.ownerOpenId) this.claimUploadOwnership(sha256, metadata.ownerOpenId, metadata.createdAt)
+        return asset
+      })
+      const asset = persist()
       return { asset, created: !existedBefore }
     } catch (error) {
       this.compensateFile(sha256, createdFile)
@@ -160,17 +189,44 @@ export class AssetRepository {
     return removed
   }
 
+  hasUploadOwnership(sha256: string, ownerOpenId: string | undefined): boolean {
+    if (!ownerOpenId) return false
+    return Boolean(this.database.prepare(
+      'SELECT 1 FROM asset_upload_owners WHERE sha256 = ? AND owner_open_id = ? LIMIT 1',
+    ).get(sha256, ownerOpenId))
+  }
+
+  removeUnusedOwnedBy(sha256: string, ownerOpenId: string): RemoveOwnedAssetResult {
+    const remove = this.database.transaction((): RemoveOwnedAssetResult => {
+      if (!this.hasUploadOwnership(sha256, ownerOpenId)) return 'not-owned'
+      if (this.database.prepare('SELECT 1 FROM asset_usages WHERE sha256 = ? LIMIT 1').get(sha256)) return 'in-use'
+
+      this.database.prepare('DELETE FROM asset_upload_owners WHERE sha256 = ? AND owner_open_id = ?')
+        .run(sha256, ownerOpenId)
+      if (this.database.prepare('SELECT 1 FROM asset_upload_owners WHERE sha256 = ? LIMIT 1').get(sha256)) {
+        return 'released'
+      }
+      const removed = this.database.prepare('DELETE FROM assets WHERE sha256 = ?').run(sha256).changes > 0
+      return removed ? 'removed' : 'not-owned'
+    })
+    const result = remove()
+    if (result === 'removed') rmSync(join(this.assetDirectory, sha256), { force: true })
+    return result
+  }
+
   /**
    * Stores an asset while a caller-owned SQLite transaction is active. Call
    * `rollbackFile` only after that transaction has rolled back.
    */
   putByHashInTransaction(bytes: Uint8Array, metadata: PutAssetMetadata): TransactionalAssetPut {
+    assertAssetContentValid(bytes, metadata.mime)
     const sha256 = this.hash(bytes)
     const existedBefore = Boolean(this.get(sha256))
     const createdFile = this.writeContentIfMissing(sha256, bytes)
 
     try {
       const asset = this.insertOrValidateAsset(sha256, bytes, metadata)
+      if (metadata.ownerOpenId) this.claimUploadOwnership(sha256, metadata.ownerOpenId, metadata.createdAt)
       return {
         asset,
         rollbackFile: () => {
@@ -184,6 +240,7 @@ export class AssetRepository {
   }
 
   materializeForBoard(input: MaterializeAssetForBoardInput): StoredAsset {
+    assertAssetContentValid(input.bytes, input.mime)
     const sha256 = this.hash(input.bytes)
     const createdFile = this.writeContentIfMissing(sha256, input.bytes)
 
@@ -213,7 +270,13 @@ export class AssetRepository {
 
   private writeContentIfMissing(sha256: string, bytes: Uint8Array): boolean {
     const path = join(this.assetDirectory, sha256)
-    if (existsSync(path)) return false
+    if (existsSync(path)) {
+      const existing = new Uint8Array(readFileSync(path))
+      if (existing.byteLength !== bytes.byteLength || this.hash(existing) !== sha256) {
+        throw new AssetStoredContentMismatchError()
+      }
+      return false
+    }
 
     const temporaryPath = `${path}.tmp-${process.pid}`
     writeFileSync(temporaryPath, bytes)
@@ -240,6 +303,14 @@ export class AssetRepository {
       .prepare('INSERT INTO assets (sha256, mime, size, created_at) VALUES (@sha256, @mime, @size, @createdAt)')
       .run(asset)
     return asset
+  }
+
+  private claimUploadOwnership(sha256: string, ownerOpenId: string, createdAt: string): void {
+    const normalizedOwner = ownerOpenId.trim()
+    if (!normalizedOwner) throw new Error('ASSET_OWNER_REQUIRED')
+    this.database.prepare(`INSERT INTO asset_upload_owners(sha256,owner_open_id,created_at)
+      VALUES (?,?,?) ON CONFLICT(sha256,owner_open_id) DO NOTHING`)
+      .run(sha256, normalizedOwner, createdAt)
   }
 
   private compensateFile(sha256: string, createdFile: boolean): void {

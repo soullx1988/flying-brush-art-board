@@ -149,9 +149,9 @@ test('smokes the local multi-board edit, clipboard, drag-import, and export jour
   }).toBe(true)
   const sourceBoard = await readBoard(request, sourceBoardId)
   const targetBoard = await readBoard(request, targetBoardId)
-  // Realtime document changes do not advance the REST revision reserved for
-  // serialized structural commands.
-  expect(sourceBoard.revision).toBe(0)
+  // Realtime and structural writes share one durable revision so later
+  // whole-snapshot commands cannot silently overwrite this source edit.
+  expect(sourceBoard.revision).toBeGreaterThan(0)
   expect(snapshotStore(sourceBoard)[sourceShapeId]).toBeDefined()
   expect(targetBoard.revision).toBeGreaterThanOrEqual(2)
   expect(Object.keys(snapshotStore(targetBoard)).filter((id) => id.startsWith('shape:'))).not.toContain(sourceShapeId)

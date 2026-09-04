@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 
 import type { BoardRepository } from '../boards/board-repository.js'
+import type { ProjectRepository } from '../projects/project-repository.js'
+import { canAccessBoard, canManageProject } from '../../privacy/board-access-policy.js'
 import { CommentEventHub, type CommentChangedEventInput } from './comment-events.js'
 import { CommentRepository, type CommentThreadStatus } from './comment-repository.js'
 
@@ -47,6 +49,7 @@ export interface CommentRouteOptions {
 export function registerCommentRoutes(
   app: FastifyInstance,
   boards: BoardRepository,
+  projects: ProjectRepository,
   comments: CommentRepository,
   options: CommentRouteOptions = {},
 ): void {
@@ -55,12 +58,33 @@ export function registerCommentRoutes(
   const revalidate = options.revalidate ?? ((request: FastifyRequest) => Boolean(request.user))
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000
   const revalidateIntervalMs = options.revalidateIntervalMs ?? 60_000
+  const boardAllowed = (boardId: string, actorOpenId: string | undefined) => {
+    const board = boards.get(boardId)
+    return Boolean(board && canAccessBoard(
+      board,
+      projects.get(board.projectId),
+      actorOpenId,
+      projects.isMember(board.projectId, actorOpenId),
+    ))
+  }
+  const requireBoard = (boardId: string, actorOpenId: string | undefined, reply: any) => {
+    const board = boards.get(boardId)
+    if (!board) {
+      reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+      return undefined
+    }
+    if (!boardAllowed(boardId, actorOpenId)) {
+      reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+      return undefined
+    }
+    return board
+  }
 
   app.get('/api/boards/:boardId/comment-events', async (request, reply) => {
     if (!request.user) return reply.code(401).send({ code: 'SESSION_EXPIRED' })
     const params = boardParams.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
-    if (!boards.get(params.data.boardId)) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (!requireBoard(params.data.boardId, request.user.openId, reply)) return
     if (!events.canSubscribe(params.data.boardId)) return reply.code(429).send({ code: 'COMMENT_EVENT_CONNECTION_LIMIT' })
 
     reply.hijack()
@@ -98,14 +122,16 @@ export function registerCommentRoutes(
     request.raw.once('close', cleanup)
     heartbeat = setInterval(() => { if (!write(': heartbeat\n\n')) cleanup() }, heartbeatIntervalMs)
     revalidation = setInterval(() => {
-      void Promise.resolve(revalidate(request)).then((valid) => { if (!valid) cleanup() }, cleanup)
+      void Promise.resolve(revalidate(request)).then((valid) => {
+        if (!valid || !boardAllowed(params.data.boardId, request.user?.openId)) cleanup()
+      }, cleanup)
     }, revalidateIntervalMs)
   })
 
   app.get('/api/boards/:boardId/comment-state', async (request, reply) => {
     const params = boardParams.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
-    if (!boards.get(params.data.boardId)) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (!requireBoard(params.data.boardId, request.user?.openId, reply)) return
     return {
       threads: comments.listThreads(params.data.boardId),
       messages: comments.listBoardMessages(params.data.boardId),
@@ -115,7 +141,7 @@ export function registerCommentRoutes(
     const params = boardParams.safeParse(request.params)
     const query = listQuery.safeParse(request.query)
     if (!params.success || !query.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
-    if (!boards.get(params.data.boardId)) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (!requireBoard(params.data.boardId, request.user?.openId, reply)) return
     return comments.listThreads(params.data.boardId, query.data.status as CommentThreadStatus | undefined)
   })
 
@@ -125,8 +151,8 @@ export function registerCommentRoutes(
     const params = boardParams.safeParse(request.params)
     const input = createThread.safeParse(request.body)
     if (!params.success || !input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
-    const board = boards.get(params.data.boardId)
-    if (!board) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    const board = requireBoard(params.data.boardId, openId, reply)
+    if (!board) return
     const created = comments.createThread({
       projectId: board.projectId,
       boardId: board.id,
@@ -145,7 +171,9 @@ export function registerCommentRoutes(
   app.get('/api/comment-threads/:threadId/messages', async (request, reply) => {
     const params = threadParams.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
-    if (!comments.getThread(params.data.threadId)) return reply.code(404).send({ code: 'COMMENT_THREAD_NOT_FOUND' })
+    const thread = comments.getThread(params.data.threadId)
+    if (!thread) return reply.code(404).send({ code: 'COMMENT_THREAD_NOT_FOUND' })
+    if (!requireBoard(thread.boardId, request.user?.openId, reply)) return
     return comments.listMessages(params.data.threadId)
   })
 
@@ -156,6 +184,7 @@ export function registerCommentRoutes(
     const input = addMessage.safeParse(request.body)
     if (!params.success || !input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
     const thread = comments.getThread(params.data.threadId)
+    if (thread && !requireBoard(thread.boardId, openId, reply)) return
     const message = comments.addMessage(params.data.threadId, openId, input.data.body)
     if (!message || !thread) return reply.code(404).send({ code: 'COMMENT_THREAD_NOT_FOUND' })
     publish({ boardId: thread.boardId, threadId: thread.id, action: 'reply', messageId: message.id })
@@ -168,6 +197,9 @@ export function registerCommentRoutes(
     const params = threadParams.safeParse(request.params)
     const input = threadUpdate.safeParse(request.body)
     if (!params.success || !input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
+    const current = comments.getThread(params.data.threadId)
+    if (!current) return reply.code(404).send({ code: 'COMMENT_THREAD_NOT_FOUND' })
+    if (!requireBoard(current.boardId, openId, reply)) return
     const thread = 'status' in input.data
       ? comments.setStatus(params.data.threadId, input.data.status)
       : comments.updateAnchor(params.data.threadId, input.data)
@@ -186,6 +218,10 @@ export function registerCommentRoutes(
     const params = threadParams.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
     const thread = comments.getThread(params.data.threadId)
+    if (thread && !requireBoard(thread.boardId, openId, reply)) return
+    if (thread && thread.createdBy !== openId && !canManageProject(projects.get(thread.projectId)!, openId)) {
+      return reply.code(403).send({ code: 'COMMENT_THREAD_DELETE_FORBIDDEN' })
+    }
     if (!thread || !comments.deleteThread(params.data.threadId)) return reply.code(404).send({ code: 'COMMENT_THREAD_NOT_FOUND' })
     publish({ boardId: thread.boardId, threadId: thread.id, action: 'delete' })
     return reply.code(204).send()
@@ -197,6 +233,7 @@ export function registerCommentRoutes(
     const params = messageParams.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
     const thread = comments.getThreadByMessageId(params.data.messageId)
+    if (thread && !requireBoard(thread.boardId, openId, reply)) return
     if (!thread || !comments.deleteMessage(params.data.messageId, openId)) return reply.code(404).send({ code: 'COMMENT_MESSAGE_NOT_FOUND' })
     publish({ boardId: thread.boardId, threadId: thread.id, action: 'delete', messageId: params.data.messageId })
     return reply.code(204).send()

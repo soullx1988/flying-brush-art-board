@@ -1,4 +1,4 @@
-import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { BoardReferenceRecord, StoredBoard } from '@infinite-board/board-core'
@@ -158,6 +158,16 @@ function createClient(references: BoardReferenceRecord[] = []): WorkspaceClient 
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
+}
+
 function showAllBoards() {
   const header = document.querySelector<HTMLElement>('.board-page__header')!
   fireEvent.click(within(header).getByRole('button', { name: '全部画板' }))
@@ -175,6 +185,65 @@ function editActiveWorkspace(snapshot: unknown) {
 }
 
 describe('WorkspaceShell', () => {
+  it('keeps the local canvas unmounted while realtime snapshot access is unresolved', async () => {
+    type LoadedBoard = Awaited<ReturnType<WorkspaceClient['loadBoard']>>
+    let resolveLoadBoard: ((value: LoadedBoard) => void) | undefined
+    const client = createClient()
+    vi.mocked(client.loadBoard).mockImplementationOnce(() => new Promise<LoadedBoard>((resolve) => {
+      resolveLoadBoard = resolve
+    }))
+
+    render(
+      <WorkspaceShell
+        enableRealtime
+        projectId="project-1"
+        routeBoardId="board-1"
+        client={client}
+        navigate={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(client.loadBoard).toHaveBeenCalledWith('board-1'))
+    expect(screen.queryByTestId('canvas-editor')).not.toBeInTheDocument()
+    expect(document.querySelector('.loading-state')).toBeVisible()
+
+    await act(async () => {
+      resolveLoadBoard?.({
+        snapshot: { store: {} },
+        revision: 7,
+        snapshotAccess: 'projected',
+      })
+      await Promise.resolve()
+    })
+
+    expect(await screen.findByTestId('canvas-editor')).toBeVisible()
+  })
+
+  it('does not mount the realtime room for a projected private-reference snapshot', async () => {
+    const client = createClient()
+    vi.mocked(client.loadBoard).mockResolvedValue({
+      snapshot: { store: {} },
+      revision: 7,
+      snapshotAccess: 'projected',
+    })
+
+    render(
+      <WorkspaceShell
+        enableRealtime
+        projectId="project-1"
+        routeBoardId="board-1"
+        client={client}
+        navigate={vi.fn()}
+      />,
+    )
+
+    expect(await screen.findByText('此画板包含你无权访问的私密引用，已以只读模式打开，并停用实时协作。')).toBeVisible()
+    expect(screen.getAllByText('只读').length).toBeGreaterThan(0)
+    expect(screen.getByTestId('canvas-editor')).toBeVisible()
+    expect(screen.queryByText('正在连接协作房间…')).not.toBeInTheDocument()
+    expect(screen.queryByText('协作连接中断，正在重新连接…')).not.toBeInTheDocument()
+  })
+
   it('resolves reference previews from the live open-tab snapshot instead of stale project data', async () => {
     render(
       <WorkspaceShell
@@ -359,6 +428,110 @@ describe('WorkspaceShell', () => {
       expect.objectContaining({ replace: true }),
     ))
     expect(screen.getByTestId('canvas-editor')).toBeInTheDocument()
+  })
+
+  it('does not invalidate an inflight route transition when the same route rerenders', async () => {
+    const client = createClient()
+    const routeLoad = deferred<{ snapshot: unknown; revision: number }>()
+    vi.mocked(client.loadBoard).mockImplementation((boardId) => {
+      if (boardId === 'board-2') return routeLoad.promise
+      const board = boards.find((candidate) => candidate.id === boardId)!
+      return Promise.resolve({ snapshot: board.tldrawSnapshot, revision: board.revision })
+    })
+    const firstNavigate = vi.fn()
+    const secondNavigate = vi.fn()
+
+    const { rerender } = render(
+      <WorkspaceShell
+        enableRealtime={false}
+        projectId="project-1"
+        routeBoardId="board-2"
+        client={client}
+        navigate={firstNavigate}
+      />,
+    )
+
+    await waitFor(() => expect(client.loadBoard).toHaveBeenCalledWith('board-2'))
+
+    rerender(
+      <WorkspaceShell
+        enableRealtime={false}
+        projectId="project-1"
+        routeBoardId="board-2"
+        client={client}
+        navigate={secondNavigate}
+      />,
+    )
+
+    await act(async () => {
+      routeLoad.resolve({ snapshot: { store: {} }, revision: 7 })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(secondNavigate).toHaveBeenCalledWith(
+      '/projects/project-1/boards/board-2',
+      expect.objectContaining({ replace: true, state: expect.objectContaining({ tabId: expect.any(String) }) }),
+    ))
+    expect(firstNavigate).not.toHaveBeenCalled()
+    expect(client.loadBoard).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a stale route transition from overriding a newer route after rerender', async () => {
+    const client = createClient()
+    const board2Load = deferred<{ snapshot: unknown; revision: number }>()
+    const board3Load = deferred<{ snapshot: unknown; revision: number }>()
+    vi.mocked(client.loadBoard).mockImplementation((boardId) => {
+      if (boardId === 'board-2') return board2Load.promise
+      if (boardId === 'board-3') return board3Load.promise
+      const board = boards.find((candidate) => candidate.id === boardId)!
+      return Promise.resolve({ snapshot: board.tldrawSnapshot, revision: board.revision })
+    })
+    const navigate = vi.fn()
+
+    const { rerender } = render(
+      <WorkspaceShell
+        enableRealtime={false}
+        projectId="project-1"
+        routeBoardId="board-2"
+        client={client}
+        navigate={navigate}
+      />,
+    )
+
+    await waitFor(() => expect(client.loadBoard).toHaveBeenCalledWith('board-2'))
+
+    rerender(
+      <WorkspaceShell
+        enableRealtime={false}
+        projectId="project-1"
+        routeBoardId="board-3"
+        client={client}
+        navigate={navigate}
+      />,
+    )
+
+    expect(client.loadBoard).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      board2Load.resolve({ snapshot: { store: {} }, revision: 2 })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(client.loadBoard).toHaveBeenCalledWith('board-3'))
+    expect(navigate).not.toHaveBeenCalledWith(
+      '/projects/project-1/boards/board-2',
+      expect.anything(),
+    )
+
+    await act(async () => {
+      board3Load.resolve({ snapshot: { store: {} }, revision: 3 })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(
+      '/projects/project-1/boards/board-3',
+      expect.objectContaining({ replace: true, state: expect.objectContaining({ tabId: expect.any(String) }) }),
+    ))
   })
 
   it('makes extra normal-app tabs reachable through the overflow menu', async () => {
@@ -761,8 +934,80 @@ describe('WorkspaceShell', () => {
         },
       },
       undefined,
-      { beforePersist: expect.any(Function) },
+      expect.objectContaining({
+        beforePersist: expect.any(Function),
+        getExpectedRevision: expect.any(Function),
+      }),
     ))
+  })
+
+  it('queues visual imports on the current board until the prior commit is adopted', async () => {
+    const client = createClient()
+    const firstImport = deferred<Awaited<ReturnType<typeof importVisualFile>>>()
+    vi.mocked(importVisualFile).mockReset()
+    vi.mocked(importVisualFile)
+      .mockImplementationOnce(() => firstImport.promise)
+      .mockResolvedValueOnce({
+        fileName: 'Second.pdf',
+        boardId: 'board-1',
+        revision: 2,
+        snapshot: { store: {} },
+        createdBoard: false,
+        shapeCount: 1,
+        rasterized: true,
+      })
+    render(
+      <WorkspaceShell
+        enableRealtime={false}
+        projectId="project-1"
+        routeBoardId="board-1"
+        client={client}
+        navigate={vi.fn()}
+      />,
+    )
+    await screen.findByRole('tab', { name: /Overview/ })
+
+    const firstFile = new File(['first'], 'First.pdf', { type: 'application/pdf' })
+    const secondFile = new File(['second'], 'Second.pdf', { type: 'application/pdf' })
+    fireEvent.dragEnter(window, { dataTransfer: { types: ['Files'], files: [firstFile] } })
+    const canvasTarget = document.querySelector<HTMLElement>('[data-drop-target="canvas"]')!
+    const firstDrop = createEvent.drop(canvasTarget, { dataTransfer: { files: [firstFile] } })
+    Object.defineProperties(firstDrop, {
+      clientX: { value: 120 },
+      clientY: { value: 240 },
+    })
+    fireEvent(canvasTarget, firstDrop)
+
+    await waitFor(() => expect(importVisualFile).toHaveBeenCalledTimes(1))
+
+    fireEvent.dragEnter(window, { dataTransfer: { types: ['Files'], files: [secondFile] } })
+    const secondCanvasTarget = document.querySelector<HTMLElement>('[data-drop-target="canvas"]')!
+    const secondDrop = createEvent.drop(secondCanvasTarget, { dataTransfer: { files: [secondFile] } })
+    Object.defineProperties(secondDrop, {
+      clientX: { value: 180 },
+      clientY: { value: 300 },
+    })
+    fireEvent(secondCanvasTarget, secondDrop)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(importVisualFile).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      firstImport.resolve({
+        fileName: 'First.pdf',
+        boardId: 'board-1',
+        revision: 1,
+        snapshot: { store: {} },
+        createdBoard: false,
+        shapeCount: 3,
+        rasterized: true,
+      })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(importVisualFile).toHaveBeenCalledTimes(2))
   })
 
   it('imports a .drawio drop with recoverable references through one atomic board command', async () => {
@@ -990,8 +1235,8 @@ describe('WorkspaceShell', () => {
 
     expect(canvasEditorProps?.onBoardReferenceOpen).toBeTypeOf('function')
     canvasEditorProps?.onBoardReferenceOpen?.({ props: { referenceId: reference.id } })
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith(
-      '/projects/project-1/boards/board-2?path=reference-1-2',
+    await waitFor(() => expect(navigate).toHaveBeenLastCalledWith(
+      '/projects/project-1/boards/board-2',
       expect.objectContaining({ state: expect.objectContaining({ tabId: expect.any(String) }) }),
     ))
   })

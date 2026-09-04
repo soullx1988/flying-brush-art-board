@@ -23,6 +23,7 @@ import {
   DEFAULT_IBOARD_IMPORT_SESSION_MAX_BYTES,
   IboardImportSessionStore,
 } from './iboard-routes.js'
+import { IBOARD_BOARD_SNAPSHOT_UNSUPPORTED } from './iboard-runtime-compatibility.js'
 
 function setUint32LittleEndian(bytes: Uint8Array, offset: number, value: number): void {
   bytes[offset] = value & 0xff
@@ -74,8 +75,62 @@ describe('.iboard import routes', () => {
     rmSync(assetDirectory, { recursive: true, force: true })
   })
 
+  function runtimeCompatibleFixture() {
+    const fixture = createReferenceGraphProjectFixture()
+    for (const board of fixture.boards) {
+      const snapshot = board.tldrawSnapshot as { schema?: unknown; store: Record<string, Record<string, unknown>> }
+      delete snapshot.schema
+      const image = snapshot.store['shape:image-a']
+      if (image) {
+        Object.assign(image, { x: 0, y: 0, rotation: 0, isLocked: false, opacity: 1 })
+        image.props = {
+          assetId: 'asset:image-a', w: 20, h: 20, playing: false, url: '', crop: null,
+          flipX: false, flipY: false, altText: '',
+        }
+      }
+      const asset = snapshot.store['asset:image-a']
+      if (asset) {
+        asset.props = {
+          src: asset.props && typeof asset.props === 'object'
+            ? (asset.props as { src?: unknown }).src ?? null
+            : null,
+          name: 'fixture.png', mimeType: 'image/png', w: 20, h: 20, isAnimated: false,
+        }
+      }
+      const binding = snapshot.store['binding:image-to-ref']
+      if (binding) {
+        binding.props = {
+          terminal: 'end', normalizedAnchor: { x: 0.5, y: 0.5 },
+          isExact: false, isPrecise: false, snap: 'none',
+        }
+      }
+    }
+    return fixture
+  }
+
   function archive(): Uint8Array {
-    return exportProjectToIboard(createReferenceGraphProjectFixture())
+    return exportProjectToIboard(runtimeCompatibleFixture())
+  }
+
+  function archiveWithUnknownShape(): Uint8Array {
+    const fixture = runtimeCompatibleFixture()
+    const board = fixture.boards.find((item) => item.id === 'board-c')!
+    const snapshot = board.tldrawSnapshot as { store: Record<string, unknown> }
+    snapshot.store['shape:alien'] = {
+      id: 'shape:alien',
+      typeName: 'shape',
+      type: 'alien-widget',
+      parentId: 'page:board-c',
+      index: 'a2',
+      x: 0,
+      y: 0,
+      rotation: 0,
+      isLocked: false,
+      opacity: 1,
+      meta: {},
+      props: {},
+    }
+    return exportProjectToIboard(fixture)
   }
 
   function seedExportProject() {
@@ -140,6 +195,24 @@ describe('.iboard import routes', () => {
     ])
   })
 
+  it('exports a legacy project whose private root is omitted with a visible replacement root', async () => {
+    const fixture = seedExportProject()
+    database.prepare(`UPDATE board_access_policies
+      SET access_level='owner-only',owner_open_id='another-user'
+      WHERE board_id=?`).run(fixture.project.rootBoardId)
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/projects/${fixture.project.id}/export.iboard`,
+    })
+
+    expect(response.statusCode).toBe(200)
+    const decoded = decodeIboard(new Uint8Array(response.rawPayload))
+    expect(decoded.manifest.rootBoardId).not.toBe(fixture.project.rootBoardId)
+    expect(decoded.boards.some((board) => board.id === decoded.manifest.rootBoardId)).toBe(true)
+    expect(decoded.boards.some((board) => board.id === fixture.project.rootBoardId)).toBe(false)
+  })
+
   it('reports missing projects and missing asset bytes without returning a partial archive', async () => {
     const missingProject = await app.inject({
       method: 'GET',
@@ -180,7 +253,7 @@ describe('.iboard import routes', () => {
         boardCount: 4,
         referenceCount: 6,
         maxEmbedDepth: 3,
-        assetBytes: 8,
+        assetBytes: 70,
       },
     })
     expect((await app.inject({ method: 'GET', url: '/api/projects/target-project' })).json()).toMatchObject({
@@ -262,6 +335,69 @@ describe('.iboard import routes', () => {
       },
     })
     expect(commit.statusCode).toBe(404)
+  })
+
+  it('fails closed on inspect for an unknown shape and commit leaves no residue', async () => {
+    const before = {
+      project: (await app.inject({ method: 'GET', url: '/api/projects/target-project' })).json(),
+      assetUsages: database.prepare('SELECT COUNT(*) AS count FROM asset_usages').get(),
+    }
+    const inspected = await inspect(archiveWithUnknownShape())
+    const body = inspected.json() as { sessionId: string; inspection: { compatible: boolean; issues: unknown[] } }
+
+    expect(inspected.statusCode).toBe(201)
+    expect(body.inspection).toMatchObject({
+      compatible: false,
+      issues: [{ code: IBOARD_BOARD_SNAPSHOT_UNSUPPORTED }],
+    })
+
+    const commit = await app.inject({
+      method: 'POST',
+      url: '/api/import/iboard/commit',
+      payload: {
+        sessionId: body.sessionId,
+        targetProjectId: 'target-project',
+        mode: 'merge',
+        openImportedRootInNewTab: true,
+      },
+    })
+
+    expect(commit.statusCode).toBe(409)
+    expect(commit.json()).toMatchObject({
+      code: 'IBOARD_IMPORT_INCOMPATIBLE',
+      inspection: {
+        compatible: false,
+        issues: [{ code: IBOARD_BOARD_SNAPSHOT_UNSUPPORTED }],
+      },
+    })
+    expect((await app.inject({ method: 'GET', url: '/api/projects/target-project' })).json()).toEqual(before.project)
+    expect(database.prepare('SELECT COUNT(*) AS count FROM asset_usages').get()).toEqual(before.assetUsages)
+  })
+
+  it('returns the stable snapshot code when commit defense catches a custom analyzer', async () => {
+    await app.close()
+    const sessions = new IboardImportSessionStore({ analyzeArchive: inspectAndDecodeIboard })
+    app = await buildApp({ database, assetDirectory, iboardImportSessionStore: sessions })
+    const before = (await app.inject({ method: 'GET', url: '/api/projects/target-project' })).json()
+    const inspected = (await inspect(archiveWithUnknownShape())).json() as { sessionId: string }
+
+    const commit = await app.inject({
+      method: 'POST',
+      url: '/api/import/iboard/commit',
+      payload: {
+        sessionId: inspected.sessionId,
+        targetProjectId: 'target-project',
+        mode: 'merge',
+        openImportedRootInNewTab: true,
+      },
+    })
+
+    expect(commit.statusCode).toBe(409)
+    expect(commit.json()).toMatchObject({
+      code: IBOARD_BOARD_SNAPSHOT_UNSUPPORTED,
+      boardId: expect.any(String),
+    })
+    expect((await app.inject({ method: 'GET', url: '/api/projects/target-project' })).json()).toEqual(before)
   })
 
   it('uses the archive preflight limit instead of the unrelated per-asset upload limit', async () => {
@@ -349,17 +485,10 @@ describe('.iboard import routes', () => {
   })
 
   it('rejects compressed JSON whose declared retained payload exceeds the session quota', async () => {
-    const project = createReferenceGraphProjectFixture()
+    const project = runtimeCompatibleFixture()
     const board = project.boards.find((item) => item.id === 'board-c')!
-    const snapshot = board.tldrawSnapshot as { store: Record<string, unknown> }
-    snapshot.store['shape:large-compressed-payload'] = {
-      id: 'shape:large-compressed-payload',
-      typeName: 'shape',
-      type: 'text',
-      parentId: 'page:board-c',
-      index: 'a2',
-      props: { text: 'x'.repeat(512 * 1024) },
-    }
+    const snapshot = board.tldrawSnapshot as { store: Record<string, Record<string, unknown>> }
+    snapshot.store['page:board-c']!.meta = { payload: 'x'.repeat(512 * 1024) }
     const bytes = exportProjectToIboard(project)
     expect(bytes.byteLength).toBeLessThan(10 * 1024)
 

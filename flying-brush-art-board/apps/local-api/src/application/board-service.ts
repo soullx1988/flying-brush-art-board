@@ -42,7 +42,7 @@ export class BoardApplicationService {
     const timestamp = this.now().toISOString()
     const board: StoredBoard = {
       id: `board-${randomUUID()}`, projectId, title: title.trim(), tldrawSnapshot: { store: {} },
-      revision: 0, createdAt: timestamp, updatedAt: timestamp,
+      accessLevel: 'project', revision: 0, createdAt: timestamp, updatedAt: timestamp,
     }
     if (!board.title) throw Object.assign(new Error('VALIDATION_ERROR'), { code: 'VALIDATION_ERROR' })
     this.boards.create(board)

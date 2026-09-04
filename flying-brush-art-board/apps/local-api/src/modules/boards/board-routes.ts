@@ -8,9 +8,16 @@ import { z } from 'zod'
 
 import { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import { ProjectRepository } from '../projects/project-repository.js'
-import { BoardRepository, RevisionConflictError } from './board-repository.js'
+import { BoardRepository, ProtectedCoreMutationError, RevisionConflictError } from './board-repository.js'
 import type { BoardDocumentCoordinator } from '../realtime/board-document-coordinator.js'
 import type { BoardDeletionCoordinator } from '../realtime/board-deletion-coordinator.js'
+import {
+  boardReadProjection,
+  boardSnapshotAccessForActor,
+  canAccessBoard,
+} from '../../privacy/board-access-policy.js'
+
+const PROJECTED_BOARD_READ_ONLY_CODE = 'BOARD_SNAPSHOT_PROJECTED_READ_ONLY'
 
 const saveSnapshotSchema = z
   .object({
@@ -32,11 +39,25 @@ export function registerBoardRoutes(
   coordinator?: BoardDocumentCoordinator,
   deletions?: BoardDeletionCoordinator,
 ): void {
+  const readableBoard = (boardId: string, actorOpenId: string | undefined) => {
+    const board = boards.get(boardId)
+    if (!board) return { status: 'missing' as const }
+    const project = projects.get(board.projectId)
+    if (!canAccessBoard(board, project, actorOpenId, projects.isMember(board.projectId, actorOpenId))) return { status: 'denied' as const }
+    return {
+      status: 'ok' as const,
+      board: boardReadProjection(board, boards.listByProject(board.projectId), actorOpenId),
+      storedBoard: board,
+    }
+  }
+
   app.get('/api/boards/:boardId', async (request, reply) => {
     const params = boardPathParamsSchema.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: params.error.issues })
-    const board = boards.get(params.data.boardId)
-    return board ?? reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    const access = readableBoard(params.data.boardId, request.user?.openId)
+    if (access.status === 'missing') return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (access.status === 'denied') return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    return access.board
   })
 
   // Compatibility read endpoint for clients that use the snapshot resource
@@ -44,15 +65,26 @@ export function registerBoardRoutes(
   app.get('/api/boards/:boardId/snapshot', async (request, reply) => {
     const params = boardPathParamsSchema.safeParse(request.params)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: params.error.issues })
-    const board = boards.get(params.data.boardId)
-    if (!board) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
-    return { snapshot: board.tldrawSnapshot, revision: board.revision }
+    const access = readableBoard(params.data.boardId, request.user?.openId)
+    if (access.status === 'missing') return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (access.status === 'denied') return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    return {
+      snapshot: access.board.tldrawSnapshot,
+      revision: access.board.revision,
+      snapshotAccess: access.board.snapshotAccess,
+    }
   })
 
   app.post('/api/boards/:boardId/duplicate', async (request, reply) => {
     const params = boardPathParamsSchema.safeParse(request.params)
     const input = duplicateBoardSchema.safeParse(request.body)
     if (!params.success || !input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
+    const access = readableBoard(params.data.boardId, request.user?.openId)
+    if (access.status === 'missing') return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (access.status === 'denied') return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    if (access.board.snapshotAccess === 'projected') {
+      return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+    }
     try {
       return reply.code(201).send(boards.duplicate(params.data.boardId, input.data))
     } catch (error) {
@@ -73,6 +105,12 @@ export function registerBoardRoutes(
     try {
       const current = boards.get(params.data.boardId)
       if (!current) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+      if (!canAccessBoard(current, projects.get(current.projectId), request.user?.openId, projects.isMember(current.projectId, request.user?.openId))) {
+        return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+      }
+      if (boardSnapshotAccessForActor(current, boards.listByProject(current.projectId), request.user?.openId) === 'projected') {
+        return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+      }
       let saved
       if (coordinator) {
         await coordinator.runCommand({
@@ -91,10 +129,13 @@ export function registerBoardRoutes(
         saved = boards.saveSnapshot(params.data.boardId, input.data.expectedRevision, input.data.snapshot)
       }
       if (!coordinator) await onSnapshotCommitted?.(saved.id, saved.tldrawSnapshot)
-      return saved
+      return boardReadProjection(saved, boards.listByProject(saved.projectId), request.user?.openId)
     } catch (error) {
       if (error instanceof RevisionConflictError) {
         return reply.code(409).send({ code: 'REVISION_CONFLICT', currentRevision: error.currentRevision })
+      }
+      if (error instanceof ProtectedCoreMutationError) {
+        return reply.code(409).send({ code: error.code, recordId: error.recordId, reason: error.reason })
       }
       if (
         error instanceof BoardReferenceConsistencyError &&
@@ -111,7 +152,9 @@ export function registerBoardRoutes(
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: params.error.issues })
     const input = renameBoardSchema.safeParse(request.body)
     if (!input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: input.error.issues })
-    if (!boards.get(params.data.boardId)) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    const access = readableBoard(params.data.boardId, request.user?.openId)
+    if (access.status === 'missing') return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (access.status === 'denied') return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
     return boards.rename(params.data.boardId, input.data.title)
   })
 
@@ -121,6 +164,12 @@ export function registerBoardRoutes(
     const boardId = params.data.boardId
     const board = boards.get(boardId)
     if (!board) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (!canAccessBoard(board, projects.get(board.projectId), request.user?.openId, projects.isMember(board.projectId, request.user?.openId))) {
+      return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    }
+    if (boardSnapshotAccessForActor(board, boards.listByProject(board.projectId), request.user?.openId) === 'projected') {
+      return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+    }
 
     try {
       if (deletions) {
@@ -130,6 +179,9 @@ export function registerBoardRoutes(
       }
       return reply.code(204).send()
     } catch (error) {
+      if (error instanceof ProtectedCoreMutationError) {
+        return reply.code(409).send({ code: error.code, recordId: error.recordId, reason: error.reason })
+      }
       if (!(error instanceof BoardReferenceGraphError)) throw error
       const project = projects.get(board.projectId)!
       if (error.code === 'ROOT_BOARD_DELETE_FORBIDDEN') {

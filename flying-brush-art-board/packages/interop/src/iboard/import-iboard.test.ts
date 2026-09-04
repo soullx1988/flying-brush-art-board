@@ -38,7 +38,7 @@ describe('inspectIboard', () => {
       referenceCount: 6,
       maxEmbedDepth: 3,
       assetCount: 1,
-      assetBytes: 8,
+      assetBytes: 70,
       issues: [],
     })
     expect(JSON.stringify(inspection)).not.toContain('137,80,78,71')

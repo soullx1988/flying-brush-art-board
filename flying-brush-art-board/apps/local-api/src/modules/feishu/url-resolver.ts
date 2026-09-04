@@ -10,7 +10,7 @@ export interface FeishuDocumentReference {
 }
 
 export interface WikiDocxClient {
-  resolveWhiteboardToken(reference: FeishuDocumentReference, options?: { signal?: AbortSignal }): Promise<string>
+  resolveWhiteboardToken(reference: FeishuDocumentReference, options?: { signal?: AbortSignal; actorOpenId?: string }): Promise<string>
 }
 
 function validToken(value: string, errorCode: string): string {
@@ -19,7 +19,7 @@ function validToken(value: string, errorCode: string): string {
   return parsed.data
 }
 
-export async function resolveWhiteboardToken(input: string, client: WikiDocxClient, options: { signal?: AbortSignal } = {}): Promise<string> {
+export async function resolveWhiteboardToken(input: string, client: WikiDocxClient, options: { signal?: AbortSignal; actorOpenId?: string } = {}): Promise<string> {
   const value = input.trim()
   if (!value.includes('://')) return validToken(value, 'FEISHU_WHITEBOARD_TOKEN_INVALID')
 

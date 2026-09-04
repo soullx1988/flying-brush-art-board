@@ -2,7 +2,7 @@
 
 ## 本地数据与备份
 
-默认数据目录是 `%LOCALAPPDATA%\InfiniteBoard`：SQLite 数据库、内容寻址的 `assets` 目录及 `backups` 均位于此处。应用默认只提供本机回环服务，不会因为启动而公开画板到网络。
+本地启动器默认数据目录是仓库根目录的 `.infinite-board-data`：SQLite 数据库、内容寻址的 `assets` 目录及 `backups` 均位于此处；可通过 `INFINITE_BOARD_DATA_DIR` 或启动器的 `-DataDirectory` 显式覆盖。应用默认只提供本机回环服务，不会因为启动而公开画板到网络。
 
 请定期运行 `scripts/backup.ps1`，并将备份放在工作仓库外的受保护位置。备份与恢复流程、恢复点和完整性校验见[备份与恢复](backup-and-restore.md)。不要直接编辑备份内的 SQLite、资源文件或 `.iboard` 压缩包。
 

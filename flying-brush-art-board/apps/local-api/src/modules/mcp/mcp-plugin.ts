@@ -22,6 +22,8 @@ export interface McpPluginOptions {
   maxRequestBytes?: number
   maxConcurrentRequests?: number
   maxRequestsPerMinute?: number
+  maxConcurrentDownloads?: number
+  maxDownloadsPerMinute?: number
 }
 
 interface RateEntry { startedAt: number; count: number }
@@ -66,7 +68,11 @@ export function registerMcpPlugin(app: FastifyInstance, options: McpPluginOption
   const allowedOrigins = new Set((options.allowedOrigins ?? []).map((origin) => origin.trim().replace(/\/$/, '')))
   const maxConcurrent = options.maxConcurrentRequests ?? 16
   const maxRequestsPerMinute = options.maxRequestsPerMinute ?? 120
+  const maxConcurrentDownloads = options.maxConcurrentDownloads ?? 2
+  const maxDownloadsPerMinute = options.maxDownloadsPerMinute ?? 30
   const rates = new Map<string, RateEntry>()
+  const downloadRates = new Map<string, RateEntry>()
+  let activeDownloads = 0
   const metrics: McpMetricsSnapshot = { activeRequests: 0, calls: 0, failures: 0, rateLimited: 0, durationsMs: [] }
 
   app.get<{ Params: { ticket: string } }>('/mcp/download/:ticket', async (request, reply) => {
@@ -76,10 +82,25 @@ export function registerMcpPlugin(app: FastifyInstance, options: McpPluginOption
     if (origin && !allowedOrigins.has(origin)) return reply.code(403).send({ code: 'MCP_ORIGIN_NOT_ALLOWED' })
     if (!request.user || !request.mcpAccess) return reply.code(401).send({ code: 'MCP_AUTH_REQUIRED' })
     if (!/^[A-Za-z0-9_-]{20,100}$/.test(request.params.ticket)) return reply.code(404).send({ code: 'MCP_DOWNLOAD_NOT_FOUND' })
-    const payload = await options.dependencies.downloads.read(request.params.ticket, request.user.openId, request.mcpAccess.id)
-    if (!payload) return reply.code(404).send({ code: 'MCP_DOWNLOAD_NOT_FOUND' })
-    const encodedName = encodeURIComponent(payload.fileName).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
-    return reply.header('cache-control', 'private, no-store').header('content-disposition', `attachment; filename*=UTF-8''${encodedName}`).type(payload.mimeType).send(Buffer.from(payload.bytes))
+    if (activeDownloads >= maxConcurrentDownloads) return reply.code(429).send({ code: 'MCP_DOWNLOAD_BUSY' })
+    const now = Date.now()
+    const previous = downloadRates.get(request.mcpAccess.id)
+    const rate = !previous || now - previous.startedAt >= 60_000 ? { startedAt: now, count: 0 } : previous
+    if (rate.count >= maxDownloadsPerMinute) {
+      downloadRates.set(request.mcpAccess.id, rate)
+      return reply.code(429).send({ code: 'MCP_DOWNLOAD_RATE_LIMITED' })
+    }
+    rate.count += 1
+    downloadRates.set(request.mcpAccess.id, rate)
+    activeDownloads += 1
+    try {
+      const payload = await options.dependencies.downloads.read(request.params.ticket, request.user.openId, request.mcpAccess.id)
+      if (!payload) return reply.code(404).send({ code: 'MCP_DOWNLOAD_NOT_FOUND' })
+      const encodedName = encodeURIComponent(payload.fileName).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+      return reply.header('cache-control', 'private, no-store').header('content-disposition', `attachment; filename*=UTF-8''${encodedName}`).type(payload.mimeType).send(Buffer.from(payload.bytes))
+    } finally {
+      activeDownloads -= 1
+    }
   })
 
   app.route({

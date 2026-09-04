@@ -73,6 +73,131 @@ describe('RealtimeRoomManager', () => {
     } finally { db.close() }
   })
 
+  it('invalidates a failed room and never lets its stale snapshot outrank a committed Board revision', async () => {
+    const db = createDatabase(':memory:')
+    try {
+      db.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{\"store\":{\"committed\":true}}',NULL,2,'t','t')")
+      const repository = new RealtimeRoomRepository(db)
+      repository.saveSnapshot('b', { store: { stale: true } }, 1, 1)
+      let createdRoomCount = 0
+      let firstOptions!: Parameters<RealtimeRoomFactory['create']>[0]
+      let secondOptions!: Parameters<RealtimeRoomFactory['create']>[0]
+      const firstRoom = {
+        getCurrentSnapshot: () => ({ store: { stale: true } }),
+        getNumActiveSessions: () => 1,
+        loadSnapshot: vi.fn(async () => { throw new Error('ROOM_LOAD_FAILED') }),
+        handleSocketConnect() {}, handleSocketClose() {}, close: vi.fn(),
+      }
+      const secondRoom = {
+        getCurrentSnapshot: () => ({ store: { committed: true } }),
+        getNumActiveSessions: () => 1,
+        async loadSnapshot() {}, handleSocketConnect() {}, handleSocketClose() {},
+      }
+      const factory: RealtimeRoomFactory = {
+        create(input) {
+          const first = createdRoomCount++ === 0
+          if (first) firstOptions = input
+          else secondOptions = input
+          return first ? firstRoom : secondRoom
+        },
+      }
+      const manager = new RealtimeRoomManager(
+        repository,
+        factory,
+        () => true,
+        500,
+        () => ({ store: { committed: true } }),
+        () => undefined,
+        () => undefined,
+        undefined,
+        () => false,
+        () => 2,
+      )
+
+      manager.connect({ boardId: 'b', socket: {}, user: { openId: 'ou_1', name: 'Ada' } })
+      expect(firstOptions.initialSnapshot).toEqual({ store: { committed: true } })
+      vi.spyOn(repository, 'compact').mockImplementationOnce(() => { throw new Error('SQLITE_BUSY') })
+
+      await expect(manager.applyCommittedSnapshot('b', { store: { committed: true, next: true } })).resolves.toBeUndefined()
+      expect(firstRoom.close).toHaveBeenCalledOnce()
+      expect(manager.getActiveRoomCount()).toBe(0)
+      expect(repository.loadSnapshot('b')).toMatchObject({
+        boardRevision: 1,
+        snapshot: { store: { stale: true } },
+      })
+
+      manager.connect({ boardId: 'b', socket: {}, user: { openId: 'ou_2', name: 'Grace' } })
+      expect(secondOptions.initialSnapshot).toEqual({ store: { committed: true } })
+    } finally { db.close() }
+  })
+
+  it('invalidates the live room when the committed Board revision cannot be read', async () => {
+    const db = createDatabase(':memory:')
+    try {
+      db.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,1,'t','t')")
+      let failRevisionRead = false
+      const room = {
+        getCurrentSnapshot: () => ({ store: { stale: true } }),
+        getNumActiveSessions: () => 1,
+        loadSnapshot: vi.fn(async () => undefined),
+        handleSocketConnect() {}, handleSocketClose() {}, close: vi.fn(),
+      }
+      const manager = new RealtimeRoomManager(
+        new RealtimeRoomRepository(db),
+        { create: () => room },
+        () => true,
+        500,
+        () => ({ store: { committed: true } }),
+        () => undefined,
+        () => undefined,
+        undefined,
+        () => false,
+        () => {
+          if (failRevisionRead) throw new Error('SQLITE_BUSY')
+          return 1
+        },
+      )
+      manager.connect({ boardId: 'b', socket: {}, user: { openId: 'ou_1', name: 'Ada' } })
+      failRevisionRead = true
+
+      await expect(manager.applyCommittedSnapshot('b', { store: { committed: true } })).resolves.toBeUndefined()
+      expect(room.close).toHaveBeenCalledOnce()
+      expect(room.loadSnapshot).not.toHaveBeenCalled()
+      expect(manager.getActiveRoomCount()).toBe(0)
+    } finally { db.close() }
+  })
+
+  it('removes a stale room even when its close hook throws', async () => {
+    const db = createDatabase(':memory:')
+    try {
+      db.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,1,'t','t')")
+      const room = {
+        getCurrentSnapshot: () => ({ store: { stale: true } }),
+        getNumActiveSessions: () => 1,
+        loadSnapshot: vi.fn(async () => { throw new Error('ROOM_LOAD_FAILED') }),
+        handleSocketConnect() {}, handleSocketClose() {},
+        close: vi.fn(() => { throw new Error('ROOM_CLOSE_FAILED') }),
+      }
+      const manager = new RealtimeRoomManager(
+        new RealtimeRoomRepository(db),
+        { create: () => room },
+        () => true,
+        500,
+        () => ({ store: { committed: true } }),
+        () => undefined,
+        () => undefined,
+        undefined,
+        () => false,
+        () => 1,
+      )
+      manager.connect({ boardId: 'b', socket: {}, user: { openId: 'ou_1', name: 'Ada' } })
+
+      await expect(manager.applyCommittedSnapshot('b', { store: { committed: true } })).resolves.toBeUndefined()
+      expect(room.close).toHaveBeenCalledOnce()
+      expect(manager.getActiveRoomCount()).toBe(0)
+    } finally { db.close() }
+  })
+
   it('materializes document changes without treating a server command broadcast as another edit', async () => {
     const db = createDatabase(':memory:')
     try {
@@ -246,6 +371,42 @@ describe('RealtimeRoomManager', () => {
 
       expect(room.close).toHaveBeenCalledOnce()
       expect(manager.getActiveRoomCount()).toBe(0)
+    } finally { db.close() }
+  })
+
+  it('ignores late messages and data callbacks from a room after it was closed', async () => {
+    const db = createDatabase(':memory:')
+    try {
+      db.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
+      const repository = new RealtimeRoomRepository(db)
+      let options!: Parameters<RealtimeRoomFactory['create']>[0]
+      let snapshot: unknown = { store: { beforeClose: true } }
+      const room = {
+        getCurrentSnapshot: () => snapshot,
+        getNumActiveSessions: () => 1,
+        async loadSnapshot() {},
+        handleSocketConnect() {},
+        handleSocketClose() {},
+        close: vi.fn(),
+      }
+      const manager = new RealtimeRoomManager(
+        repository,
+        { create(input) { options = input; return room } },
+        () => true,
+      )
+      manager.connect({ boardId: 'b', socket: {}, user: { openId: 'member', name: 'Member' } })
+
+      await manager.closeBoard('b')
+      expect(repository.loadSnapshot('b')?.snapshot).toEqual({ store: { beforeClose: true } })
+
+      snapshot = { store: { latePrivateWrite: true } }
+      options.onMessage('{"late":"private-write"}', 'member')
+      options.onDataChange()
+      await Promise.resolve()
+
+      expect(repository.loadSnapshot('b')?.snapshot).toEqual({ store: { beforeClose: true } })
+      expect(repository.listUpdates('b')).toEqual([])
+      expect(room.close).toHaveBeenCalledOnce()
     } finally { db.close() }
   })
 })

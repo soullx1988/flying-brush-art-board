@@ -1,11 +1,16 @@
 import type { LocalDatabase } from '../../db/schema.js'
-import type { AllowedUser, AllowedUserDirectory } from './allowed-user-directory.js'
+import { UserNotAllowedError, type AllowedUser, type AllowedUserDirectory } from './allowed-user-directory.js'
 import type { FeishuLoginIdentity } from './feishu-oauth-provider.js'
 
 export class LocalUserDirectory implements AllowedUserDirectory {
-  constructor(private readonly database: LocalDatabase, private readonly now = () => new Date()) {}
+  constructor(
+    private readonly database: LocalDatabase,
+    private readonly now = () => new Date(),
+    private readonly allowedOpenIds?: ReadonlySet<string>,
+  ) {}
 
   recordLogin(identity: FeishuLoginIdentity): AllowedUser {
+    if (this.allowedOpenIds && !this.allowedOpenIds.has(identity.openId)) throw new UserNotAllowedError()
     const timestamp = this.now().toISOString()
     const name = identity.name?.trim() || identity.openId
     this.database.prepare(`
@@ -36,6 +41,7 @@ export class LocalUserDirectory implements AllowedUserDirectory {
   }
 
   async findByOpenId(openId: string): Promise<AllowedUser | undefined> {
+    if (this.allowedOpenIds && !this.allowedOpenIds.has(openId)) return undefined
     const row = this.database.prepare('SELECT open_id, name FROM app_users WHERE open_id=?').get(openId) as {
       open_id: string
       name: string

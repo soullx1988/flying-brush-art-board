@@ -2,6 +2,7 @@ import { basename, dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import Database from 'better-sqlite3'
 
 import { decodeIboard } from '../../../../../packages/interop/src/index.js'
 import { createReferenceGraphProjectFixture } from '../../../../../packages/test-fixtures/src/iboard/reference-graph-project.js'
@@ -38,7 +39,7 @@ describe('BackupService', () => {
     fixture.boards.forEach((board) => boards.create(board))
     fixture.references.forEach((reference) => references.create(reference))
     fixture.assets.forEach((asset) => {
-      assets.putByHash(asset.bytes, { mime: asset.mime, createdAt: timestamp })
+      assets.putByHash(asset.bytes, { mime: asset.mime, createdAt: timestamp, ownerOpenId: 'backup-owner' })
       asset.usages.forEach((usage) => usages.create({
         projectId: fixture.project.id,
         ...usage,
@@ -76,6 +77,7 @@ describe('BackupService', () => {
     const copied = createDatabase(backup.databasePath)
     expect(copied.pragma('integrity_check', { simple: true })).toBe('ok')
     expect(copied.prepare('SELECT COUNT(*) AS count FROM board_references').get()).toEqual({ count: 6 })
+    expect(copied.prepare('SELECT COUNT(*) AS count FROM asset_upload_owners').get()).toEqual({ count: 1 })
     copied.close()
   })
 
@@ -98,6 +100,22 @@ describe('BackupService', () => {
     const archive = decodeIboard(new Uint8Array(readFileSync(backup.projectArchives[0]!.path)))
 
     expect(archive.manifest.title).toBe('Reference graph fixture')
+  })
+
+  it('refuses to publish a backup when an asset blob no longer matches SQLite metadata', async () => {
+    const backupRootDirectory = join(directory, 'backups')
+    const service = new BackupService({ database, databasePath, assetDirectory, backupRootDirectory, now: () => timestamp })
+    const asset = database.prepare('SELECT sha256 FROM assets').get() as { sha256: string }
+    const path = join(assetDirectory, asset.sha256)
+    const corrupted = new Uint8Array(readFileSync(path))
+    const lastIndex = corrupted.byteLength - 1
+    corrupted[lastIndex] = corrupted[lastIndex]! ^ 0xff
+    writeFileSync(path, corrupted)
+
+    await expect(service.createBackup()).rejects.toMatchObject({
+      code: `BACKUP_ASSET_HASH_MISMATCH:${asset.sha256}`,
+    })
+    expect(readdirSync(backupRootDirectory)).toEqual([])
   })
 
   it('retains seven daily backups and four older weekly backups only after creating a new valid backup', async () => {
@@ -177,7 +195,71 @@ describe('BackupService', () => {
     expect(existsSync(join(assetDirectory, 'temporary-content'))).toBe(false)
     const asset = database.prepare('SELECT sha256 FROM assets').get() as { sha256: string }
     expect(existsSync(join(assetDirectory, asset.sha256))).toBe(true)
+    expect(new AssetRepository(database, assetDirectory).hasUploadOwnership(asset.sha256, 'backup-owner')).toBe(true)
     expect(restored.validation).toEqual({ database: 'ok', referenceGraph: 'ok', referenceShapes: 'ok', collaboration: 'ok' })
+  })
+
+  it('restores an older pre-privacy backup by migrating only a staging copy', async () => {
+    const service = new BackupService({
+      database,
+      databasePath,
+      assetDirectory,
+      backupRootDirectory: join(directory, 'backups'),
+      now: () => timestamp,
+    })
+    const backup = await service.createBackup()
+    const legacy = new Database(backup.databasePath)
+    legacy.exec(`
+      DROP TABLE asset_upload_owners;
+      DROP TABLE project_members;
+      DROP TABLE board_access_policies;
+      DROP TABLE project_access_policies;
+      ALTER TABLE workspace_bootstrap_markers RENAME TO workspace_bootstrap_markers_current;
+      CREATE TABLE workspace_bootstrap_markers (
+        template_key TEXT PRIMARY KEY,
+        template_version INTEGER NOT NULL,
+        project_id TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+      INSERT INTO workspace_bootstrap_markers(template_key,template_version,project_id,applied_at)
+        SELECT template_key,template_version,project_id,applied_at FROM workspace_bootstrap_markers_current;
+      DROP TABLE workspace_bootstrap_markers_current;
+      DELETE FROM schema_migrations WHERE id IN (
+        '0012_board_privacy',
+        '0013_asset_upload_owners',
+        '0014_owner_scoped_workspace_bootstrap'
+      );
+    `)
+    legacy.close()
+    const originalBackupBytes = readFileSync(backup.databasePath)
+    database.close()
+
+    await service.restoreBackup(backup.directory)
+    database = createDatabase(databasePath)
+
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='asset_upload_owners'").get())
+      .toBeDefined()
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_access_policies'").get())
+      .toBeDefined()
+    expect(database.prepare("SELECT id FROM schema_migrations WHERE id='0014_owner_scoped_workspace_bootstrap'").get())
+      .toEqual({ id: '0014_owner_scoped_workspace_bootstrap' })
+    expect(readFileSync(backup.databasePath)).toEqual(originalBackupBytes)
+  })
+
+  it('rejects a backup whose project root does not belong to one of its Boards', async () => {
+    const backupRootDirectory = join(directory, 'backups')
+    const service = new BackupService({ database, databasePath, assetDirectory, backupRootDirectory, now: () => timestamp })
+    const backup = await service.createBackup()
+    const corruptBackup = join(directory, 'invalid-root-backup')
+    cpSync(backup.directory, corruptBackup, { recursive: true })
+    const corrupt = new Database(join(corruptBackup, 'database.sqlite'))
+    corrupt.prepare("UPDATE projects SET root_board_id='missing-root' WHERE id='project-source'").run()
+    corrupt.close()
+
+    await expect(service.restoreBackup(corruptBackup)).rejects.toMatchObject({
+      code: 'PROJECT_ROOT_BOARD_INVALID:project-source',
+    })
+    expect(existsSync(join(backupRootDirectory, 'restore-points'))).toBe(false)
   })
 
   it('rolls back the live database and assets when a copied backup fails restored-state validation', async () => {
@@ -208,5 +290,50 @@ describe('BackupService', () => {
     expect(database.pragma('integrity_check', { simple: true })).toBe('ok')
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     expect(new BoardReferenceRepository(database).listByProject('project-source')).toHaveLength(6)
+  })
+
+  it('rejects missing, wrong-sized, and wrong-hash backup assets before touching live state', async () => {
+    const backupRootDirectory = join(directory, 'backups')
+    const service = new BackupService({ database, databasePath, assetDirectory, backupRootDirectory, now: () => timestamp })
+    const backup = await service.createBackup()
+    const asset = database.prepare('SELECT sha256 FROM assets').get() as { sha256: string }
+    database.prepare("UPDATE projects SET title = 'live state must survive invalid backup'").run()
+    writeFileSync(join(assetDirectory, 'live-marker'), 'keep me')
+
+    const corruptions = [
+      {
+        name: 'missing',
+        expectedCode: `BACKUP_ASSET_MISSING:${asset.sha256}`,
+        apply(path: string) { rmSync(path) },
+      },
+      {
+        name: 'wrong-size',
+        expectedCode: `BACKUP_ASSET_SIZE_MISMATCH:${asset.sha256}`,
+        apply(path: string) { writeFileSync(path, Buffer.concat([readFileSync(path), Buffer.from([0])])) },
+      },
+      {
+        name: 'wrong-hash',
+        expectedCode: `BACKUP_ASSET_HASH_MISMATCH:${asset.sha256}`,
+        apply(path: string) {
+          const bytes = new Uint8Array(readFileSync(path))
+          const lastIndex = bytes.byteLength - 1
+          bytes[lastIndex] = bytes[lastIndex]! ^ 0xff
+          writeFileSync(path, bytes)
+        },
+      },
+    ]
+
+    for (const corruption of corruptions) {
+      const copy = join(directory, `corrupt-assets-${corruption.name}`)
+      cpSync(backup.directory, copy, { recursive: true })
+      corruption.apply(join(copy, 'assets', asset.sha256))
+      await expect(service.restoreBackup(copy)).rejects.toMatchObject({
+        code: corruption.expectedCode,
+      })
+      expect(new ProjectRepository(database).get('project-source')?.title).toBe('live state must survive invalid backup')
+      expect(readFileSync(join(assetDirectory, 'live-marker'), 'utf8')).toBe('keep me')
+      expect(new AssetRepository(database, assetDirectory).hasUploadOwnership(asset.sha256, 'backup-owner')).toBe(true)
+    }
+    expect(existsSync(join(backupRootDirectory, 'restore-points'))).toBe(false)
   })
 })

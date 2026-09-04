@@ -16,6 +16,7 @@ import {
 import { afterAll, beforeAll, bench, describe, expect } from 'vitest'
 
 import type { BoardClipboardPayload } from '../../packages/board-core/src/index.js'
+import { createPngFixture } from '../../packages/test-fixtures/src/media.js'
 import {
   boardReferenceShapeUtils,
   createBoardStore,
@@ -95,7 +96,7 @@ function clipboardFixture(shapeCount: number): {
   payload: BoardClipboardPayload
   bytes: Uint8Array
 } {
-  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4])
+  const bytes = createPngFixture()
   const sha256 = createHash('sha256').update(bytes).digest('hex')
   const assetRecordId = 'asset:shared-source'
   const shapes = Array.from({ length: shapeCount }, (_, index) => ({

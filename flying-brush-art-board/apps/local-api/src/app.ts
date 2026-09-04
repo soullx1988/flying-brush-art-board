@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import cookie from '@fastify/cookie'
 import fastifyExpress from '@fastify/express'
 
-import { AssetRepository } from './modules/assets/asset-repository.js'
+import { AssetRepository, AssetUsageRepository } from './modules/assets/asset-repository.js'
 import { registerAssetRoutes } from './modules/assets/asset-routes.js'
 import { registerBoardReferenceRoutes } from './modules/board-references/board-reference-routes.js'
 import { BoardReferenceRepository } from './modules/board-references/board-reference-repository.js'
@@ -18,7 +18,7 @@ import { EncryptedCredentialStore } from './modules/feishu/credential-store.js'
 import { FeishuBoardClient } from './modules/feishu/board-client.js'
 import { createMockFeishuOAuthProvider } from './modules/feishu/mock-oauth-provider.js'
 import { registerFeishuOAuthRoutes } from './modules/feishu/oauth-routes.js'
-import { FeishuOAuthService } from './modules/feishu/oauth-service.js'
+import { FeishuOAuthService, type FeishuOAuthProvider } from './modules/feishu/oauth-service.js'
 import { registerFeishuImportRoutes, type FeishuImportRouteDependencies } from './modules/feishu/import-routes.js'
 import { FeishuRealOAuthProvider } from './modules/feishu/real-oauth-provider.js'
 import { FeishuWikiDocxClient } from './modules/feishu/wiki-docx-client.js'
@@ -54,6 +54,11 @@ import { ApplicationEventHub } from './application/domain-event-publisher.js'
 import { registerApplicationEventSocket } from './modules/realtime/application-event-socket.js'
 import { ExportApplicationService } from './application/export-service.js'
 import { McpDownloadService } from './modules/mcp/mcp-download-service.js'
+import { TradingWorkspaceBootstrapService } from './application/trading-workspace-template.js'
+import { registerTradingWorkspaceRoutes } from './modules/projects/trading-workspace-routes.js'
+import { TradingSource } from './modules/trading/trading-source.js'
+import { registerTradingRoutes } from './modules/trading/trading-routes.js'
+import { evaluateLanForwardedRequest, resolveLanApiSecurity } from './security/lan-forwarded-request.js'
 
 export { resolveAppDataDirectory } from './data-directory.js'
 
@@ -71,6 +76,7 @@ export interface BuildAppConfig {
   iboardImportSessionStore?: IboardImportSessionStore
   environment?: Record<string, string | undefined>
   feishuOAuth?: { clientId: string; clientSecret: string }
+  feishuOAuthProvider?: FeishuOAuthProvider
   feishuImport?: Partial<FeishuImportRouteDependencies> & Pick<FeishuImportRouteDependencies, 'connected'>
   authentication?: AuthenticationRouteDependencies
   enableRealtime?: boolean
@@ -82,6 +88,18 @@ export interface BuildAppConfig {
   mcpMaxRequestBytes?: number
   mcpMaxConcurrentRequests?: number
   mcpMaxRequestsPerMinute?: number
+  /** @deprecated Retained only for source-compatible callers; 08 never reads this directory. */
+  tradingDataDirectory?: string
+  tradingCollaborationUrl?: string
+  tradingFetch?: typeof fetch
+  tradingPollIntervalMs?: number
+  tradingRequestTimeoutMs?: number
+  tradingMaxJsonBytes?: number
+  tradingStaleAfterMs?: number
+  tradingMaxFutureSkewMs?: number
+  tradingSource?: TradingSource
+  enableTradingBridge?: boolean
+  automationProjectTag?: string
 }
 
 function assertLoopbackHost(host: unknown): asserts host is '127.0.0.1' | '::1' {
@@ -123,6 +141,7 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
   assertLoopbackHost(host)
   const authGate = loadAuthGate(config.environment ?? process.env)
   const environment = config.environment ?? process.env
+  const lanSecurity = resolveLanApiSecurity(environment, config.authentication?.allowedOrigins)
   const mcpEnabled = config.enableMcp ?? environment.MCP_ENABLED === 'true'
 
   const dataDirectory = config.dataDirectory ?? resolveAppDataDirectory()
@@ -135,6 +154,10 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
   // configure a deliberately tiny asset limit. The route then reports schema
   // errors as 400 and decoded-size violations as ASSET_TOO_LARGE (413).
   const app = Fastify({ logger: false, bodyLimit: Math.max(maxAssetBytes * 2, 1024) })
+  app.addHook('onRequest', async (request, reply) => {
+    const decision = evaluateLanForwardedRequest(request.headers, lanSecurity)
+    if (!decision.allowed) return reply.code(decision.statusCode).send({ code: decision.code })
+  })
   await app.register(cookie)
   if (mcpEnabled) {
     await app.register(fastifyExpress)
@@ -165,6 +188,26 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
   const realtime = config.enableRealtime ? createRealtimeRoomManager(database, boards, boardOperationQueue) : undefined
   const boardDocuments = new BoardDocumentCoordinator(database, boards, realtime, boardOperationQueue)
   const boardDeletions = new BoardDeletionCoordinator(boardOperationQueue, realtime)
+  const tradingBridgeEnabled = config.enableTradingBridge ?? environment.TRADING_BRIDGE_ENABLED !== 'false'
+  const tradingCollaborationUrl = config.tradingCollaborationUrl
+    ?? environment.TRADING_COLLABORATION_URL
+  const tradingSource = tradingBridgeEnabled
+      ? config.tradingSource ?? new TradingSource({
+        ...(tradingCollaborationUrl ? { collaborationUrl: tradingCollaborationUrl } : {}),
+        ...(config.tradingFetch ? { fetch: config.tradingFetch } : {}),
+        pollIntervalMs: config.tradingPollIntervalMs
+          ?? Number(environment.TRADING_POLL_INTERVAL_MS ?? 2_000),
+        requestTimeoutMs: config.tradingRequestTimeoutMs
+          ?? Number(environment.TRADING_COLLABORATION_TIMEOUT_MS ?? 3_000),
+        maxJsonBytes: config.tradingMaxJsonBytes
+          ?? Number(environment.TRADING_MAX_JSON_BYTES ?? 2 * 1024 * 1024),
+        staleAfterMs: config.tradingStaleAfterMs
+          ?? Number(environment.TRADING_STALE_AFTER_MS ?? 24 * 60 * 60 * 1_000),
+        maxFutureSkewMs: config.tradingMaxFutureSkewMs
+          ?? Number(environment.TRADING_MAX_FUTURE_SKEW_MS ?? 5 * 60 * 1_000),
+      })
+    : undefined
+  tradingSource?.start()
 
   app.get('/health', async () => {
     const row = database.prepare('SELECT 1 AS value').get() as { value: number }
@@ -173,11 +216,30 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
       ? await config.authentication.users.checkHealth().catch(() => 'error' as const)
       : 'not-configured' as const
     const realtimeStatus = config.enableRealtime ? 'ok' : 'disabled'
+    const tradingSourceStatus = tradingSource
+      ? await tradingSource.getSnapshot()
+        .then((state) => ({
+          status: state.snapshot.status,
+          sourceHealth: state.snapshot.sourceHealth,
+          message: state.snapshot.message ?? null,
+          sourceGeneratedAt: state.snapshot.sourceGeneratedAt,
+          ...tradingSource.diagnostics(),
+        }))
+        .catch(() => ({
+          status: 'unavailable' as const,
+          sourceHealth: 'UNAVAILABLE' as const,
+          message: 'TRADING_COLLABORATION_UNAVAILABLE',
+          sourceGeneratedAt: null,
+          ...tradingSource.diagnostics(),
+        }))
+      : undefined
     return {
       status: databaseStatus === 'ok' && userDirectory !== 'error' ? 'ok' : 'error',
       database: databaseStatus,
       userDirectory,
       realtime: realtimeStatus,
+      tradingBridge: tradingBridgeEnabled ? 'enabled' : 'disabled',
+      ...(tradingSourceStatus ? { tradingSource: tradingSourceStatus } : {}),
     }
   })
 
@@ -197,11 +259,13 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
     })
   } else if (authGate.authenticationEnabled) {
     app.addHook('onRequest', async (request, reply) => {
-      if (request.url.startsWith('/api/')) return reply.code(401).send({ code: 'FEISHU_LOGIN_REQUIRED' })
+      if (request.url.startsWith('/api/') || request.url.startsWith('/auth/feishu/import/')) {
+        return reply.code(401).send({ code: 'FEISHU_LOGIN_REQUIRED' })
+      }
     })
   } else {
     app.addHook('onRequest', async (request) => {
-      if (!request.url.startsWith('/api/') && !request.url.startsWith('/realtime/')) return
+      if (!request.url.startsWith('/api/') && !request.url.startsWith('/realtime/') && !request.url.startsWith('/auth/feishu/import/')) return
       request.user = {
         openId: authGate.localUser.id,
         name: authGate.localUser.name,
@@ -218,11 +282,23 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
   registerAuditPlugin(app, audits, boards, comments, references)
 
   if (config.enableRealtime) {
-    await registerRealtimeRoutes(app, realtime!)
-    registerApplicationEventSocket(app, applicationEvents)
+    await registerRealtimeRoutes(app, realtime!, boards, projects)
+    registerApplicationEventSocket(app, applicationEvents, boards, projects)
   }
 
-  registerProjectRoutes(app, projects, boards, references, boardDeletions)
+  registerProjectRoutes(app, projects, boards, references, boardDeletions, config.automationProjectTag)
+  registerTradingWorkspaceRoutes(
+    app,
+    new TradingWorkspaceBootstrapService(
+      database,
+      projects,
+      boards,
+      references,
+      boardOperationQueue,
+      realtime,
+    ),
+  )
+  if (tradingSource) registerTradingRoutes(app, tradingSource)
   registerBoardRoutes(
     app,
     projects,
@@ -233,7 +309,7 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
     boardDeletions,
   )
   registerBoardReferenceRoutes(app, database, boards, references, realtime?.applyCommittedSnapshot.bind(realtime), boardDocuments)
-  registerAssetRoutes(app, assets, maxAssetBytes)
+  registerAssetRoutes(app, database, assets, boards, projects, maxAssetBytes)
   registerClipboardCommandRoutes(
     app,
     database,
@@ -242,7 +318,7 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
     realtime?.applyCommittedSnapshotWithinQueue.bind(realtime),
     boardOperationQueue,
   )
-  registerCommentRoutes(app, boards, comments, {
+  registerCommentRoutes(app, boards, projects, comments, {
     revalidate: config.authentication
       ? async (request) => {
           const token = request.cookies[SESSION_COOKIE_NAME]
@@ -259,7 +335,7 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
         }
       : (request) => Boolean(request.user),
   })
-  registerAuditRoutes(app, audits)
+  registerAuditRoutes(app, audits, boards, projects)
 
   if (mcpEnabled) {
     const allowedHosts = config.mcpAllowedHosts ?? (environment.MCP_ALLOWED_HOSTS?.split(',').map((value) => value.trim()).filter(Boolean) ?? ['127.0.0.1', 'localhost'])
@@ -312,9 +388,13 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
         references: new BoardReferenceService(database, boards, references, { coordinator: boardDocuments }),
         referenceRepository: references,
         boardRepository: boards,
+        projectRepository: projects,
+        commentRepository: comments,
+        assetRepository: assets,
+        assetUsages: new AssetUsageRepository(database),
         comments: commentService,
         audits,
-        exports: new ExportApplicationService(database, projects, boards, references, assets),
+        exports: new ExportApplicationService(database, projects, boards, references, assets, tradingSource),
         downloads: downloadService,
         ...(realtime ? { applyCommittedSnapshot: realtime.applyCommittedSnapshot.bind(realtime) } : {}),
       },
@@ -332,14 +412,19 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
     ...(config.iboardImportSessionNow === undefined ? {} : { now: config.iboardImportSessionNow }),
   })
   registerIboardRoutes(app, database, assets, iboardImportSessions)
-  registerPdfRoutes(app, projects, boards, references, assets)
+  registerPdfRoutes(app, projects, boards, references, assets, tradingSource)
   const credentials = new EncryptedCredentialStore({ directory: dataDirectory })
   registerFeishuOAuthRoutes(app, new FeishuOAuthService({
-    provider: config.feishuOAuth
+    provider: config.feishuOAuthProvider ?? (config.feishuOAuth
       ? new FeishuRealOAuthProvider(config.feishuOAuth)
-      : createMockFeishuOAuthProvider(),
+      : createMockFeishuOAuthProvider()),
     credentials,
-  }))
+  }), {
+    configured: Boolean(config.feishuOAuth || config.feishuOAuthProvider),
+    ...(config.authentication?.allowedOrigins
+      ? { allowedOrigins: config.authentication.allowedOrigins }
+      : {}),
+  })
   if (config.feishuImport?.client && config.feishuImport.resolveWhiteboardToken) {
     registerFeishuImportRoutes(app, database, assets, config.feishuImport as FeishuImportRouteDependencies)
   } else if (config.feishuImport) {
@@ -361,7 +446,7 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
       async downloadMedia() { throw new Error('FEISHU_MOCK_MEDIA_NOT_FOUND') },
     }
     registerFeishuImportRoutes(app, database, assets, {
-      connected: () => Boolean(credentials.read()),
+      connected: (actorOpenId) => Boolean(config.feishuOAuth && credentials.read(actorOpenId)),
       resolveWhiteboardToken: config.feishuOAuth
         ? (input, options) => resolveWhiteboardToken(input, new FeishuWikiDocxClient({ credentials }), options)
         : (input, options) => resolveWhiteboardToken(input, { resolveWhiteboardToken: async () => { throw new Error('FEISHU_MOCK_DOCUMENT_RESOLUTION_UNAVAILABLE') } }, options),
@@ -371,8 +456,11 @@ export async function buildApp(config: BuildAppConfig = {}): Promise<FastifyInst
 
   if (ownsDatabase) {
     app.addHook('onClose', async () => {
+      tradingSource?.stop()
       database.close()
     })
+  } else {
+    app.addHook('onClose', async () => tradingSource?.stop())
   }
 
   return app

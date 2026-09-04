@@ -11,6 +11,7 @@ interface Ticket {
   clientId: string
   expiresAt: number
   produce(): Promise<McpDownloadPayload> | McpDownloadPayload
+  inFlight?: Promise<McpDownloadPayload>
 }
 
 export class McpDownloadService {
@@ -29,9 +30,19 @@ export class McpDownloadService {
     this.prune()
     const entry = this.tickets.get(ticket)
     if (!entry || entry.actorOpenId !== actorOpenId || entry.clientId !== clientId) return undefined
-    const payload = await entry.produce()
-    if (payload.bytes.byteLength > 256 * 1024 * 1024) throw Object.assign(new Error('MCP_EXPORT_TOO_LARGE'), { code: 'MCP_EXPORT_TOO_LARGE' })
-    return payload
+    entry.inFlight ??= Promise.resolve()
+      .then(() => entry.produce())
+      .then((payload) => {
+        if (payload.bytes.byteLength > 256 * 1024 * 1024) {
+          throw Object.assign(new Error('MCP_EXPORT_TOO_LARGE'), { code: 'MCP_EXPORT_TOO_LARGE' })
+        }
+        return payload
+      })
+    try {
+      return await entry.inFlight
+    } finally {
+      if (this.tickets.get(ticket) === entry) this.tickets.delete(ticket)
+    }
   }
 
   prune(): void {

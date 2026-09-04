@@ -9,10 +9,10 @@ import { BoardRepository } from '../boards/board-repository.js'
 import { ProjectRepository } from '../projects/project-repository.js'
 
 export interface FeishuImportClient {
-  listWhiteboardNodes(token: string, options?: { signal?: AbortSignal }): Promise<unknown>
-  getWhiteboardTheme(token: string, options?: { signal?: AbortSignal }): Promise<unknown>
-  downloadWhiteboardPreview(token: string, options?: { signal?: AbortSignal }): Promise<Uint8Array>
-  downloadMedia(mediaToken: string, options?: { signal?: AbortSignal }): Promise<{ bytes: Uint8Array; mime: string; sha256: string }>
+  listWhiteboardNodes(token: string, options?: { signal?: AbortSignal; actorOpenId?: string }): Promise<unknown>
+  getWhiteboardTheme(token: string, options?: { signal?: AbortSignal; actorOpenId?: string }): Promise<unknown>
+  downloadWhiteboardPreview(token: string, options?: { signal?: AbortSignal; actorOpenId?: string }): Promise<Uint8Array>
+  downloadMedia(mediaToken: string, options?: { signal?: AbortSignal; actorOpenId?: string }): Promise<{ bytes: Uint8Array; mime: string; sha256: string }>
 }
 
 export interface ImportPreview {

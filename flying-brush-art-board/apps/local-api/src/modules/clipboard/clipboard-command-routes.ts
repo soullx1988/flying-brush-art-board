@@ -6,8 +6,14 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 
 import type { LocalDatabase } from '../../db/schema.js'
-import { AssetRepository } from '../assets/asset-repository.js'
+import { AssetRepository, AssetUsageRepository } from '../assets/asset-repository.js'
 import { BoardRepository, RevisionConflictError } from '../boards/board-repository.js'
+import { ProjectRepository } from '../projects/project-repository.js'
+import {
+  boardSnapshotAccessForActor,
+  canAccessBoard,
+  canAccessProject,
+} from '../../privacy/board-access-policy.js'
 import type { BoardOperationQueue } from '../realtime/board-operation-queue.js'
 import {
   ClipboardCommandExpiredError,
@@ -21,6 +27,7 @@ import {
 } from './clipboard-contracts.js'
 
 const identifierSchema = z.string().trim().min(1)
+const PROJECTED_BOARD_READ_ONLY_CODE = 'BOARD_SNAPSHOT_PROJECTED_READ_ONLY'
 const recordSchema = z.object({ id: identifierSchema, typeName: identifierSchema }).passthrough()
 const referenceSchema = z
   .object({
@@ -152,20 +159,81 @@ export function registerClipboardCommandRoutes(
   operationQueue?: BoardOperationQueue,
 ): void {
   const commands = new ClipboardCommandService(database, boards, assets)
+  const projects = new ProjectRepository(database)
+  const assetUsages = new AssetUsageRepository(database)
   const runBoardMutation = <T>(boardId: string, operation: () => Promise<T> | T): Promise<T> =>
     operationQueue ? operationQueue.run(boardId, operation) : Promise.resolve().then(operation)
+  const broadcastCommittedSnapshot = async (boardId: string, snapshot: unknown): Promise<void> => {
+    try {
+      await onSnapshotCommitted?.(boardId, snapshot)
+    } catch {
+      // The command transaction is already durable. Returning an error here
+      // would invite a duplicate retry; realtime recovery is fail-closed and
+      // will seed from the authoritative Board snapshot.
+    }
+  }
+  const boardAllowed = (boardId: string, actorOpenId: string | undefined) => {
+    const board = boards.get(boardId)
+    return Boolean(board && canAccessBoard(
+      board,
+      projects.get(board.projectId),
+      actorOpenId,
+      projects.isMember(board.projectId, actorOpenId),
+    ))
+  }
+  const boardWritable = (boardId: string, actorOpenId: string | undefined) => {
+    const board = boards.get(boardId)
+    return Boolean(board && boardSnapshotAccessForActor(
+      board,
+      boards.listByProject(board.projectId),
+      actorOpenId,
+    ) === 'full')
+  }
+  const assetAllowed = (sha256: string, actorOpenId: string | undefined) => {
+    const usages = assetUsages.listBySha256(sha256)
+    return usages.length === 0 || usages.some((usage) => boardAllowed(usage.boardId, actorOpenId))
+  }
+  const payloadAllowed = (
+    payload: BoardClipboardPayload,
+    actorOpenId: string | undefined,
+    targetProjectId: string,
+    pendingBoardId?: string,
+  ) => {
+    const sourceBoard = boards.get(payload.sourceBoardId)
+    const sourceAllowed = sourceBoard
+      ? boardAllowed(sourceBoard.id, actorOpenId)
+      : payload.sourceProjectId !== targetProjectId || payload.sourceBoardId === pendingBoardId
+    // Cross-project references are deliberately materialized as ordinary
+    // visual cards. They do not read or create an edge to the foreign Board.
+    const referencesAllowed = payload.sourceProjectId !== targetProjectId
+      || payload.references.every((reference) => (
+        reference.targetBoardId === pendingBoardId || boardAllowed(reference.targetBoardId, actorOpenId)
+      ))
+    return sourceAllowed
+      && referencesAllowed
+      && payload.assets.every((asset) => assetAllowed(asset.sha256, actorOpenId))
+  }
 
   app.post('/api/projects/:projectId/boards/clipboard-import', async (request, reply) => {
     const params = projectParamsSchema.safeParse(request.params)
     const input = createBoardClipboardImportSchema.safeParse(request.body)
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: params.error.issues })
     if (!input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: input.error.issues })
-    const project = database.prepare('SELECT id FROM projects WHERE id = ?').get(params.data.projectId)
+    const project = projects.get(params.data.projectId)
     if (!project) return reply.code(404).send({ code: 'PROJECT_NOT_FOUND' })
+    if (!canAccessProject(project, request.user?.openId, projects.isMember(project.id, request.user?.openId))) {
+      return reply.code(403).send({ code: 'PROJECT_ACCESS_DENIED' })
+    }
+    const payload = input.data.payload as unknown as BoardClipboardPayload
+    if (!payloadAllowed(payload, request.user?.openId, project.id, input.data.board.id)) {
+      return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    }
 
     try {
       const receipt = await runBoardMutation(input.data.board.id, async () => {
-        const payload = input.data.payload as unknown as BoardClipboardPayload
+        if (!payloadAllowed(payload, request.user?.openId, project.id, input.data.board.id)) {
+          throw new Error('BOARD_ACCESS_DENIED')
+        }
         const assetBlobs = payload.assets.map((asset) => {
           const bytes = assets.readBytes(asset.sha256)
           if (!bytes) throw new ClipboardAssetNotFoundError()
@@ -182,6 +250,7 @@ export function registerClipboardCommandRoutes(
           projectId: params.data.projectId,
           title: input.data.board.title,
           tldrawSnapshot: input.data.board.tldrawSnapshot,
+          accessLevel: 'project',
           revision: 0,
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -190,11 +259,14 @@ export function registerClipboardCommandRoutes(
           sourceBoardId: payload.sourceBoardId,
           copiedAt: payload.copiedAt,
         })
-        await onSnapshotCommitted?.(input.data.board.id, result.snapshot)
+        await broadcastCommittedSnapshot(input.data.board.id, result.snapshot)
         return result
       })
       return reply.code(201).send({ board: boards.get(input.data.board.id), receipt })
     } catch (error) {
+      if (error instanceof Error && error.message === 'BOARD_ACCESS_DENIED') {
+        return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+      }
       return sendCommandError(reply, error)
     }
   })
@@ -212,12 +284,29 @@ export function registerClipboardCommandRoutes(
     if (!payload.success) {
       return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: payload.error.issues })
     }
+    const clipboardPayload = payload.data as unknown as BoardClipboardPayload
+    const targetBoard = boards.get(params.data.boardId)
+    if (!targetBoard) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+    if (!boardAllowed(targetBoard.id, request.user?.openId)
+      || !payloadAllowed(clipboardPayload, request.user?.openId, targetBoard.projectId)) {
+      return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    }
+    if (!boardWritable(targetBoard.id, request.user?.openId)) {
+      return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+    }
     try {
       const receipt = await runBoardMutation(params.data.boardId, async () => {
         const board = boards.get(params.data.boardId)
         if (!board) throw new Error('BOARD_NOT_FOUND')
+        if (!boardAllowed(board.id, request.user?.openId)
+          || !payloadAllowed(clipboardPayload, request.user?.openId, board.projectId)) {
+          throw new Error('BOARD_ACCESS_DENIED')
+        }
+        if (!boardWritable(board.id, request.user?.openId)) {
+          throw new Error(PROJECTED_BOARD_READ_ONLY_CODE)
+        }
         const positionedPayload = placedPayload(
-          payload.data as unknown as BoardClipboardPayload,
+          clipboardPayload,
           input.data.placement,
         )
         const assetBlobs = positionedPayload.assets.map((asset) => {
@@ -238,12 +327,16 @@ export function registerClipboardCommandRoutes(
             copiedAt: positionedPayload.copiedAt,
           },
         )
-        await onSnapshotCommitted?.(result.boardId, result.snapshot)
+        await broadcastCommittedSnapshot(result.boardId, result.snapshot)
         return result
       })
       return reply.code(201).send(receipt)
     } catch (error) {
       if (error instanceof Error && error.message === 'BOARD_NOT_FOUND') return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
+      if (error instanceof Error && error.message === 'BOARD_ACCESS_DENIED') return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+      if (error instanceof Error && error.message === PROJECTED_BOARD_READ_ONLY_CODE) {
+        return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+      }
       return sendCommandError(reply, error)
     }
   })
@@ -260,13 +353,23 @@ export function registerClipboardCommandRoutes(
       }
       try {
         const boardId = commands.getCommandBoardId(params.data.commandId, input.data.sessionId)
+        if (!boardAllowed(boardId, request.user?.openId)) return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+        if (!boardWritable(boardId, request.user?.openId)) {
+          return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+        }
         const receipt = await runBoardMutation(boardId, async () => {
+          if (!boardAllowed(boardId, request.user?.openId)) throw new Error('BOARD_ACCESS_DENIED')
+          if (!boardWritable(boardId, request.user?.openId)) throw new Error(PROJECTED_BOARD_READ_ONLY_CODE)
           const result = commands[action](params.data.commandId, input.data.expectedRevision, input.data.sessionId)
-          await onSnapshotCommitted?.(result.boardId, result.snapshot)
+          await broadcastCommittedSnapshot(result.boardId, result.snapshot)
           return result
         })
         return receipt
       } catch (error) {
+        if (error instanceof Error && error.message === 'BOARD_ACCESS_DENIED') return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+        if (error instanceof Error && error.message === PROJECTED_BOARD_READ_ONLY_CODE) {
+          return reply.code(403).send({ code: PROJECTED_BOARD_READ_ONLY_CODE })
+        }
         return sendCommandError(reply, error)
       }
     })

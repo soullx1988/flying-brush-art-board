@@ -150,6 +150,157 @@ afterEach(() => {
 })
 
 describe('WorkspaceTabs', () => {
+  it('keeps a projected REST snapshot read-only even when realtime is enabled', async () => {
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn(async () => ({
+        snapshot: { store: { public: true } },
+        revision: 4,
+        snapshotAccess: 'projected' as const,
+      })),
+      saveSnapshot: vi.fn(),
+    }
+    let editor: FakeWorkspaceEditor | undefined
+    const workspace = new WorkspaceTabs({
+      projectId: 'project-a',
+      api,
+      realtime: true,
+      createEditor: (snapshot) => {
+        editor = new FakeWorkspaceEditor(snapshot, () => undefined)
+        return editor
+      },
+    })
+
+    const tab = await workspace.openBoardInNewTab('board-projected')
+
+    expect(tab.session.snapshotAccess).toBe('projected')
+    expect(tab.readOnly).toBe(true)
+    expect(editor?.readOnly).toBe(true)
+    expect(workspace.acquireEditingLease(tab.tabId)).toEqual({
+      applied: false,
+      reason: 'projected-read-only',
+    })
+    expect(api.saveSnapshot).not.toHaveBeenCalled()
+    workspace.dispose()
+  })
+
+  it('keeps an ordinary full Board editable in realtime mode', async () => {
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn(async () => ({
+        snapshot: { store: { public: true } },
+        revision: 2,
+        snapshotAccess: 'full' as const,
+      })),
+      saveSnapshot: vi.fn(),
+    }
+    let editor: FakeWorkspaceEditor | undefined
+    const workspace = new WorkspaceTabs({
+      projectId: 'project-a',
+      api,
+      realtime: true,
+      createEditor: (snapshot) => {
+        editor = new FakeWorkspaceEditor(snapshot, () => undefined)
+        return editor
+      },
+    })
+
+    const tab = await workspace.openBoardInNewTab('board-public')
+
+    expect(tab.session.snapshotAccess).toBe('full')
+    expect(tab.readOnly).toBe(false)
+    expect(editor?.readOnly).toBe(false)
+    expect(workspace.acquireEditingLease(tab.tabId)).toEqual({ applied: true })
+    workspace.dispose()
+  })
+
+  it('adopts realtime command metadata without loading the receipt snapshot into the live editor', async () => {
+    const initial = { store: { 'shape:initial': { id: 'shape:initial' } } }
+    const live = { store: { 'shape:live': { id: 'shape:live' } } }
+    const receipt = { store: { 'shape:receipt': { id: 'shape:receipt' } } }
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn(async () => ({ snapshot: initial, revision: 2 })),
+      saveSnapshot: vi.fn(),
+    }
+    let editor: FakeWorkspaceEditor | undefined
+    const workspace = new WorkspaceTabs({
+      projectId: 'project-a',
+      api,
+      realtime: true,
+      createEditor: (snapshot) => {
+        editor = new FakeWorkspaceEditor(snapshot, () => undefined)
+        return editor
+      },
+    })
+    const tab = await workspace.openBoardInNewTab('board-a')
+    editor!.edit(live)
+    const loadSnapshot = vi.spyOn(editor!, 'loadSnapshot')
+
+    workspace.adoptCommandCommit(tab.tabId, receipt, 8)
+
+    expect(loadSnapshot).not.toHaveBeenCalled()
+    expect(editor!.getSnapshot()).toEqual(live)
+    expect(tab.session).toMatchObject({ lastKnownRevision: 8, status: 'clean' })
+    workspace.dispose()
+  })
+
+  it('hydrates the editor from a command receipt in snapshot mode', async () => {
+    const initial = { store: { 'shape:initial': { id: 'shape:initial' } } }
+    const receipt = { store: { 'shape:receipt': { id: 'shape:receipt' } } }
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn(async () => ({ snapshot: initial, revision: 2 })),
+      saveSnapshot: vi.fn(),
+    }
+    let editor: FakeWorkspaceEditor | undefined
+    const workspace = new WorkspaceTabs({
+      projectId: 'project-a',
+      api,
+      createEditor: (snapshot) => {
+        editor = new FakeWorkspaceEditor(snapshot, () => undefined)
+        return editor
+      },
+    })
+    const tab = await workspace.openBoardInNewTab('board-a')
+    const loadSnapshot = vi.spyOn(editor!, 'loadSnapshot')
+
+    workspace.adoptCommandCommit(tab.tabId, receipt, 3)
+
+    expect(loadSnapshot).toHaveBeenCalledOnce()
+    expect(loadSnapshot).toHaveBeenCalledWith(receipt)
+    expect(editor!.getSnapshot()).toEqual(receipt)
+    workspace.dispose()
+  })
+
+  it('synchronizes only the requested tab before a structural command', async () => {
+    const server = new Map<string, { snapshot: unknown; revision: number }>([
+      ['board-a', { snapshot: { store: { board: 'a' } }, revision: 1 }],
+      ['board-b', { snapshot: { store: { board: 'b' } }, revision: 5 }],
+    ])
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn(async (boardId) => structuredClone(server.get(boardId)!)),
+      saveSnapshot: vi.fn(),
+    }
+    const workspace = new WorkspaceTabs({
+      projectId: 'project-a',
+      api,
+      realtime: true,
+      createEditor: (snapshot) => new FakeWorkspaceEditor(snapshot, () => undefined),
+    })
+    const first = await workspace.openBoardInNewTab('board-a')
+    const second = await workspace.openBoardInNewTab('board-b')
+    server.set('board-a', { snapshot: { store: { board: 'a' } }, revision: 7 })
+    vi.mocked(api.loadBoard).mockClear()
+
+    await expect(workspace.syncBeforeStructuralCommand(first.tabId)).resolves.toMatchObject({
+      ok: true,
+      revision: 7,
+    })
+
+    expect(api.loadBoard).toHaveBeenCalledOnce()
+    expect(api.loadBoard).toHaveBeenCalledWith('board-a')
+    expect(first.session.lastKnownRevision).toBe(7)
+    expect(second.session.lastKnownRevision).toBe(5)
+    workspace.dispose()
+  })
+
   it('mounts a board read-only until its first edit intent acquires the lease', async () => {
     const harness = createHarness()
     const tab = await harness.workspace.openBoardInNewTab('board-a')
@@ -647,6 +798,10 @@ describe('WorkspaceTabs', () => {
 
   it('exposes task-scoped tab actions and live state through the React hook', async () => {
     const harness = createHarness()
+    const syncBeforeStructuralCommand = vi.spyOn(
+      harness.workspace,
+      'syncBeforeStructuralCommand',
+    )
     const { result } = renderHook(() => useWorkspaceTabs(harness.workspace))
 
     await act(async () => {
@@ -656,5 +811,10 @@ describe('WorkspaceTabs', () => {
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.activeTabId).toBe('tab-1')
     expect(result.current.activeEditor).toBe(harness.workspace.getActiveEditor())
+
+    await act(async () => {
+      await result.current.syncBeforeStructuralCommand('tab-1')
+    })
+    expect(syncBeforeStructuralCommand).toHaveBeenCalledWith('tab-1')
   })
 })

@@ -9,6 +9,7 @@ const MAX_RETRY_AFTER_MS = 60_000
 
 export interface FeishuWikiDocxClientOptions {
   credentials: Pick<FeishuCredentialStore, 'read'>
+  actorOpenId?: string
   fetch?: typeof globalThis.fetch
   baseUrl?: string
   timeoutMs?: number
@@ -16,7 +17,7 @@ export interface FeishuWikiDocxClientOptions {
   sleep?: (milliseconds: number) => Promise<void>
 }
 
-export interface FeishuWikiDocxRequestOptions { signal?: AbortSignal }
+export interface FeishuWikiDocxRequestOptions { signal?: AbortSignal; actorOpenId?: string }
 
 export class FeishuWikiDocxClientError extends Error {
   constructor(
@@ -48,7 +49,8 @@ export class FeishuWikiDocxClient implements WikiDocxClient {
 
   async resolveWhiteboardToken(reference: FeishuDocumentReference, options: FeishuWikiDocxRequestOptions = {}): Promise<string> {
     if (reference.kind === 'docx') throw new FeishuWikiDocxClientError('FEISHU_DOCX_BLOCK_TOKEN_REQUIRED')
-    const accessToken = this.options.credentials.read()?.accessToken
+    const actorOpenId = options.actorOpenId ?? this.options.actorOpenId
+    const accessToken = actorOpenId ? this.options.credentials.read(actorOpenId)?.accessToken : undefined
     if (!accessToken) throw new FeishuWikiDocxClientError('FEISHU_ACCOUNT_NOT_CONNECTED', 401)
     const url = new URL('/open-apis/wiki/v2/spaces/get_node', this.baseUrl)
     url.searchParams.set('token', reference.token)

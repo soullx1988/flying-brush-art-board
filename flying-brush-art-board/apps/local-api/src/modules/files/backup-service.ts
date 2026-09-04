@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 import {
@@ -12,7 +12,8 @@ import {
 import { exportProjectToIboard, type IboardAssetInputV1 } from '@infinite-board/interop'
 import { assertBoardReferenceSnapshotConsistent } from '@infinite-board/tldraw-adapter'
 
-import type { LocalDatabase } from '../../db/schema.js'
+import { createDatabase, type LocalDatabase } from '../../db/schema.js'
+import { assertAssetContentValid, AssetContentValidationError } from '../assets/asset-content-validation.js'
 import { AssetRepository, AssetUsageRepository } from '../assets/asset-repository.js'
 import { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import { BoardRepository } from '../boards/board-repository.js'
@@ -94,7 +95,10 @@ function projectArchiveFileName(projectId: string): string {
 
 function copyDirectory(source: string, destination: string): void {
   mkdirSync(destination, { recursive: true })
-  if (existsSync(source)) cpSync(source, destination, { recursive: true })
+  if (!existsSync(source)) return
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    cpSync(join(source, entry.name), join(destination, entry.name), { recursive: true })
+  }
 }
 
 function removeSqliteSidecars(databasePath: string): void {
@@ -167,6 +171,7 @@ export class BackupService {
       await this.options.database.backup(databasePath)
       copyDirectory(this.options.assetDirectory, assetDirectory)
       mkdirSync(projectDirectory, { recursive: true })
+      this.validateDatabaseAndAssets(databasePath, assetDirectory)
 
       const snapshot = new Database(databasePath, { readonly: true })
       let projectArchives: BackupProjectArchive[]
@@ -232,53 +237,71 @@ export class BackupService {
   }
 
   async restoreBackup(backupDirectory: string): Promise<RestoreResult> {
-    const databasePath = join(backupDirectory, 'database.sqlite')
+    const backupDatabasePath = join(backupDirectory, 'database.sqlite')
     const assetDirectory = join(backupDirectory, 'assets')
-    if (!existsSync(databasePath) || !existsSync(assetDirectory)) {
+    if (!existsSync(backupDatabasePath) || !existsSync(assetDirectory)) {
       throw new BackupValidationError('BACKUP_INCOMPLETE')
     }
 
-    const restoreRoot = join(this.options.backupRootDirectory, 'restore-points')
-    mkdirSync(restoreRoot, { recursive: true })
-    const restorePointDirectory = mkdtempSync(join(restoreRoot, `restore-${timestampDirectoryPart(this.now())}-`))
-    const restorePointDatabase = join(restorePointDirectory, 'database.sqlite')
-    const restorePointAssets = join(restorePointDirectory, 'assets')
-    const assetParentDirectory = dirname(this.options.assetDirectory)
-    mkdirSync(assetParentDirectory, { recursive: true })
-    const temporaryAssets = mkdtempSync(join(assetParentDirectory, '.infinite-board-restore-assets-'))
-    const previousAssets = `${this.options.assetDirectory}.before-restore`
-
+    // Never migrate the user's backup in place. A staging copy accepts older
+    // supported schemas, runs the current recorded migrations, and is fully
+    // validated before a restore point or live file is touched.
+    mkdirSync(this.options.backupRootDirectory, { recursive: true })
+    const stagingDirectory = mkdtempSync(join(this.options.backupRootDirectory, '.restore-stage-'))
+    const databasePath = join(stagingDirectory, 'database.sqlite')
     try {
-      await createOfflineDatabaseBackup(this.options.databasePath, restorePointDatabase)
-      copyDirectory(this.options.assetDirectory, restorePointAssets)
-      copyDirectory(assetDirectory, temporaryAssets)
+      await createOfflineDatabaseBackup(backupDatabasePath, databasePath)
+      const migrated = createDatabase(databasePath)
+      migrated.close()
+      this.validateDatabaseAndAssets(databasePath, assetDirectory)
 
-      removeSqliteSidecars(this.options.databasePath)
-      await createOfflineDatabaseBackup(databasePath, this.options.databasePath)
-      rmSync(previousAssets, { recursive: true, force: true })
-      if (existsSync(this.options.assetDirectory)) renameSync(this.options.assetDirectory, previousAssets)
-      renameSync(temporaryAssets, this.options.assetDirectory)
+      const restoreRoot = join(this.options.backupRootDirectory, 'restore-points')
+      mkdirSync(restoreRoot, { recursive: true })
+      const restorePointDirectory = mkdtempSync(join(restoreRoot, `restore-${timestampDirectoryPart(this.now())}-`))
+      const restorePointDatabase = join(restorePointDirectory, 'database.sqlite')
+      const restorePointAssets = join(restorePointDirectory, 'assets')
+      const assetParentDirectory = dirname(this.options.assetDirectory)
+      mkdirSync(assetParentDirectory, { recursive: true })
+      const temporaryAssets = mkdtempSync(join(assetParentDirectory, '.infinite-board-restore-assets-'))
+      const previousAssets = `${this.options.assetDirectory}.before-restore`
 
-      const validation = this.validateRestoredDatabase()
-      rmSync(previousAssets, { recursive: true, force: true })
-      return { restorePointDirectory, validation }
-    } catch (error) {
-      if (existsSync(restorePointDatabase)) {
+      try {
+        await createOfflineDatabaseBackup(this.options.databasePath, restorePointDatabase)
+        copyDirectory(this.options.assetDirectory, restorePointAssets)
+        copyDirectory(assetDirectory, temporaryAssets)
+        // Detect an incomplete or corrupted copy before swapping either live
+        // component. Validation is repeated after the swap to cover I/O races.
+        this.validateDatabaseAndAssets(databasePath, temporaryAssets)
+
         removeSqliteSidecars(this.options.databasePath)
-        await createOfflineDatabaseBackup(restorePointDatabase, this.options.databasePath)
+        await createOfflineDatabaseBackup(databasePath, this.options.databasePath)
+        rmSync(previousAssets, { recursive: true, force: true })
+        if (existsSync(this.options.assetDirectory)) renameSync(this.options.assetDirectory, previousAssets)
+        renameSync(temporaryAssets, this.options.assetDirectory)
+
+        const validation = this.validateDatabaseAndAssets(this.options.databasePath, this.options.assetDirectory)
+        rmSync(previousAssets, { recursive: true, force: true })
+        return { restorePointDirectory, validation }
+      } catch (error) {
+        if (existsSync(restorePointDatabase)) {
+          removeSqliteSidecars(this.options.databasePath)
+          await createOfflineDatabaseBackup(restorePointDatabase, this.options.databasePath)
+        }
+        if (existsSync(previousAssets)) {
+          rmSync(this.options.assetDirectory, { recursive: true, force: true })
+          renameSync(previousAssets, this.options.assetDirectory)
+        }
+        throw error
+      } finally {
+        rmSync(temporaryAssets, { recursive: true, force: true })
       }
-      if (existsSync(previousAssets)) {
-        rmSync(this.options.assetDirectory, { recursive: true, force: true })
-        renameSync(previousAssets, this.options.assetDirectory)
-      }
-      throw error
     } finally {
-      rmSync(temporaryAssets, { recursive: true, force: true })
+      rmSync(stagingDirectory, { recursive: true, force: true })
     }
   }
 
-  private validateRestoredDatabase(): RestoreValidation {
-    const database = new Database(this.options.databasePath, { readonly: true })
+  private validateDatabaseAndAssets(databasePath: string, assetDirectory: string): RestoreValidation {
+    const database = new Database(databasePath, { readonly: true })
     try {
       if (database.pragma('integrity_check', { simple: true }) !== 'ok') {
         throw new BackupValidationError('DATABASE_INTEGRITY_CHECK_FAILED')
@@ -291,9 +314,54 @@ export class BackupService {
       const boards = new BoardRepository(database)
       const references = new BoardReferenceRepository(database)
       for (const project of projects.list()) this.validateProject(project, boards, references)
-      for (const table of ['realtime_room_snapshots', 'realtime_room_updates', 'comment_threads', 'comment_messages', 'audit_events']) {
+      for (const table of [
+        'realtime_room_snapshots',
+        'realtime_room_updates',
+        'comment_threads',
+        'comment_messages',
+        'audit_events',
+        'asset_upload_owners',
+      ]) {
         if (!database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table)) {
           throw new BackupValidationError(`COLLABORATION_TABLE_MISSING:${table}`)
+        }
+      }
+      if (!database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='assets'").get()) {
+        throw new BackupValidationError('ASSET_TABLE_MISSING')
+      }
+      const assetRows = database.prepare('SELECT sha256, mime, size FROM assets ORDER BY sha256').all() as Array<{
+        sha256: unknown
+        mime: unknown
+        size: unknown
+      }>
+      for (const row of assetRows) {
+        if (typeof row.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(row.sha256)) {
+          throw new BackupValidationError('BACKUP_ASSET_HASH_INVALID')
+        }
+        const sha256 = row.sha256
+        const path = join(assetDirectory, sha256)
+        if (!existsSync(path)) throw new BackupValidationError(`BACKUP_ASSET_MISSING:${sha256}`)
+        const stat = lstatSync(path)
+        if (!stat.isFile() || stat.isSymbolicLink()) {
+          throw new BackupValidationError(`BACKUP_ASSET_NOT_FILE:${sha256}`)
+        }
+        if (typeof row.size !== 'number' || !Number.isSafeInteger(row.size) || row.size < 0 || stat.size !== row.size) {
+          throw new BackupValidationError(`BACKUP_ASSET_SIZE_MISMATCH:${sha256}`)
+        }
+        const bytes = new Uint8Array(readFileSync(path))
+        if (createHash('sha256').update(bytes).digest('hex') !== sha256) {
+          throw new BackupValidationError(`BACKUP_ASSET_HASH_MISMATCH:${sha256}`)
+        }
+        if (typeof row.mime !== 'string') {
+          throw new BackupValidationError(`BACKUP_ASSET_CONTENT_INVALID:${sha256}:UNSUPPORTED_MIME`)
+        }
+        try {
+          assertAssetContentValid(bytes, row.mime)
+        } catch (error) {
+          if (error instanceof AssetContentValidationError) {
+            throw new BackupValidationError(`BACKUP_ASSET_CONTENT_INVALID:${sha256}:${error.reason}`)
+          }
+          throw error
         }
       }
       return { database: 'ok', referenceGraph: 'ok', referenceShapes: 'ok', collaboration: 'ok' }
@@ -308,6 +376,9 @@ export class BackupService {
     references: BoardReferenceRepository,
   ): void {
     const projectBoards = boards.listByProject(project.id)
+    if (!projectBoards.some((board) => board.id === project.rootBoardId)) {
+      throw new BackupValidationError(`PROJECT_ROOT_BOARD_INVALID:${project.id}`)
+    }
     const projectReferences = references.listByProject(project.id)
     assertBoardReferenceGraphValid(projectBoards, projectReferences)
     const outboundByBoard = new Map<string, BoardReferenceRecord[]>()

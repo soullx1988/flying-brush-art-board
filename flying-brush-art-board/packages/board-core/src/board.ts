@@ -4,11 +4,19 @@ export interface ImportSource {
   sourceId?: string
 }
 
+export type BoardAccessLevel = 'project' | 'owner-only'
+
 export interface StoredBoard {
   id: string
   projectId: string
   title: string
   tldrawSnapshot: unknown
+  /** Missing only on legacy/in-memory callers; repositories always materialize it. */
+  accessLevel?: BoardAccessLevel
+  /** Required whenever accessLevel is owner-only. */
+  ownerOpenId?: string
+  /** Read/export projections use this to declare that the snapshot is an empty privacy placeholder. */
+  snapshotAccess?: 'full' | 'projected' | 'redacted'
   sourceMetadata?: ImportSource
   revision: number
   createdAt: string

@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
 
 import {
   stableTopologicalBoardOrder,
@@ -21,6 +22,117 @@ export interface ProjectPdfInput {
   boards: readonly StoredBoard[]
   references: readonly BoardReferenceRecord[]
   assets?: ReadonlyMap<string, string> | Readonly<Record<string, string>>
+  /** A single point-in-time snapshot shared by every trading panel in this export. */
+  tradingSnapshot?: ProjectPdfTradingSnapshot
+}
+
+export interface ProjectPdfTradingSnapshot {
+  status: 'ready' | 'stale' | 'degraded' | 'unavailable'
+  updatedAt: string
+  tradeDate?: string
+  sourceLabel: string
+  message?: string
+  revision?: string
+  streamId?: string
+  sequence?: number
+  sourceGeneratedAt?: string | null
+  availableAt?: string | null
+  lastSuccessAt?: string | null
+  lastErrorAt?: string | null
+  freshness?: 'CURRENT' | 'STALE' | 'UNKNOWN'
+  sourceHealth?: 'CURRENT' | 'STALE' | 'DEGRADED' | 'UNAVAILABLE'
+  freshUntil?: string | null
+  todayOverview?: {
+    reportGeneratedAt?: string | null
+    phaseGeneratedAt?: string | null
+    currentPhase?: string
+    currentPhaseLabel?: string
+    overallState?: string
+    sourceTradeDate?: string
+    decisionTradeDate?: string
+    planTradeDate?: string
+    dataAsOf?: string | null
+    validUntil?: string | null
+    nextKeyTime?: string | null
+    canParticipate?: boolean
+    participationStatus?: string
+    participationSummary?: string
+    sourceExecutionAuthority?: string
+    effectiveExecutionAuthority?: string
+    unattendedAction?: string
+    focusFamily?: string
+    focusSummary?: string
+    primaryTheme?: string
+    parallelThemes?: string[]
+    phase?: string
+    phaseStatus?: string
+    pipelineHealth?: string
+    planAvailability?: string
+    marketDecision?: string
+    executionAuthority?: string
+    reasonCodes?: string[]
+    summaryLines?: string[]
+    decisionChain?: Array<{
+      id: string
+      label: string
+      status: string
+      summary: string
+      occurredAt?: string | null
+      validUntil?: string | null
+      evidenceIds?: string[]
+    }>
+    changes?: Array<{ id: string; label: string; summary: string }>
+    evidenceRefs?: Array<{
+      id: string
+      label: string
+      kind: string
+      sha256?: string
+      occurredAt?: string | null
+      informationNature?: string
+    }>
+    auction?: {
+      status?: string
+      snapshotAt?: string | null
+      population?: number
+      mainBoardPopulation?: number
+      executionAuthority?: string
+      leader?: {
+        code: string
+        name: string
+        marketSegment?: string
+        auctionChangePct?: number
+        sealAmountCny?: number
+        sealToTurnoverRatio?: number
+        executionAuthority?: string
+      }
+    }
+  }
+  market?: {
+    environmentVerdict?: string
+    nodeVerdict?: string
+    limitUpTotal?: number
+    limitDownTotal?: number
+    highestBoardLevel?: number
+    summaryLines?: string[]
+  }
+  themes: Array<{ name: string; heat?: number; structure?: string }>
+  stocks: Array<{ code: string; name: string; score?: number; action?: string; reason?: string }>
+  announcements: Array<{
+    id: string
+    title: string
+    verificationStatus?: 'VERIFIED' | 'UNVERIFIED'
+    summary?: string
+    publishedAt?: string
+    names?: string[]
+    codes?: string[]
+  }>
+  readiness?: {
+    state?: string
+    executionEligible?: boolean
+    observationEligible?: boolean
+    reasonCount?: number
+  }
+  services: Array<{ name: string; status: string; detail?: string }>
 }
 
 export interface PdfShapeBounds {
@@ -73,6 +185,8 @@ interface PdfDocumentLike extends NodeJS.ReadableStream {
   outline: PdfOutline
   addPage(options?: { size?: [number, number]; margin?: number }): PdfDocumentLike
   addNamedDestination(name: string, ...args: unknown[]): PdfDocumentLike
+  registerFont(name: string, source: string): PdfDocumentLike
+  font(name: string): PdfDocumentLike
   fontSize(size: number): PdfDocumentLike
   fillColor(color: string): PdfDocumentLike
   text(text: string, x: number, y: number, options?: Record<string, unknown>): PdfDocumentLike
@@ -92,6 +206,13 @@ type SvgToPdf = (
 ) => void
 
 const require = createRequire(import.meta.url)
+const PDF_FONT_FAMILY = 'InfiniteBoardSans'
+const PDF_FONT_BOLD = `${PDF_FONT_FAMILY}-Bold`
+
+function pdfFontPath(fileName: 'NotoSansHans-Regular.otf' | 'NotoSansHans-Bold.otf'): string {
+  const packageEntry = require.resolve('@embedpdf/fonts-sc')
+  return resolve(dirname(packageEntry), '..', 'fonts', fileName)
+}
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -103,6 +224,14 @@ function snapshotStore(snapshot: unknown): Record<string, unknown> {
   const value = objectValue(snapshot)
   const document = objectValue(value.document)
   return objectValue(document.store ?? value.store)
+}
+
+function snapshotShapeCount(snapshot: unknown): number {
+  let count = 0
+  for (const record of Object.values(snapshotStore(snapshot))) {
+    if (objectValue(record).typeName === 'shape') count += 1
+  }
+  return count
 }
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -239,6 +368,239 @@ function safeImageSource(value: unknown): string | undefined {
     : undefined
 }
 
+type PdfTradingFactState = 'CURRENT' | 'STALE' | 'DEGRADED' | 'UNAVAILABLE'
+
+const PDF_TRADING_STATE: Record<PdfTradingFactState, { label: string; color: string; background: string }> = {
+  CURRENT: { label: '当前快照', color: '#166534', background: '#dcfce7' },
+  STALE: { label: '数据过期', color: '#9a3412', background: '#ffedd5' },
+  DEGRADED: { label: '数据降级', color: '#92400e', background: '#fef3c7' },
+  UNAVAILABLE: { label: '数据不可用', color: '#991b1b', background: '#fee2e2' },
+}
+
+function compactText(value: unknown, maxLength: number): string {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim()
+  const characters = [...normalized]
+  return characters.length > maxLength
+    ? `${characters.slice(0, Math.max(1, maxLength - 1)).join('')}…`
+    : normalized
+}
+
+function formatPdfTime(value: string | null | undefined): string {
+  if (!value || !Number.isFinite(Date.parse(value))) return '未提供'
+  return new Date(value).toLocaleString('zh-CN', {
+    hour12: false,
+    timeZone: 'Asia/Shanghai',
+  })
+}
+
+function pdfTradingFactState(snapshot: ProjectPdfTradingSnapshot | undefined): PdfTradingFactState {
+  if (!snapshot || snapshot.status === 'unavailable' || snapshot.sourceHealth === 'UNAVAILABLE') return 'UNAVAILABLE'
+  if (snapshot.status === 'degraded' || snapshot.sourceHealth === 'DEGRADED') return 'DEGRADED'
+  if (snapshot.status === 'stale' || snapshot.freshness === 'STALE' || snapshot.sourceHealth === 'STALE') return 'STALE'
+  return snapshot.status === 'ready'
+    && snapshot.sourceHealth === 'CURRENT'
+    && snapshot.freshness === 'CURRENT'
+    ? 'CURRENT'
+    : 'DEGRADED'
+}
+
+function svgTextLine(
+  value: unknown,
+  x: number,
+  y: number,
+  options: {
+    size?: number
+    color?: string
+    weight?: 'normal' | 'bold'
+    anchor?: 'start' | 'middle' | 'end'
+    maxLength?: number
+  } = {},
+): string {
+  const text = compactText(value, options.maxLength ?? 80)
+  if (!text) return ''
+  return `<text x="${x}" y="${y}" fill="${options.color ?? '#172033'}" font-family="${PDF_FONT_FAMILY}" font-size="${options.size ?? 16}" font-weight="${options.weight ?? 'normal'}" text-anchor="${options.anchor ?? 'start'}">${escapeXml(text)}</text>`
+}
+
+function renderTradingPanelUnavailable(
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot | undefined,
+  bodyTop: number,
+  bodyBottom: number,
+): string {
+  const x = geometry.x + 24
+  const y = bodyTop + Math.max(52, (bodyBottom - bodyTop) * 0.34)
+  return [
+    `<rect x="${x}" y="${bodyTop + 20}" width="${geometry.width - 48}" height="${Math.max(96, bodyBottom - bodyTop - 40)}" rx="14" fill="#fff7f7" stroke="#fecaca"/>`,
+    svgTextLine('数据源暂不可用', x + 22, y, { size: 24, weight: 'bold', color: '#991b1b' }),
+    svgTextLine(snapshot?.message ?? '选股后台未启用或尚无可核验快照。', x + 22, y + 34, { size: 16, color: '#7f1d1d', maxLength: 70 }),
+  ].join('')
+}
+
+function renderTradingMarketPanel(
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot,
+  bodyTop: number,
+): string {
+  const market = snapshot.market ?? {}
+  const metrics = [
+    ['环境许可', market.environmentVerdict ?? '—'],
+    ['市场节点', market.nodeVerdict ?? '—'],
+    ['涨停 / 跌停', `${market.limitUpTotal ?? '—'} / ${market.limitDownTotal ?? '—'}`],
+    ['最高连板', market.highestBoardLevel ? `${market.highestBoardLevel} 板` : '—'],
+  ]
+  const gap = 12
+  const left = geometry.x + 24
+  const cardWidth = (geometry.width - 48 - gap * 3) / 4
+  const cards = metrics.map(([label, value], index) => {
+    const x = left + index * (cardWidth + gap)
+    return `<g><rect x="${x}" y="${bodyTop + 18}" width="${cardWidth}" height="72" rx="10" fill="#f8fafc" stroke="#dbe4ee"/>${svgTextLine(label, x + 12, bodyTop + 43, { size: 14, color: '#64748b', maxLength: 16 })}${svgTextLine(value, x + 12, bodyTop + 73, { size: 21, weight: 'bold', maxLength: 18 })}</g>`
+  }).join('')
+  const themes = snapshot.themes.slice(0, 5).map((theme) => theme.heat === undefined
+    ? theme.name
+    : `${theme.name} ${theme.heat.toFixed(1)}`)
+  return [
+    cards,
+    svgTextLine(`主线：${themes.join(' · ') || '尚无可核验主线'}`, left, bodyTop + 124, { size: 18, weight: 'bold', maxLength: 70 }),
+    svgTextLine(market.summaryLines?.[0] ?? '当前快照未提供市场摘要。', left, bodyTop + 158, { size: 16, color: '#475569', maxLength: 82 }),
+  ].join('')
+}
+
+function renderTradingTodayOverviewPanel(
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot,
+  bodyTop: number,
+  bodyBottom: number,
+): string {
+  const overview = snapshot.todayOverview
+  const left = geometry.x + 24
+  const width = geometry.width - 48
+  const gap = 12
+  const cardWidth = (width - gap * 3) / 4
+  const cards = [
+    ['今天主要看', overview?.focusFamily ?? overview?.primaryTheme ?? '—'],
+    ['现在处于', overview?.currentPhaseLabel ?? overview?.phaseStatus ?? overview?.phase ?? '—'],
+    ['系统怎么看', overview?.overallState ?? overview?.marketDecision ?? '—'],
+    ['现在能不能参与', overview?.canParticipate ? '可以参与' : '不能参与'],
+  ].map(([label, value], index) => {
+    const x = left + index * (cardWidth + gap)
+    return `<g><rect x="${x}" y="${bodyTop + 18}" width="${cardWidth}" height="72" rx="10" fill="#f8fafc" stroke="#dbe4ee"/>${svgTextLine(label, x + 12, bodyTop + 43, { size: 14, color: '#64748b', maxLength: 16 })}${svgTextLine(value, x + 12, bodyTop + 73, { size: 20, weight: 'bold', maxLength: 18 })}</g>`
+  }).join('')
+  const lines = overview?.summaryLines?.filter(Boolean) ?? []
+  const chain = overview?.decisionChain?.slice(0, 4).map((step) => `${step.label}：${step.status}，${step.summary}`).join('；')
+  const changes = overview?.changes?.slice(0, 3).map((item) => `${item.label}：${item.summary}`).join('；')
+  const serviceTop = bodyTop + 108
+  const serviceHeight = Math.max(46, Math.floor((bodyBottom - serviceTop - 16) / 4))
+  const serviceWidth = width
+  const services = [
+    ['现在怎么看', overview?.participationSummary ?? overview?.focusSummary ?? '当前快照未提供明确结论。'],
+    ['判断怎么来的', chain || lines[0] || '当前快照未提供完整判断过程。'],
+    ['从上一步到现在', changes || overview?.unattendedAction || overview?.reasonCodes?.[0] || '当前没有需要单独提醒的重要变化。'],
+    ['如果我没空', overview?.unattendedAction || '保持观察，不产生新的交易动作。'],
+  ].map(([label, value], index) => {
+    const y = serviceTop + index * serviceHeight
+    return `<g><rect x="${left}" y="${y}" width="${serviceWidth}" height="${serviceHeight - 8}" rx="10" fill="#ffffff" stroke="#e2e8f0"/>${svgTextLine(label, left + 12, y + 23, { size: 14, weight: 'bold', color: '#475569', maxLength: 12 })}${svgTextLine(value, left + 12, y + 46, { size: 15, color: '#172033', maxLength: 88 })}</g>`
+  }).join('')
+  return `${cards}${services}`
+}
+
+function renderTradingStockPanel(
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot,
+  bodyTop: number,
+  bodyBottom: number,
+): string {
+  const left = geometry.x + 24
+  const width = geometry.width - 48
+  const rowHeight = 40
+  const availableRows = Math.max(1, Math.floor((bodyBottom - bodyTop - 48) / rowHeight))
+  const columns = [left, left + width * 0.38, left + width * 0.51, left + width * 0.68]
+  const header = `<rect x="${left}" y="${bodyTop + 14}" width="${width}" height="34" rx="8" fill="#eaf2ff"/>${svgTextLine('股票', columns[0]! + 10, bodyTop + 37, { size: 14, weight: 'bold' })}${svgTextLine('分数', columns[1]!, bodyTop + 37, { size: 14, weight: 'bold' })}${svgTextLine('动作', columns[2]!, bodyTop + 37, { size: 14, weight: 'bold' })}${svgTextLine('依据', columns[3]!, bodyTop + 37, { size: 14, weight: 'bold' })}`
+  if (snapshot.stocks.length === 0) {
+    return `${header}${svgTextLine('当前快照暂无候选股票。', left + 10, bodyTop + 86, { size: 17, color: '#64748b' })}`
+  }
+  const rows = snapshot.stocks.slice(0, availableRows).map((stock, index) => {
+    const y = bodyTop + 48 + index * rowHeight
+    const background = index % 2 === 0 ? '#ffffff' : '#f8fafc'
+    return `<g><rect x="${left}" y="${y}" width="${width}" height="${rowHeight}" fill="${background}" stroke="#e5eaf0"/>${svgTextLine(`${stock.name} ${stock.code}`, columns[0]! + 10, y + 26, { size: 15, weight: 'bold', maxLength: 22 })}${svgTextLine(stock.score?.toFixed(1) ?? '—', columns[1]!, y + 26, { size: 15 })}${svgTextLine(stock.action ?? '观察', columns[2]!, y + 26, { size: 15, color: '#1d4ed8', maxLength: 10 })}${svgTextLine(stock.reason ?? '—', columns[3]!, y + 26, { size: 14, color: '#475569', maxLength: 34 })}</g>`
+  }).join('')
+  return `${header}${rows}`
+}
+
+function renderTradingAnnouncementsPanel(
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot,
+  bodyTop: number,
+  bodyBottom: number,
+): string {
+  const left = geometry.x + 24
+  const width = geometry.width - 48
+  if (snapshot.announcements.length === 0) {
+    return `${svgTextLine('暂无启用观察条目', left, bodyTop + 58, { size: 21, weight: 'bold' })}${svgTextLine('后台公告观察源有新内容后，下一次导出会写入冻结快照。', left, bodyTop + 92, { size: 16, color: '#64748b' })}`
+  }
+  const rowHeight = 78
+  const availableRows = Math.max(1, Math.floor((bodyBottom - bodyTop - 12) / rowHeight))
+  return snapshot.announcements.slice(0, availableRows).map((item, index) => {
+    const y = bodyTop + 12 + index * rowHeight
+    const verification = item.verificationStatus === 'VERIFIED' ? '官方原文证据已核验' : '待核验'
+    const targets = [...(item.names ?? []), ...(item.codes ?? [])].join(' · ')
+    return `<g><rect x="${left}" y="${y}" width="${width}" height="${rowHeight - 8}" rx="10" fill="#ffffff" stroke="#e2e8f0"/>${svgTextLine(item.title, left + 12, y + 25, { size: 16, weight: 'bold', maxLength: 48 })}${svgTextLine(`${verification} · ${item.publishedAt ?? '时间未标注'}`, left + width - 12, y + 25, { size: 13, color: item.verificationStatus === 'VERIFIED' ? '#166534' : '#92400e', anchor: 'end', maxLength: 40 })}${svgTextLine(`观察摘要 / 人工解读：${item.summary ?? '暂无摘要'}`, left + 12, y + 49, { size: 14, color: '#475569', maxLength: 76 })}${svgTextLine(targets || '题材级公告', left + 12, y + 66, { size: 11, color: '#64748b', maxLength: 42 })}</g>`
+  }).join('')
+}
+
+function renderTradingSystemPanel(
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot,
+  bodyTop: number,
+  bodyBottom: number,
+): string {
+  const left = geometry.x + 24
+  const width = geometry.width - 48
+  const readiness = snapshot.readiness
+  const header = `<rect x="${left}" y="${bodyTop + 16}" width="${width}" height="58" rx="10" fill="#eef6ff" stroke="#bfdbfe"/>${svgTextLine('协作快照状态', left + 14, bodyTop + 40, { size: 15, color: '#475569' })}${svgTextLine(readiness?.state ?? 'UNKNOWN', left + 164, bodyTop + 40, { size: 18, weight: 'bold', color: '#1d4ed8', maxLength: 18 })}${svgTextLine(`现在可参与：${snapshot.todayOverview?.canParticipate ? '是' : '否'} · 可供研究复核：${readiness?.observationEligible ? '是' : '否'} · 原因数：${readiness?.reasonCount ?? 0}`, left + 14, bodyTop + 63, { size: 13, color: '#475569', maxLength: 58 })}`
+  const rowHeight = 42
+  const availableRows = Math.max(1, Math.floor((bodyBottom - bodyTop - 88) / rowHeight))
+  const rows = snapshot.services.slice(0, availableRows).map((service, index) => {
+    const y = bodyTop + 84 + index * rowHeight
+    return `<g><rect x="${left}" y="${y}" width="${width}" height="${rowHeight - 4}" fill="${index % 2 === 0 ? '#ffffff' : '#f8fafc'}" stroke="#e5eaf0"/>${svgTextLine(service.name, left + 12, y + 25, { size: 15, weight: 'bold', maxLength: 24 })}${svgTextLine(service.status, left + width * 0.42, y + 25, { size: 14, color: '#1d4ed8', maxLength: 16 })}${svgTextLine(service.detail ?? '', left + width * 0.58, y + 25, { size: 13, color: '#64748b', maxLength: 42 })}</g>`
+  }).join('')
+  return `${header}${rows}`
+}
+
+function renderTradingPanel(
+  shapeId: string,
+  props: Record<string, unknown>,
+  geometry: PdfShapeBounds,
+  snapshot: ProjectPdfTradingSnapshot | undefined,
+): string {
+  const state = pdfTradingFactState(snapshot)
+  const stateStyle = PDF_TRADING_STATE[state]
+  const panelKind = String(props.panelKind ?? '')
+  const title = panelKind === 'announcements'
+    ? '公告观察源'
+    : compactText(props.title || '交易数据', 40)
+  const headerBottom = geometry.y + 112
+  const footerTop = geometry.y + geometry.height - 34
+  const bodyTop = headerBottom
+  const bodyBottom = Math.max(bodyTop + 64, footerTop)
+  const clipId = `trading-panel-${shapeId.replace(/[^a-z0-9_-]/gi, '-')}`
+  const metaWidth = (geometry.width - 48) / 3
+  const sourceLabel = snapshot?.sourceLabel ?? '选股后台（未连接）'
+  const revision = snapshot?.revision?.slice(0, 12) ?? '—'
+  const body = state === 'UNAVAILABLE'
+    ? renderTradingPanelUnavailable(geometry, snapshot, bodyTop, bodyBottom)
+    : panelKind === 'today-overview'
+      ? renderTradingTodayOverviewPanel(geometry, snapshot!, bodyTop, bodyBottom)
+      : panelKind === 'market-overview'
+      ? renderTradingMarketPanel(geometry, snapshot!, bodyTop)
+      : panelKind === 'stock-pool'
+        ? renderTradingStockPanel(geometry, snapshot!, bodyTop, bodyBottom)
+        : panelKind === 'announcements'
+          ? renderTradingAnnouncementsPanel(geometry, snapshot!, bodyTop, bodyBottom)
+          : renderTradingSystemPanel(geometry, snapshot!, bodyTop, bodyBottom)
+
+  return `<g data-shape-id="${escapeXml(shapeId)}" data-panel-kind="${escapeXml(panelKind)}" data-fact-state="${state}"><defs><clipPath id="${clipId}"><rect x="${geometry.x}" y="${geometry.y}" width="${geometry.width}" height="${geometry.height}" rx="12"/></clipPath></defs><g clip-path="url(#${clipId})"><rect x="${geometry.x}" y="${geometry.y}" width="${geometry.width}" height="${geometry.height}" rx="12" fill="#ffffff" stroke="#9aa8bb" stroke-width="2"/><rect x="${geometry.x}" y="${geometry.y}" width="${geometry.width}" height="${headerBottom - geometry.y}" fill="#f8fafc"/><rect x="${geometry.x + geometry.width - 166}" y="${geometry.y + 16}" width="142" height="30" rx="15" fill="${stateStyle.background}"/>${svgTextLine(stateStyle.label, geometry.x + geometry.width - 95, geometry.y + 37, { size: 14, weight: 'bold', color: stateStyle.color, anchor: 'middle', maxLength: 12 })}${svgTextLine(title, geometry.x + 24, geometry.y + 39, { size: 27, weight: 'bold', maxLength: 34 })}${svgTextLine(`来源：${sourceLabel}`, geometry.x + 24, geometry.y + 70, { size: 14, color: '#475569', maxLength: 32 })}${svgTextLine(`交易日：${snapshot?.tradeDate ?? '未提供'}`, geometry.x + 24 + metaWidth, geometry.y + 70, { size: 14, color: '#475569', maxLength: 24 })}${svgTextLine(`新鲜度：${snapshot?.freshness ?? 'UNKNOWN'}`, geometry.x + 24 + metaWidth * 2, geometry.y + 70, { size: 14, color: '#475569', maxLength: 24 })}${svgTextLine(`源时点：${formatPdfTime(snapshot?.sourceGeneratedAt)}`, geometry.x + 24, geometry.y + 96, { size: 13, color: '#64748b', maxLength: 32 })}${svgTextLine(`有效截止：${formatPdfTime(snapshot?.freshUntil)}`, geometry.x + 24 + metaWidth, geometry.y + 96, { size: 13, color: '#64748b', maxLength: 32 })}${svgTextLine(`版本：${revision}`, geometry.x + 24 + metaWidth * 2, geometry.y + 96, { size: 13, color: '#64748b', maxLength: 24 })}<line x1="${geometry.x}" y1="${headerBottom}" x2="${geometry.x + geometry.width}" y2="${headerBottom}" stroke="#dbe3ed"/>${body}<line x1="${geometry.x}" y1="${footerTop}" x2="${geometry.x + geometry.width}" y2="${footerTop}" stroke="#dbe3ed"/>${svgTextLine(`可用时点：${formatPdfTime(snapshot?.availableAt)} · 导出快照：${revision}`, geometry.x + 24, geometry.y + geometry.height - 11, { size: 12, color: '#64748b', maxLength: 72 })}</g></g>`
+}
+
 interface SnapshotRender {
   svg: string
   viewBox: PdfShapeBounds
@@ -248,6 +610,7 @@ interface SnapshotRender {
 function renderSnapshot(
   snapshot: unknown,
   assets: ProjectPdfInput['assets'],
+  tradingSnapshot?: ProjectPdfTradingSnapshot,
 ): SnapshotRender {
   const store = snapshotStore(snapshot)
   const shapes = Object.values(store)
@@ -279,8 +642,12 @@ function renderSnapshot(
     const geometry = shapeBoundsById.get(id)!
     const stroke = normalizedColor(props.color, '#334155')
     const fill = type === 'note' ? '#fef3c7' : type === 'board-reference' ? '#e0f2fe' : '#ffffff'
-    const text = richText(props.richText) || String(props.name ?? props.titleFallback ?? '')
+    const text = richText(props.richText) || String(props.name ?? props.title ?? props.titleFallback ?? '')
     const common = `data-shape-id="${escapeXml(id)}"`
+
+    if (type === 'trading-panel') {
+      return renderTradingPanel(id, props, geometry, tradingSnapshot)
+    }
 
     if (type === 'table') {
       const columns = Array.isArray(props.columns) ? props.columns.map(objectValue) : []
@@ -445,8 +812,9 @@ function renderSnapshot(
 export function renderSnapshotToSvg(
   snapshot: unknown,
   assets: ProjectPdfInput['assets'] = {},
+  tradingSnapshot?: ProjectPdfTradingSnapshot,
 ): string {
-  return renderSnapshot(snapshot, assets).svg
+  return renderSnapshot(snapshot, assets, tradingSnapshot).svg
 }
 
 function destinationName(boardId: string): string {
@@ -560,6 +928,13 @@ export async function renderProjectToPdf(input: ProjectPdfInput): Promise<Uint8A
   if (input.boards.length > MAX_PROJECT_PDF_BOARDS) {
     throw new ProjectPdfError('PDF_BOARD_LIMIT_EXCEEDED')
   }
+  let projectShapeCount = 0
+  for (const board of input.boards) {
+    projectShapeCount += snapshotShapeCount(board.tldrawSnapshot)
+    if (projectShapeCount > MAX_PROJECT_PDF_SHAPES) {
+      throw new ProjectPdfError('PDF_PROJECT_SHAPE_LIMIT_EXCEEDED')
+    }
+  }
   const plan = createProjectPdfPlan(input)
   const PDFDocument = require('pdfkit') as PdfDocumentConstructor
   const svgToPdf = require('svg-to-pdfkit') as SvgToPdf
@@ -568,6 +943,9 @@ export async function renderProjectToPdf(input: ProjectPdfInput): Promise<Uint8A
     compress: true,
     info: { Title: input.project.title, Creator: 'Infinite Board' },
   })
+  document
+    .registerFont(PDF_FONT_FAMILY, pdfFontPath('NotoSansHans-Regular.otf'))
+    .registerFont(PDF_FONT_BOLD, pdfFontPath('NotoSansHans-Bold.otf'))
   const output = collectPdf(document)
   const contentX = PAGE_MARGIN
   const contentY = PAGE_MARGIN + TITLE_HEIGHT
@@ -577,21 +955,31 @@ export async function renderProjectToPdf(input: ProjectPdfInput): Promise<Uint8A
   for (const page of plan.pages) {
     document.addPage({ size: [PAGE_WIDTH, PAGE_HEIGHT], margin: 0 })
     document.addNamedDestination(page.destination, 'Fit')
-    document.fontSize(20).fillColor('#0f172a').text(page.board.title, PAGE_MARGIN, PAGE_MARGIN, {
+    document.font(PDF_FONT_BOLD).fontSize(20).fillColor('#0f172a').text(page.board.title, PAGE_MARGIN, PAGE_MARGIN, {
       width: contentWidth,
       height: TITLE_HEIGHT,
       ellipsis: true,
     })
-    const rendered = renderSnapshot(page.board.tldrawSnapshot, input.assets)
+    const rendered = renderSnapshot(page.board.tldrawSnapshot, input.assets, input.tradingSnapshot)
     try {
       svgToPdf(document, rendered.svg, contentX, contentY, {
         width: contentWidth,
         height: contentHeight,
         preserveAspectRatio: 'xMidYMid meet',
         assumePt: true,
+        fontCallback: (
+          _family: string,
+          bold: boolean,
+          italic: boolean,
+          fontOptions: { fauxItalic?: boolean },
+        ) => {
+          if (italic) fontOptions.fauxItalic = true
+          return bold ? PDF_FONT_BOLD : PDF_FONT_FAMILY
+        },
       })
-    } catch {
-      document.rect(contentX, contentY, contentWidth, contentHeight).fill('#f8fafc')
+    } catch (error) {
+      document.end()
+      throw new Error(`PDF_SVG_RENDER_FAILED:${page.board.id}`, { cause: error })
     }
 
     const scale = Math.min(

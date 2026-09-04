@@ -5,6 +5,7 @@ import type {
   ProjectRecord,
   StoredBoard,
 } from '@infinite-board/board-core'
+import { tinyPngFixture } from '../media.js'
 
 export interface ReferenceGraphProjectAsset {
   sha256: string
@@ -113,7 +114,7 @@ export function createReferenceGraphProjectFixture(): ReferenceGraphProjectFixtu
     reference('ref-d-a-link', 'board-d', 'board-a', 'link'),
     reference('ref-a-a-link', 'board-a', 'board-a', 'link'),
   ]
-  const assetBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+  const assetBytes = tinyPngFixture
   const sha256 = createHash('sha256').update(assetBytes).digest('hex')
   const imageShape = {
     id: 'shape:image-a',

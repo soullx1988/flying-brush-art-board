@@ -9,9 +9,12 @@ export type BoardSessionStatus =
   | 'offline'
   | 'error'
 
+export type BoardSnapshotAccess = 'unknown' | 'full' | 'projected' | 'redacted'
+
 export interface BoardCommit {
   snapshot: unknown
   revision: number
+  snapshotAccess?: Exclude<BoardSnapshotAccess, 'unknown'>
 }
 
 export interface BoardSessionApi {
@@ -39,6 +42,8 @@ export interface BoardSessionOptions {
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
 }
+
+export type BoardSessionObservedCommitSource = 'realtime-projection' | 'local-command'
 
 export type BoardSessionFlushResult =
   | { ok: true; snapshot: unknown; revision: number }
@@ -104,6 +109,7 @@ function documentSnapshotFingerprint(snapshot: unknown): string {
 
 export class BoardSession {
   status: BoardSessionStatus = 'loading'
+  snapshotAccess: BoardSnapshotAccess = 'unknown'
   currentRevision = 0
   pendingSnapshot: unknown | undefined
 
@@ -125,6 +131,7 @@ export class BoardSession {
   private suppressEditorChanges = false
   private flushQueue: Promise<void> = Promise.resolve()
   private mountGeneration = 0
+  private canReuseObservedCommandRevision = false
 
   constructor(options: BoardSessionOptions) {
     this.api = options.api
@@ -171,14 +178,15 @@ export class BoardSession {
       this.loadIntoEditor(this.pendingSnapshot ?? this.committedSnapshot)
     } else {
       this.status = 'loading'
+      this.snapshotAccess = 'unknown'
       this.emit()
       const commit = await this.api.loadBoard(boardId)
       if (!this.isCurrentMount(generation, tabId, boardId, editor)) return
-      this.adoptServerCommit(commit.snapshot, commit.revision)
+      this.adoptServerCommit(commit.snapshot, commit.revision, commit.snapshotAccess)
     }
 
     if (!this.isCurrentMount(generation, tabId, boardId, editor)) return
-    if (this.mode === 'snapshot') {
+    if (this.mode === 'snapshot' && this.snapshotAccess === 'full') {
       this.unsubscribeEditor = editor.subscribe(() => this.handleEditorChange())
     }
   }
@@ -201,6 +209,7 @@ export class BoardSession {
   }
 
   markDirty(snapshot: unknown): void {
+    this.canReuseObservedCommandRevision = false
     this.pendingSnapshot = snapshot
     this.changeVersion += 1
     this.status = 'dirty'
@@ -209,7 +218,25 @@ export class BoardSession {
   }
 
   flush(): Promise<BoardSessionFlushResult> {
-    const result = this.flushQueue.then(() => this.performFlush())
+    return this.enqueueFlush(() => this.performFlush())
+  }
+
+  /**
+   * Establishes the server revision a structural command must use.
+   *
+   * Snapshot sessions keep their normal CAS flush semantics. Realtime sessions
+   * always read the durable projection, including when the session is clean, so
+   * a command cannot reuse the revision captured when the tab first mounted.
+   */
+  syncBeforeStructuralCommand(): Promise<BoardSessionFlushResult> {
+    if (this.mode === 'snapshot') return this.flush()
+    return this.enqueueFlush(() => this.waitForRealtimeProjection())
+  }
+
+  private enqueueFlush(
+    operation: () => Promise<BoardSessionFlushResult>,
+  ): Promise<BoardSessionFlushResult> {
+    const result = this.flushQueue.then(operation)
     this.flushQueue = result.then(
       () => undefined,
       () => undefined,
@@ -260,6 +287,7 @@ export class BoardSession {
       }
       this.committedSnapshot = commit.snapshot
       this.currentRevision = commit.revision
+      this.snapshotAccess = commit.snapshotAccess ?? 'full'
       if (this.changeVersion === savingVersion) {
         this.pendingSnapshot = undefined
         this.status = 'clean'
@@ -304,44 +332,61 @@ export class BoardSession {
   private async waitForRealtimeProjection(): Promise<BoardSessionFlushResult> {
     const boardId = this.boardId
     const editor = this.editor
-    if (!boardId || !editor) {
+    if (!boardId) {
       this.status = this.committedSnapshot === undefined ? 'loading' : 'clean'
       this.emit()
       return { ok: true, snapshot: this.committedSnapshot, revision: this.currentRevision }
     }
 
-    const expectedSnapshot = editor.getSnapshot()
-    const expectedFingerprint = documentSnapshotFingerprint(expectedSnapshot)
     const generation = this.mountGeneration
+    if (
+      this.canReuseObservedCommandRevision
+      && this.pendingSnapshot === undefined
+      && this.committedSnapshot !== undefined
+    ) {
+      this.canReuseObservedCommandRevision = false
+      this.status = 'clean'
+      this.emit()
+      return { ok: true, snapshot: this.committedSnapshot, revision: this.currentRevision }
+    }
     this.status = 'saving'
     this.emit()
 
     try {
+      if (!editor) {
+        const commit = await this.api.loadBoard(boardId)
+        if (generation === this.mountGeneration && boardId === this.boardId) {
+          this.observeServerCommit(commit.snapshot, commit.revision, commit.snapshotAccess)
+        }
+        return { ok: true, snapshot: commit.snapshot, revision: commit.revision }
+      }
+
       for (let attempt = 0; attempt < this.realtimeSyncMaxAttempts; attempt += 1) {
         const commit = await this.api.loadBoard(boardId)
         if (generation !== this.mountGeneration || boardId !== this.boardId || editor !== this.editor) {
           return { ok: true, snapshot: commit.snapshot, revision: commit.revision }
         }
+        const expectedSnapshot = editor.getSnapshot()
+        const expectedFingerprint = documentSnapshotFingerprint(expectedSnapshot)
         if (documentSnapshotFingerprint(commit.snapshot) === expectedFingerprint) {
-          this.committedSnapshot = commit.snapshot
-          this.currentRevision = commit.revision
-          this.status = 'clean'
-          this.emit()
+          this.observeServerCommit(commit.snapshot, commit.revision, commit.snapshotAccess)
           return { ok: true, snapshot: commit.snapshot, revision: commit.revision }
         }
         await this.waitForRealtimeSync()
       }
       const error = new Error('REALTIME_SYNC_TIMEOUT')
+      const recoverySnapshot = editor.getSnapshot()
       this.status = 'error'
       this.emit()
-      return { ok: false, reason: 'error', recoverySnapshot: expectedSnapshot, error }
+      return { ok: false, reason: 'error', recoverySnapshot, error }
     } catch (error) {
+      const recoverySnapshot = editor?.getSnapshot() ?? this.committedSnapshot
       this.status = isOfflineError(error) ? 'offline' : 'error'
       this.emit()
       return {
         ok: false,
         reason: this.status,
-        recoverySnapshot: expectedSnapshot,
+        recoverySnapshot,
         error,
       }
     }
@@ -366,7 +411,7 @@ export class BoardSession {
   async reloadFromServer(): Promise<BoardCommit> {
     if (!this.boardId) throw new Error('Cannot reload an unmounted board session')
     const commit = await this.api.loadBoard(this.boardId)
-    this.adoptServerCommit(commit.snapshot, commit.revision)
+    this.adoptServerCommit(commit.snapshot, commit.revision, commit.snapshotAccess)
     return commit
   }
 
@@ -374,7 +419,7 @@ export class BoardSession {
     if (!this.boardId) throw new Error('Cannot refresh an unmounted board session')
     const commit = await this.api.loadBoard(this.boardId)
     if (!this.hasPendingChanges && commit.revision !== this.currentRevision) {
-      this.adoptServerCommit(commit.snapshot, commit.revision)
+      this.adoptServerCommit(commit.snapshot, commit.revision, commit.snapshotAccess)
     }
     return commit
   }
@@ -383,18 +428,44 @@ export class BoardSession {
     return this.pendingSnapshot === undefined ? undefined : cloneSnapshot(this.pendingSnapshot)
   }
 
-  adoptServerCommit(snapshot: unknown, revision: number): void {
-    this.cancelAutosave()
-    this.committedSnapshot = snapshot
-    this.currentRevision = revision
-    this.pendingSnapshot = undefined
-    this.status = 'clean'
+  adoptServerCommit(
+    snapshot: unknown,
+    revision: number,
+    snapshotAccess: Exclude<BoardSnapshotAccess, 'unknown'> = 'full',
+  ): void {
+    this.canReuseObservedCommandRevision = false
+    this.updateCommittedState(snapshot, revision, snapshotAccess)
     this.loadIntoEditor(snapshot)
     this.emit()
   }
 
+  /** Updates command/session metadata without writing a REST snapshot into a live store. */
+  observeServerCommit(
+    snapshot: unknown,
+    revision: number,
+    snapshotAccess: Exclude<BoardSnapshotAccess, 'unknown'> = 'full',
+    source: BoardSessionObservedCommitSource = 'realtime-projection',
+  ): void {
+    this.updateCommittedState(snapshot, revision, snapshotAccess)
+    this.canReuseObservedCommandRevision = source === 'local-command'
+    this.emit()
+  }
+
+  private updateCommittedState(
+    snapshot: unknown,
+    revision: number,
+    snapshotAccess: Exclude<BoardSnapshotAccess, 'unknown'>,
+  ): void {
+    this.cancelAutosave()
+    this.committedSnapshot = snapshot
+    this.currentRevision = revision
+    this.snapshotAccess = snapshotAccess
+    this.pendingSnapshot = undefined
+    this.status = 'clean'
+  }
+
   private handleEditorChange(): void {
-    if (this.suppressEditorChanges || !this.editor) return
+    if (this.suppressEditorChanges || !this.editor || this.snapshotAccess !== 'full') return
     this.markDirty(this.editor.getSnapshot())
   }
 

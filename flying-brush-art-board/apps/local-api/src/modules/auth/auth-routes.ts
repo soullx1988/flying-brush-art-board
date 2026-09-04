@@ -13,6 +13,7 @@ export interface AuthenticationRouteDependencies extends AuthenticationDependenc
   recordLogin?(identity: FeishuLoginIdentity): Promise<AllowedUser>
   realtimeEnabled?: boolean
   audit?: AuditRepository
+  allowedOrigins?: ReadonlySet<string>
 }
 
 function stringQuery(value: unknown): string | undefined {
@@ -35,20 +36,29 @@ function requestProtocol(request: FastifyRequest): 'http' | 'https' {
   return protocol
 }
 
-function callbackUrl(request: FastifyRequest, requestedOrigin?: string): string {
+function requestOrigin(request: FastifyRequest): string {
+  const host = firstForwardedHeader(request.headers['x-forwarded-host']) ?? request.headers.host
+  if (!host) throw new Error('Missing request host')
+  const origin = new URL(`${requestProtocol(request)}://${host}`)
+  if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('Invalid request origin')
+  return origin.origin
+}
+
+function requireAllowedOrigin(origin: string, allowedOrigins: ReadonlySet<string> | undefined): string {
+  if (allowedOrigins && !allowedOrigins.has(origin)) throw new Error('Origin is not allowed')
+  return origin
+}
+
+function callbackUrl(request: FastifyRequest, requestedOrigin?: string, allowedOrigins?: ReadonlySet<string>): string {
   if (requestedOrigin !== undefined) {
     const origin = new URL(requestedOrigin)
     if ((origin.protocol !== 'http:' && origin.protocol !== 'https:')
       || origin.origin !== requestedOrigin
       || origin.username
       || origin.password) throw new Error('Invalid requested origin')
-    return new URL('/auth/feishu/callback', origin).toString()
+    return new URL('/auth/feishu/callback', requireAllowedOrigin(origin.origin, allowedOrigins)).toString()
   }
-  const host = firstForwardedHeader(request.headers['x-forwarded-host']) ?? request.headers.host
-  if (!host) throw new Error('Missing request host')
-  const origin = new URL(`${requestProtocol(request)}://${host}`)
-  if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('Invalid request origin')
-  return new URL('/auth/feishu/callback', origin).toString()
+  return new URL('/auth/feishu/callback', requireAllowedOrigin(requestOrigin(request), allowedOrigins)).toString()
 }
 
 export function registerAuthenticationRoutes(app: FastifyInstance, dependencies: AuthenticationRouteDependencies): void {
@@ -61,7 +71,7 @@ export function registerAuthenticationRoutes(app: FastifyInstance, dependencies:
     const verifier = createOpaqueToken()
     let redirectUri: string
     try {
-      redirectUri = callbackUrl(request, requestedOrigin)
+      redirectUri = callbackUrl(request, requestedOrigin, dependencies.allowedOrigins)
     } catch {
       return reply.code(400).send({ code: 'INVALID_APP_ORIGIN' })
     }
@@ -79,6 +89,16 @@ export function registerAuthenticationRoutes(app: FastifyInstance, dependencies:
     if (!state || !code) return reply.code(400).send({ code: 'OAUTH_STATE_INVALID' })
     const savedState = dependencies.states.consume(state)
     if (!savedState) return reply.code(400).send({ code: 'OAUTH_STATE_INVALID' })
+    if (dependencies.allowedOrigins) {
+      try {
+        const savedOrigin = new URL(savedState.redirectUri).origin
+        if (!dependencies.allowedOrigins.has(savedOrigin) || requestOrigin(request) !== savedOrigin) {
+          return reply.code(400).send({ code: 'INVALID_APP_ORIGIN' })
+        }
+      } catch {
+        return reply.code(400).send({ code: 'INVALID_APP_ORIGIN' })
+      }
+    }
     let identity: Awaited<ReturnType<FeishuOAuthProvider['exchangeCode']>>
     try {
       identity = await dependencies.oauth.exchangeCode({ code, redirectUri: savedState.redirectUri })

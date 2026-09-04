@@ -41,12 +41,12 @@ export interface FeishuRealSmokeDependencies {
   error?: (message: string) => void
 }
 
-function realDependencies(): Required<Pick<FeishuRealSmokeDependencies, 'credentialStore' | 'resolveWhiteboardToken' | 'client'>> {
+function realDependencies(actorOpenId: string): Required<Pick<FeishuRealSmokeDependencies, 'credentialStore' | 'resolveWhiteboardToken' | 'client'>> {
   const credentialStore = new EncryptedCredentialStore({ directory: resolveAppDataDirectory() })
   return {
     credentialStore,
     resolveWhiteboardToken: (input, client) => resolveWhiteboardToken(input, client),
-    client: new FeishuBoardClient({ credentials: credentialStore }),
+    client: new FeishuBoardClient({ credentials: credentialStore, actorOpenId }),
   }
 }
 
@@ -74,9 +74,14 @@ export async function runFeishuRealSmoke(
     return 0
   }
 
-  const defaults = realDependencies()
+  const actorOpenId = environment.FEISHU_REAL_OPEN_ID?.trim()
+  if (!actorOpenId) {
+    error('FEISHU_REAL_OPEN_ID_REQUIRED: set the authenticated Feishu open_id used for this smoke test.')
+    return 2
+  }
+  const defaults = realDependencies(actorOpenId)
   const credentials = overrides.credentialStore ?? defaults.credentialStore
-  if (!credentials.read()) {
+  if (!credentials.read(actorOpenId)) {
     error('FEISHU_OAUTH_REQUIRED: start the local API, open /auth/feishu/import/start, and finish the loopback authorization.')
     return 2
   }
@@ -90,7 +95,7 @@ export async function runFeishuRealSmoke(
   const client = overrides.client ?? defaults.client
   const resolveToken = overrides.resolveWhiteboardToken ?? defaults.resolveWhiteboardToken
   try {
-    const token = await resolveToken(target, new FeishuWikiDocxClient({ credentials }))
+    const token = await resolveToken(target, new FeishuWikiDocxClient({ credentials, actorOpenId }))
     const nodes = await client.listWhiteboardNodes(token)
     await client.getWhiteboardTheme(token)
     const preview = await client.downloadWhiteboardPreview(token)

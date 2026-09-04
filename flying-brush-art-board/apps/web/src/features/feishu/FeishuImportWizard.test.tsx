@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { FeishuImportWizard } from './FeishuImportWizard'
@@ -44,6 +44,38 @@ describe('FeishuImportWizard', () => {
       target: { kind: 'new', projectId: expect.stringMatching(/^project-/), title: 'Imported workspace' },
       confirmed: true,
     }))
+  })
+
+  it('ignores a stale configuration load after the active client changes', async () => {
+    let resolveOldStatus!: (value: { connected: boolean }) => void
+    let resolveOldProjects!: (value: Array<{ id: string; title: string }>) => void
+    const oldClient = {
+      status: vi.fn(() => new Promise<{ connected: boolean }>((resolve) => { resolveOldStatus = resolve })),
+      projects: vi.fn(() => new Promise<Array<{ id: string; title: string }>>((resolve) => { resolveOldProjects = resolve })),
+      inspect: vi.fn(), commit: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const currentClient = {
+      status: vi.fn().mockResolvedValue({ connected: true }),
+      projects: vi.fn().mockResolvedValue([]),
+      inspect: vi.fn().mockResolvedValue({ sessionId: 'current-session', preview: { scene: { elements: [] }, report: { issues: [] }, fidelity: { editable: [], downgraded: [], rasterized: [], unsupported: [] }, baseline: { previewByteLength: 0 } } }),
+      commit: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const view = render(<FeishuImportWizard client={oldClient} onCommitted={() => undefined} />)
+    view.rerender(<FeishuImportWizard client={currentClient} onCommitted={() => undefined} />)
+    await screen.findByText('已连接')
+    fireEvent.change(screen.getByLabelText('飞书白板链接'), { target: { value: 'token' } })
+    fireEvent.click(screen.getByRole('button', { name: '仅预检，不导入' }))
+    await screen.findByText('白板为空。')
+    expect(screen.getByRole('radio', { name: '新建项目' })).toBeChecked()
+
+    await act(async () => {
+      resolveOldStatus({ connected: true })
+      resolveOldProjects([{ id: 'stale-project', title: 'Stale project' }])
+      await Promise.resolve()
+    })
+
+    expect(screen.getByRole('radio', { name: '新建项目' })).toBeChecked()
+    expect(screen.queryByRole('radio', { name: '已有项目' })).not.toBeInTheDocument()
   })
 
   it('renders scene geometry and visual styles as a scaled whiteboard preview', async () => {
@@ -100,5 +132,74 @@ describe('FeishuImportWizard', () => {
 
     await waitFor(() => expect(cancel).toHaveBeenCalledWith('stale-session'))
     expect(screen.queryByLabelText('兼容性报告')).not.toBeInTheDocument()
+  })
+
+  it('cancels a late inspection through its originating client after the client changes', async () => {
+    let resolveOldInspection!: (value: any) => void
+    const oldClient = {
+      status: vi.fn().mockResolvedValue({ connected: true }),
+      projects: vi.fn().mockResolvedValue([]),
+      inspect: vi.fn(() => new Promise<any>((resolve) => { resolveOldInspection = resolve })),
+      commit: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const currentClient = {
+      status: vi.fn().mockResolvedValue({ connected: true }),
+      projects: vi.fn().mockResolvedValue([]),
+      inspect: vi.fn(), commit: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const view = render(<FeishuImportWizard client={oldClient} onCommitted={() => undefined} />)
+    await screen.findByText('已连接')
+    fireEvent.change(screen.getByLabelText('飞书白板链接'), { target: { value: 'old-url' } })
+    fireEvent.click(screen.getByRole('button', { name: '仅预检，不导入' }))
+    await waitFor(() => expect(oldClient.inspect).toHaveBeenCalledWith('old-url'))
+
+    view.rerender(<FeishuImportWizard client={currentClient} onCommitted={() => undefined} />)
+    resolveOldInspection({ sessionId: 'old-session', preview: { scene: { elements: [] }, report: { issues: [] }, fidelity: { editable: [], downgraded: [], rasterized: [], unsupported: [] }, baseline: { previewByteLength: 0 } } })
+
+    await waitFor(() => expect(oldClient.cancel).toHaveBeenCalledWith('old-session'))
+    expect(currentClient.cancel).not.toHaveBeenCalledWith('old-session')
+    expect(screen.queryByLabelText('兼容性报告')).not.toBeInTheDocument()
+  })
+
+  it('does not surface an obsolete inspection error after the URL changes', async () => {
+    let rejectInspection!: (reason: Error) => void
+    const client = {
+      status: vi.fn().mockResolvedValue({ connected: true }),
+      projects: vi.fn().mockResolvedValue([]),
+      inspect: vi.fn(() => new Promise<any>((_resolve, reject) => { rejectInspection = reject })),
+      commit: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    render(<FeishuImportWizard client={client} onCommitted={() => undefined} />)
+    await screen.findByText('已连接')
+    fireEvent.change(screen.getByLabelText('飞书白板链接'), { target: { value: 'old-url' } })
+    fireEvent.click(screen.getByRole('button', { name: '仅预检，不导入' }))
+    await waitFor(() => expect(client.inspect).toHaveBeenCalledOnce())
+
+    fireEvent.change(screen.getByLabelText('飞书白板链接'), { target: { value: 'new-url' } })
+    await act(async () => { rejectInspection(new Error('OLD_INSPECTION_FAILED')); await Promise.resolve() })
+
+    expect(screen.queryByText('OLD_INSPECTION_FAILED')).not.toBeInTheDocument()
+    expect(screen.queryByText('飞书导入未完成')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '仅预检，不导入' })).not.toBeDisabled()
+  })
+
+  it('cancels a session that resolves after the wizard unmounts', async () => {
+    let resolveInspection!: (value: any) => void
+    const client = {
+      status: vi.fn().mockResolvedValue({ connected: true }),
+      projects: vi.fn().mockResolvedValue([]),
+      inspect: vi.fn(() => new Promise<any>((resolve) => { resolveInspection = resolve })),
+      commit: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined),
+    }
+    const view = render(<FeishuImportWizard client={client} onCommitted={() => undefined} />)
+    await screen.findByText('已连接')
+    fireEvent.change(screen.getByLabelText('飞书白板链接'), { target: { value: 'late-url' } })
+    fireEvent.click(screen.getByRole('button', { name: '仅预检，不导入' }))
+    await waitFor(() => expect(client.inspect).toHaveBeenCalledOnce())
+
+    view.unmount()
+    resolveInspection({ sessionId: 'late-session', preview: { scene: { elements: [] }, report: { issues: [] }, fidelity: { editable: [], downgraded: [], rasterized: [], unsupported: [] }, baseline: { previewByteLength: 0 } } })
+
+    await waitFor(() => expect(client.cancel).toHaveBeenCalledWith('late-session'))
   })
 })

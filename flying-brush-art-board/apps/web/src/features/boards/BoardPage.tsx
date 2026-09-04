@@ -3,6 +3,7 @@ import { Box, type Editor, type TLShapeId, type TLStore } from 'tldraw'
 import { ChatCircleDots, ClockCounterClockwise, SquaresFour } from '@phosphor-icons/react'
 import { Badge, Button, Drawer, Modal, Tag, toast } from '@ttqtt/liquid-glass-react'
 import type { BoardReferenceShape } from '@infinite-board/tldraw-adapter'
+import type { TradingPanelKind } from '@infinite-board/tldraw-adapter'
 import { getStoreSnapshot, snapshotToInteropScene } from '@infinite-board/tldraw-adapter'
 
 import type { BoardSessionStatus } from './board-session'
@@ -16,6 +17,7 @@ import type { CommentClient, CommentMessageView, CommentThreadView } from '../co
 import { resolveCommentAnchorPagePoint } from '../comments/CommentPins'
 import { chineseErrorMessage } from '../../ui-text'
 import { subscribeApplicationEvents, type ApplicationEvent } from '../automation-presence/application-events'
+import { hasTradingDrilldown, TradingDrilldownDock } from '../trading/TradingDrilldownDock'
 
 async function loadCommentState(client: CommentClient, boardId: string): Promise<{
   threads: CommentThreadView[]
@@ -53,6 +55,7 @@ export interface BoardPageProps {
   onDownloadRecovery?: () => void
   store: TLStore
   inputSessionKey: string
+  initialTradingPanelKind?: TradingPanelKind
   onEditorMount(editor: Editor): void
   onBeforePdfExport?(): Promise<void>
   onEditIntent(): boolean
@@ -79,6 +82,7 @@ export function BoardPage({
   onDownloadRecovery,
   store,
   inputSessionKey,
+  initialTradingPanelKind,
   onEditorMount,
   onBeforePdfExport,
   onEditIntent,
@@ -273,9 +277,11 @@ export function BoardPage({
         </div>
       </header>
       {automationEvent ? <div className={`automation-operation automation-operation--${automationEvent.type.split('.').at(-1)}`} role="status"><strong>{automationEvent.type === 'operation.started' ? 'AI 正在操作' : automationEvent.type === 'operation.committed' ? 'AI 操作完成' : 'AI 操作失败'}</strong><span>{automationEvent.summary}</span></div> : null}
+      <div className="board-page__canvas-shell" data-trading-drilldown={hasTradingDrilldown(boardId) ? 'true' : 'false'}>
       <CanvasEditor
         store={store}
         inputSessionKey={inputSessionKey}
+        {...(initialTradingPanelKind ? { initialTradingPanelKind } : {})}
         onMount={(editor) => {
           editorRef.current = editor
           onEditorMount(editor)
@@ -348,6 +354,8 @@ export function BoardPage({
         {...(boardReferenceActions ? { boardReferenceActions } : {})}
         {...(onBoardReferenceDrop ? { onBoardReferenceDrop } : {})}
       />
+      <TradingDrilldownDock boardId={boardId} />
+      </div>
       <Drawer open={Boolean(commentClient && boardId && commentsOpen)} onOpenChange={(open) => { if (!open) closeComments() }} placement="right" size={430} title={focusedCommentThreadId ? '评论详情' : `评论 (${commentThreads.length})`}>
         {commentClient && boardId ? <CommentPanel
           embedded

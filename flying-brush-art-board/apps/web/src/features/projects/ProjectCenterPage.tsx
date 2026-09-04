@@ -29,6 +29,7 @@ import {
 } from '@ttqtt/liquid-glass-react'
 
 import type { ProjectRecord, StoredBoard } from '@infinite-board/board-core'
+import type { TradingPanelKind } from '@infinite-board/tldraw-adapter'
 import { createBrowserUuid } from '../../app/browser-uuid'
 import {
   markProjectOpened,
@@ -42,6 +43,7 @@ import {
 import { subscribeApplicationEvents } from '../automation-presence/application-events'
 import { McpAccessPanel } from '../automation-presence/McpAccessPanel'
 import { FeishuConnectionPanel } from '../feishu/FeishuConnectionPanel'
+import { findTradingPanelBoard } from '../trading/trading-panel-navigation'
 
 export interface CreateProjectInput {
   id: string
@@ -53,10 +55,15 @@ export interface ProjectSummary extends ProjectRecord {
   boardCount?: number
   rootBoardTitle?: string
   boardTitles?: string[]
+  quickPanel?: { boardId: string; panelKind: TradingPanelKind; label: string }
 }
 
 export interface ProjectCenterClient {
   listProjects(): Promise<ProjectSummary[]>
+  ensureTradingWorkspace?(): Promise<
+    | { status: 'retired' }
+    | { status: 'created' | 'existing'; project: ProjectRecord; rootBoard: StoredBoard; boards: StoredBoard[] }
+  >
   createProject(input: CreateProjectInput): Promise<{ project: ProjectRecord; rootBoard: StoredBoard }>
   renameProject(projectId: string, title: string): Promise<ProjectRecord>
   deleteProject(projectId: string): Promise<void>
@@ -79,7 +86,11 @@ function formatUpdatedAt(value: string): string {
 
 export function ProjectCenterPage({ client, onOpenProject }: {
   client: ProjectCenterClient
-  onOpenProject(projectId: string): void
+  onOpenProject(
+    projectId: string,
+    boardId?: string,
+    options?: { focusPanelKind?: TradingPanelKind },
+  ): void
 }) {
   const [projects, setProjects] = useState<ProjectSummary[]>()
   const [preferences, setPreferences] = useState<ProjectPreferences>(() => readProjectPreferences())
@@ -94,7 +105,43 @@ export function ProjectCenterPage({ client, onOpenProject }: {
 
   const reload = () => {
     setError(undefined)
-    void client.listProjects().then(setProjects, () => setError('无法加载项目，请稍后重试。'))
+    void (async () => {
+      try {
+        const loaded = await client.listProjects()
+        if (!client.ensureTradingWorkspace) {
+          setProjects(loaded)
+          return
+        }
+        const bootstrapped = await client.ensureTradingWorkspace()
+        if (bootstrapped.status === 'retired') {
+          setProjects(loaded)
+          return
+        }
+        const summary: ProjectSummary = {
+          ...bootstrapped.project,
+          boardCount: bootstrapped.boards.length,
+          rootBoardTitle: bootstrapped.rootBoard.title,
+          boardTitles: bootstrapped.boards.map((board) => board.title),
+          ...(() => {
+            const board = findTradingPanelBoard(bootstrapped.boards, 'yishui-inference')
+            return board ? {
+              quickPanel: {
+                boardId: board.id,
+                panelKind: 'yishui-inference' as const,
+                label: '义水推演',
+              },
+            } : {}
+          })(),
+        }
+        setProjects([summary, ...loaded.filter((project) => project.id !== summary.id)])
+        if (loaded.length === 0) {
+          setPreferences(markProjectOpened(summary.id))
+          onOpenProject(summary.id, bootstrapped.rootBoard.id)
+        }
+      } catch {
+        setError('无法加载项目，请稍后重试。')
+      }
+    })()
   }
 
   useEffect(reload, [client])
@@ -112,9 +159,14 @@ export function ProjectCenterPage({ client, onOpenProject }: {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   }, [preferences, projects, query, view])
 
-  const openProject = (projectId: string) => {
+  const openProject = (
+    projectId: string,
+    boardId?: string,
+    focusPanelKind?: TradingPanelKind,
+  ) => {
     setPreferences(markProjectOpened(projectId))
-    onOpenProject(projectId)
+    if (boardId) onOpenProject(projectId, boardId, focusPanelKind ? { focusPanelKind } : undefined)
+    else onOpenProject(projectId)
   }
 
   const openDialog = (next: ProjectDialog) => {
@@ -292,9 +344,24 @@ export function ProjectCenterPage({ client, onOpenProject }: {
                   </button>
                   <footer>
                     <span className="project-card__root">默认入口：{project.rootBoardTitle ?? '概览'}</span>
-                    <Menu items={projectMenu(project)} onSelect={(key) => handleMenu(project, key)} placement="bottom-end">
-                      <Button variant="ghost" size="sm" aria-label={`${project.title} 更多操作`} icon={<DotsThree weight="bold" aria-hidden="true" />} />
-                    </Menu>
+                    <div className="project-card__footer-actions">
+                      {project.quickPanel ? (
+                        <Button
+                          variant="accent"
+                          size="sm"
+                          onClick={() => openProject(
+                            project.id,
+                            project.quickPanel!.boardId,
+                            project.quickPanel!.panelKind,
+                          )}
+                        >
+                          打开{project.quickPanel.label}
+                        </Button>
+                      ) : null}
+                      <Menu items={projectMenu(project)} onSelect={(key) => handleMenu(project, key)} placement="bottom-end">
+                        <Button variant="ghost" size="sm" aria-label={`${project.title} 更多操作`} icon={<DotsThree weight="bold" aria-hidden="true" />} />
+                      </Menu>
+                    </div>
                   </footer>
                 </article>
               )

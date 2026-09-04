@@ -6,8 +6,8 @@ import { AppRouter, LocalApiClient } from './router'
 import { registerWorkspaceExitGuard } from './workspace-exit-guard'
 
 vi.mock('../features/board-tabs/WorkspaceShell', () => ({
-  WorkspaceShell: ({ enableRealtime }: { enableRealtime?: boolean }) => (
-    <output data-testid="realtime-mode">{String(enableRealtime)}</output>
+  WorkspaceShell: ({ enableRealtime, routeFocusPanelKind }: { enableRealtime?: boolean; routeFocusPanelKind?: string }) => (
+    <output data-testid="realtime-mode" data-focus-panel={routeFocusPanelKind ?? ''}>{String(enableRealtime)}</output>
   ),
 }))
 
@@ -62,6 +62,21 @@ describe('AppRouter', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ expectedRevision: 7 })
   })
 
+  it('does not replay a whole-snapshot clipboard undo after a revision conflict', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 'REVISION_CONFLICT',
+      currentRevision: 9,
+    }), { status: 409, headers: { 'content-type': 'application/json' } }))
+
+    await expect(new LocalApiClient().undoClipboard('command-1', 4)).rejects.toMatchObject({
+      name: 'BoardSessionConflictError',
+      currentRevision: 9,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ expectedRevision: 4 })
+  })
+
   it('uses the offline editor when the authenticated runtime disables realtime collaboration', async () => {
     window.history.replaceState(null, '', '/projects/project-1/boards/board-1')
 
@@ -72,6 +87,18 @@ describe('AppRouter', () => {
     )
 
     expect(await screen.findByTestId('realtime-mode')).toHaveTextContent('false')
+  })
+
+  it('passes a valid direct panel focus to the workspace route', async () => {
+    window.history.replaceState(null, '', '/projects/project-1/boards/board-data?focusPanel=yishui-inference')
+
+    render(
+      <CurrentUserContext value={{ openId: 'local-acceptance-user', name: 'Local acceptance user', realtimeEnabled: false }}>
+        <AppRouter />
+      </CurrentUserContext>,
+    )
+
+    expect(await screen.findByTestId('realtime-mode')).toHaveAttribute('data-focus-panel', 'yishui-inference')
   })
 
   it('waits for the workspace exit guard before applying a popstate outside the project', async () => {

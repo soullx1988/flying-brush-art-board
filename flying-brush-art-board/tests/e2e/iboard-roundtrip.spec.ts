@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext } from './test.js'
+import { expect, test, type APIRequestContext, type Page } from './test.js'
 import type {
   BoardReferenceRecord,
   ProjectRecord,
@@ -26,10 +26,39 @@ interface ProjectState {
   references: BoardReferenceRecord[]
 }
 
+interface BoardState {
+  revision: number
+  tldrawSnapshot: { store?: Record<string, Record<string, unknown>> }
+}
+
 async function readProject(request: APIRequestContext, projectId: string): Promise<ProjectState> {
   const response = await request.get(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}`)
   expect(response.ok()).toBe(true)
   return response.json() as Promise<ProjectState>
+}
+
+async function readBoard(request: APIRequestContext, boardId: string): Promise<BoardState> {
+  const response = await request.get(`${API_BASE}/api/boards/${encodeURIComponent(boardId)}`)
+  expect(response.ok()).toBe(true)
+  return response.json() as Promise<BoardState>
+}
+
+async function waitForBoardReady(page: Page, title: string) {
+  await expect(page.getByRole('heading', { name: title })).toBeVisible()
+  await expect(page.getByLabel('白板画布')).toBeVisible()
+  await expect(page.locator('.loading-state').filter({ hasText: '正在加载画板' })).toHaveCount(0)
+  await expect(page.locator('[data-save-status]')).toHaveAttribute('data-save-status', 'clean', { timeout: 10_000 })
+}
+
+function emptyTextShapeCount(board: BoardState): number {
+  return Object.values(board.tldrawSnapshot.store ?? {}).filter((record) => (
+    record?.typeName === 'shape'
+    && record?.type === 'text'
+    && typeof record.props === 'object'
+    && record.props !== null
+    && typeof (record.props as { text?: unknown }).text === 'string'
+    && ((record.props as { text: string }).text).trim() === ''
+  )).length
 }
 
 async function seedCollisionTarget(
@@ -44,7 +73,10 @@ async function seedCollisionTarget(
       rootBoard: { id: rootBoardId, title: 'Keep root' },
     },
   })
-  expect(created.ok()).toBe(true)
+  if (!created.ok()) {
+    const body = await created.text()
+    throw new Error(`seedCollisionTarget create project failed: status=${created.status()} body=${body}`)
+  }
 
   for (const source of fixture.boards) {
     const response = await request.post(
@@ -141,9 +173,11 @@ async function openImportPicker(page: import('@playwright/test').Page, upload: {
   mimeType: string
   buffer: Buffer
 }) {
+  await page.getByRole('button', { name: '导入', exact: true }).click()
+  await page.getByRole('menuitem', { name: '导入 .iboard 项目包', exact: true }).click()
   const inspected = page.waitForResponse((response) =>
     response.url().endsWith('/api/import/iboard/inspect') && response.request().method() === 'POST')
-  await page.getByLabel('选择导入文件', { exact: true }).setInputFiles(upload)
+  await page.locator('.iboard-import-wizard input[type="file"]').setInputFiles(upload)
   const response = await inspected
   expect(response.status()).toBe(201)
   await page.locator('.iboard-import-wizard').waitFor({ state: 'visible' })
@@ -388,4 +422,56 @@ test('round-trips a colliding multi-source graph, cancels cleanly, and merges tw
   await expect(page.getByRole('heading', { name: `全部画板 ${initial.boards.length + 8}` })).toBeVisible()
   await page.getByRole('dialog', { name: '全部画板' }).getByRole('button', { name: '关闭' }).click()
   await expect(page.getByRole('tablist', { name: '已打开画板' }).getByRole('tab')).toHaveCount(2)
+
+  const importedBySourceId = new Map(first.boards.map((board) => [board.sourceMetadata?.sourceId, board]))
+  const nestedPath = [
+    ['external:board-c', 'external:board-d', 'embed'],
+    ['external:board-d', 'external:board-a', 'link'],
+    ['external:board-a', 'external:board-c', 'embed'],
+  ] as const
+  await page.goto(`/projects/${projectId}/boards/${encodeURIComponent(firstCommit.importedRootBoardId)}`)
+  await waitForBoardReady(page, importedBySourceId.get('external:board-c')!.title)
+  for (const [sourceId, targetId, kind] of nestedPath) {
+    const source = importedBySourceId.get(sourceId)
+    const target = importedBySourceId.get(targetId)
+    expect(source, sourceId).toBeDefined()
+    expect(target, targetId).toBeDefined()
+    const reference = first.references.find((candidate) => (
+      candidate.sourceBoardId === source!.id
+      && candidate.targetBoardId === target!.id
+      && candidate.kind === kind
+    ))
+    expect(reference, `${sourceId} -> ${targetId}:${kind}`).toBeDefined()
+    const referenceShape = page.locator(`.board-reference-shape[data-reference-id="${reference!.id}"]`)
+    await expect(referenceShape).toBeVisible()
+    const sourceBoardBefore = await readBoard(request, source!.id)
+    await page.waitForFunction((shapeId) => Boolean(
+      (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.getShapePageBounds(shapeId),
+    ), reference!.shapeId)
+    const point = await page.evaluate((shapeId) => {
+      const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const bounds = editor?.getShapePageBounds(shapeId)
+      if (!editor || !bounds) throw new Error(`Reference shape ${shapeId} was not mounted`)
+      return editor.pageToScreen(bounds.center)
+    }, reference!.shapeId)
+    await expect.poll(async () => page.evaluate(({ x, y }) => {
+      const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const pagePoint = editor?.screenToPage({ x, y })
+      const hitShapeId = pagePoint ? editor?.getShapeAtPoint(pagePoint)?.id ?? null : null
+      const domReferenceId = document.elementFromPoint(x, y)
+        ?.closest<HTMLElement>('.board-reference-shape')
+        ?.getAttribute('data-reference-id') ?? null
+      return { hitShapeId, domReferenceId }
+    }, { x: point.x, y: point.y })).toEqual({
+      hitShapeId: reference!.shapeId,
+      domReferenceId: reference!.id,
+    })
+    await page.mouse.dblclick(point.x, point.y)
+    await expect(page).toHaveURL(`/projects/${projectId}/boards/${encodeURIComponent(target!.id)}`)
+    await waitForBoardReady(page, target!.title)
+    const sourceBoardAfter = await readBoard(request, source!.id)
+    expect(sourceBoardAfter.revision).toBe(sourceBoardBefore.revision)
+    expect(emptyTextShapeCount(sourceBoardAfter)).toBe(emptyTextShapeCount(sourceBoardBefore))
+  }
+  await expect(page.getByRole('tablist', { name: '已打开画板' }).getByRole('tab')).toHaveCount(1)
 })

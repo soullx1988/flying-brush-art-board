@@ -126,6 +126,35 @@ describe('BoardReferenceService', () => {
     expect(boards.get('board:c')).toBeDefined()
   })
 
+  it('rejects retargeting or removing a protected core entry', async () => {
+    const created = await service.create({
+      sourceBoardId: 'board:a',
+      targetBoardId: 'board:b',
+      shapeId: 'shape:today-entry',
+      kind: 'embed',
+      expectedRevision: 0,
+    })
+    const protectedSnapshot = structuredClone(created.snapshot) as { store: Record<string, any> }
+    protectedSnapshot.store['shape:today-entry']!.meta = {
+      template: 'shortline-trading-v1',
+      templateRole: 'today-entry',
+      protectedCore: true,
+    }
+    boards.saveTemplateSnapshot('board:a', 1, protectedSnapshot)
+
+    await expect(service.update({
+      referenceId: created.reference.id,
+      targetBoardId: 'board:c',
+      expectedRevision: 2,
+    })).rejects.toMatchObject({ code: 'PROTECTED_CORE_MUTATION_FORBIDDEN' })
+    await expect(service.remove({
+      referenceId: created.reference.id,
+      expectedRevision: 2,
+    })).rejects.toMatchObject({ code: 'PROTECTED_CORE_MUTATION_FORBIDDEN' })
+    expect(references.get(created.reference.id)).toMatchObject({ targetBoardId: 'board:b', kind: 'embed' })
+    expect(boards.get('board:a')).toMatchObject({ revision: 2 })
+  })
+
   it('creates a new embedded target board, edge, shape, and revision in one transaction', async () => {
     const result = await service.createEmbeddedBoard({
       sourceBoardId: 'board:a',

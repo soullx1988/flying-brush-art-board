@@ -24,14 +24,16 @@ export class FeishuBoardClientError extends Error {
   }
 }
 
-export interface FeishuRequestOptions { signal?: AbortSignal }
+export interface FeishuRequestOptions { signal?: AbortSignal; actorOpenId?: string }
 export interface FeishuBoardClientOptions {
   credentials: Pick<FeishuCredentialStore, 'read'>
+  actorOpenId?: string
   fetch?: typeof globalThis.fetch
   baseUrl?: string
   timeoutMs?: number
   maxAttempts?: number
   maxMediaBytes?: number
+  maxPreviewBytes?: number
   sleep?: (milliseconds: number) => Promise<void>
 }
 
@@ -41,6 +43,7 @@ export class FeishuBoardClient {
   private readonly timeoutMs: number
   private readonly maxAttempts: number
   private readonly maxMediaBytes: number
+  private readonly maxPreviewBytes: number
   private readonly sleep: (milliseconds: number) => Promise<void>
 
   constructor(private readonly options: FeishuBoardClientOptions) {
@@ -48,7 +51,8 @@ export class FeishuBoardClient {
     this.baseUrl = options.baseUrl ?? 'https://open.feishu.cn'
     this.timeoutMs = options.timeoutMs ?? 15_000
     this.maxAttempts = this.attemptCount(options.maxAttempts)
-    this.maxMediaBytes = options.maxMediaBytes ?? 50 * 1024 * 1024
+    this.maxMediaBytes = options.maxMediaBytes ?? 20 * 1024 * 1024
+    this.maxPreviewBytes = options.maxPreviewBytes ?? 8 * 1024 * 1024
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   }
 
@@ -64,7 +68,16 @@ export class FeishuBoardClient {
     const scope = 'board:whiteboard:node:read'
     const response = await this.request(`/open-apis/board/v1/whiteboards/${this.token(token)}/download_as_image`, scope, options)
     await this.assertNoBinaryBusinessError(response, scope)
-    return new Uint8Array(await response.arrayBuffer())
+    const lengthHeader = response.headers.get('content-length')
+    const declaredLength = lengthHeader === null ? undefined : Number(lengthHeader)
+    if (declaredLength !== undefined && Number.isFinite(declaredLength) && declaredLength > this.maxPreviewBytes) {
+      throw new FeishuBoardClientError('FEISHU_PREVIEW_TOO_LARGE')
+    }
+    const bytes = await this.readCapped(response, this.maxPreviewBytes, 'FEISHU_PREVIEW_TOO_LARGE')
+    if (declaredLength !== undefined && Number.isFinite(declaredLength) && declaredLength !== bytes.byteLength) {
+      throw new FeishuBoardClientError('FEISHU_PREVIEW_SIZE_MISMATCH')
+    }
+    return bytes
   }
 
   async downloadMedia(mediaToken: string, options: FeishuRequestOptions = {}): Promise<{ bytes: Uint8Array; mime: string; sha256: string }> {
@@ -76,7 +89,7 @@ export class FeishuBoardClient {
     const lengthHeader = response.headers.get('content-length')
     const declaredLength = lengthHeader === null ? undefined : Number(lengthHeader)
     if (declaredLength !== undefined && Number.isFinite(declaredLength) && declaredLength > this.maxMediaBytes) throw new FeishuBoardClientError('FEISHU_MEDIA_TOO_LARGE')
-    const bytes = await this.readCapped(response)
+    const bytes = await this.readCapped(response, this.maxMediaBytes, 'FEISHU_MEDIA_TOO_LARGE')
     if (declaredLength !== undefined && Number.isFinite(declaredLength) && declaredLength !== bytes.byteLength) throw new FeishuBoardClientError('FEISHU_MEDIA_SIZE_MISMATCH')
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     const declaredHash = response.headers.get('x-content-sha256') ?? response.headers.get('x-checksum-sha256')
@@ -93,7 +106,8 @@ export class FeishuBoardClient {
   }
 
   private async request(path: string, scope: string, options: FeishuRequestOptions): Promise<Response> {
-    const accessToken = this.options.credentials.read()?.accessToken
+    const actorOpenId = options.actorOpenId ?? this.options.actorOpenId
+    const accessToken = actorOpenId ? this.options.credentials.read(actorOpenId)?.accessToken : undefined
     if (!accessToken) throw new FeishuBoardClientError('FEISHU_ACCOUNT_NOT_CONNECTED', 401)
     for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
       if (options.signal?.aborted) throw new FeishuBoardClientError('FEISHU_REQUEST_CANCELLED')
@@ -157,7 +171,7 @@ export class FeishuBoardClient {
     if (payload?.code === 99991672) throw new FeishuBoardClientError('FEISHU_SCOPE_DENIED', 403, scope)
   }
 
-  private async readCapped(response: Response): Promise<Uint8Array> {
+  private async readCapped(response: Response, maxBytes: number, limitCode: string): Promise<Uint8Array> {
     if (!response.body) return new Uint8Array()
     const reader = response.body.getReader()
     const chunks: Uint8Array[] = []
@@ -167,9 +181,9 @@ export class FeishuBoardClient {
         const { done, value } = await reader.read()
         if (done) break
         total += value.byteLength
-        if (total > this.maxMediaBytes) {
-          await reader.cancel('FEISHU_MEDIA_TOO_LARGE')
-          throw new FeishuBoardClientError('FEISHU_MEDIA_TOO_LARGE')
+        if (total > maxBytes) {
+          await reader.cancel(limitCode)
+          throw new FeishuBoardClientError(limitCode)
         }
         chunks.push(value)
       }

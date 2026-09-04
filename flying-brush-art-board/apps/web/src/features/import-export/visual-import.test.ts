@@ -169,9 +169,9 @@ describe('visual import', () => {
 
     expect(order).toEqual([
       'render-all-pages',
+      'upload',
+      'upload',
       'before-persist',
-      'upload',
-      'upload',
       'paste',
     ])
   })

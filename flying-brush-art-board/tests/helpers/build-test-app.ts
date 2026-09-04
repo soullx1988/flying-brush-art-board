@@ -6,10 +6,17 @@ import { OAuthStateRepository } from '../../apps/local-api/src/modules/auth/oaut
 import { SessionRepository } from '../../apps/local-api/src/modules/auth/session-repository.js'
 import { UserDirectoryCache } from '../../apps/local-api/src/modules/auth/user-directory-cache.js'
 import { createDatabase, type LocalDatabase } from '../../apps/local-api/src/db/schema.js'
+import type { TradingSource } from '../../apps/local-api/src/modules/trading/trading-source.js'
 
 export interface TestAppOptions {
   users?: AllowedUser[]
   oauthIdentity?: { openId: string }
+  tradingSource?: TradingSource
+  enableTradingBridge?: boolean
+  enableRealtime?: boolean
+  environment?: Record<string, string | undefined>
+  assetDirectory?: string
+  automationProjectTag?: string
 }
 
 export interface TestApp {
@@ -28,8 +35,11 @@ export async function buildTestApp(options: TestAppOptions = {}): Promise<TestAp
   }
   const database = createDatabase(':memory:')
   const sessions = new SessionRepository(database)
+  const enableTradingBridge = options.enableTradingBridge
+    ?? (options.environment?.TRADING_BRIDGE_ENABLED === undefined ? Boolean(options.tradingSource) : undefined)
   const app = await buildApp({
     database,
+    ...(options.assetDirectory ? { assetDirectory: options.assetDirectory } : {}),
     authentication: {
       oauth: {
         createAuthorizationUrl: ({ state }) => new URL(`https://accounts.example.test/authorize?state=${encodeURIComponent(state)}`),
@@ -39,6 +49,11 @@ export async function buildTestApp(options: TestAppOptions = {}): Promise<TestAp
       sessions,
       users: new UserDirectoryCache(directory),
     },
+    ...(enableTradingBridge === undefined ? {} : { enableTradingBridge }),
+    ...(options.enableRealtime === undefined ? {} : { enableRealtime: options.enableRealtime }),
+    ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.tradingSource ? { tradingSource: options.tradingSource } : {}),
+    ...(options.automationProjectTag ? { automationProjectTag: options.automationProjectTag } : {}),
   })
   return {
     app,

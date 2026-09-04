@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { act, cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { BoardSession } from '../boards/board-session'
@@ -83,11 +83,11 @@ vi.mock('tldraw', async (importOriginal) => ({
   DefaultContextMenu: ({ children }: { children: React.ReactNode }) => <div data-testid="native-context-menu">{children}</div>,
   DefaultContextMenuContent: () => <div data-testid="default-context-menu-content" />,
   TldrawUiMenuGroup: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  TldrawUiMenuItem: ({ id, label, onSelect, readonlyOk }: { id: string; label: string; onSelect(): void; readonlyOk?: boolean }) => {
+  TldrawUiMenuItem: ({ id, label, onSelect, readonlyOk, disabled }: { id: string; label: string; onSelect(): void; readonlyOk?: boolean; disabled?: boolean }) => {
     const getIsReadonly = hookEditor?.getIsReadonly as (() => boolean) | undefined
     return getIsReadonly?.() && !readonlyOk
       ? null
-      : <button type="button" data-testid={`context-menu.${id}`} onClick={onSelect}>{label}</button>
+      : <button type="button" data-testid={`context-menu.${id}`} disabled={disabled} onClick={onSelect}>{label}</button>
   },
   Tldraw: (props: {
     assetUrls?: { translations?: Record<string, string> }
@@ -151,6 +151,7 @@ describe('CanvasEditor', () => {
     const updateShape = vi.fn()
     hookEditor = {
       getOnlySelectedShape: vi.fn(() => shape),
+      getCurrentToolId: vi.fn(() => 'select'),
       getInstanceState: vi.fn(() => ({ isReadonly: true })),
       getCurrentTheme: vi.fn(() => ({
         colors: { light: {} },
@@ -184,6 +185,43 @@ describe('CanvasEditor', () => {
     expect(updateShape).not.toHaveBeenCalled()
   })
 
+  it.each(['draw', 'text', 'note', 'geo'] as const)(
+    'keeps the default style panel visible before placement when the %s tool is active',
+    (toolId) => {
+      hookEditor = {
+        getOnlySelectedShape: vi.fn(() => undefined),
+        getCurrentToolId: vi.fn(() => toolId),
+        getInstanceState: vi.fn(() => ({ isReadonly: false })),
+      }
+
+      render(<CanvasEditor />)
+      const StylePanel = mountedProps?.components?.StylePanel
+      expect(StylePanel).toBeTypeOf('function')
+      if (!StylePanel) throw new Error('Expected style panel override')
+      const StylePanelElement = StylePanel as (props: Record<string, unknown>) => React.ReactElement
+      render(<StylePanelElement />)
+
+      expect(screen.getByTestId('style-panel')).toBeInTheDocument()
+    },
+  )
+
+  it('keeps the style panel hidden during idle readonly browsing with no selection', () => {
+    hookEditor = {
+      getOnlySelectedShape: vi.fn(() => undefined),
+      getCurrentToolId: vi.fn(() => 'select'),
+      getInstanceState: vi.fn(() => ({ isReadonly: true })),
+    }
+
+    render(<CanvasEditor />)
+    const StylePanel = mountedProps?.components?.StylePanel
+    expect(StylePanel).toBeTypeOf('function')
+    if (!StylePanel) throw new Error('Expected style panel override')
+    const StylePanelElement = StylePanel as (props: Record<string, unknown>) => React.ReactElement
+    render(<StylePanelElement />)
+
+    expect(screen.queryByTestId('style-panel')).not.toBeInTheDocument()
+  })
+
   it('reads the Vite-injected license key without depending on Node globals', () => {
     expect(getCanvasLicenseKey({ VITE_TLDRAW_LICENSE_KEY: 'vite-license-key' })).toBe('vite-license-key')
   })
@@ -198,6 +236,583 @@ describe('CanvasEditor', () => {
       'page-menu.max-pages-reached': '已达到最大页面数量',
       'page-menu.resize': '调整页面列表大小',
     })
+  })
+
+  it('keeps all five data reading views after a free-form note is added and reloaded', () => {
+    const panelKinds = ['market-overview', 'yishui-inference', 'stock-pool', 'announcements', 'system-status']
+    const panels = panelKinds.map((panelKind, index) => ({
+      id: `shape:panel-${index}`,
+      type: 'trading-panel',
+      meta: { template: 'shortline-trading-v1' },
+      props: { panelKind, title: panelKind },
+    }))
+    const shapes = [
+      ...panels,
+      { id: 'shape:personal-note', type: 'note', meta: {}, props: { text: '盘中个人备注' } },
+    ]
+    const getShapePageBounds = vi.fn((shapeOrId: { id: string } | string) => {
+      const id = typeof shapeOrId === 'string' ? shapeOrId : shapeOrId.id
+      const index = panels.findIndex((panel) => panel.id === id)
+      return index >= 0 ? { x: index * 100, y: index * 50, w: 780, h: 390 } : undefined
+    })
+    const zoomToBounds = vi.fn()
+
+    render(<CanvasEditor />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => ({ x: 0, y: 0, z: 1 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds,
+        zoomToBounds,
+        zoomToFit: vi.fn(),
+        timers: { setTimeout: (callback: () => void) => { callback(); return 1 } },
+      })
+    })
+
+    const navigation = screen.getByRole('navigation', { name: '数据画板阅读视图' })
+    expect(within(navigation).getAllByRole('button')).toHaveLength(6)
+    for (const label of ['全景', '市场主线', '义水推演', '个人选股池', '公告观察', '数据状态']) {
+      expect(within(navigation).getByRole('button', { name: `数据视图：${label}` })).toBeInTheDocument()
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: '数据视图：个人选股池' }))
+    expect(getShapePageBounds).toHaveBeenLastCalledWith('shape:panel-2')
+    expect(zoomToBounds).toHaveBeenLastCalledWith(
+      { x: 200, y: -20, w: 960, h: 582 },
+      { inset: 48, animation: { duration: 180 } },
+    )
+  })
+
+  it('focuses the requested Yishui panel on a direct-entry route', () => {
+    const panelKinds = ['market-overview', 'yishui-inference', 'stock-pool', 'announcements', 'system-status']
+    const panels = panelKinds.map((panelKind, index) => ({
+      id: `shape:direct-${index}`,
+      type: 'trading-panel',
+      meta: { template: 'shortline-trading-v1' },
+      props: { panelKind, title: panelKind },
+    }))
+    const getShapePageBounds = vi.fn((shapeOrId: { id: string } | string) => {
+      const id = typeof shapeOrId === 'string' ? shapeOrId : shapeOrId.id
+      return id === 'shape:direct-1' ? { x: 0, y: 1478, w: 1860, h: 1180 } : { x: 0, y: 0, w: 780, h: 390 }
+    })
+    const zoomToBounds = vi.fn()
+
+    render(<CanvasEditor initialTradingPanelKind="yishui-inference" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => panels,
+        getCamera: () => ({ x: 0, y: 0, z: 1 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds,
+        zoomToBounds,
+        zoomToFit: vi.fn(),
+        timers: { setTimeout: (callback: () => void) => { callback(); return 1 } },
+      })
+    })
+
+    expect(getShapePageBounds).toHaveBeenCalledWith(panels[1])
+    expect(zoomToBounds).toHaveBeenCalledWith(
+      { x: 0, y: 1358, w: 2040, h: 1372 },
+      { inset: 48, immediate: true },
+    )
+    expect(screen.getByRole('button', { name: '数据视图：义水推演' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('does not run a delayed initial fit after the user takes control of the viewport', () => {
+    vi.useFakeTimers()
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown> }> = []
+    const zoomToFit = vi.fn()
+
+    render(<CanvasEditor />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        zoomToFit,
+        timers: { setTimeout: window.setTimeout },
+      })
+    })
+
+    fireEvent.pointerDown(screen.getByTestId('tldraw-canvas'), {
+      pointerId: 1,
+      pointerType: 'mouse',
+      button: 0,
+    })
+    shapes.push({ id: 'shape:user-created', type: 'geo' })
+
+    act(() => {
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(zoomToFit).not.toHaveBeenCalled()
+  })
+
+  it('never applies a generic delayed fit to a non-trading board', () => {
+    vi.useFakeTimers()
+    const zoomToFit = vi.fn()
+    const zoomToBounds = vi.fn()
+
+    render(<CanvasEditor inputSessionKey="tab-1:notes" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => [{ id: 'shape:note', type: 'note', meta: {} }],
+        getShapePageBounds: vi.fn(),
+        zoomToBounds,
+        zoomToFit,
+        timers: { setTimeout: window.setTimeout },
+      })
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(zoomToFit).not.toHaveBeenCalled()
+    expect(zoomToBounds).not.toHaveBeenCalled()
+  })
+
+  it.each(['camera', 'selection', 'tool'] as const)(
+    'does not auto-fit delayed trading panels after programmatic %s restoration',
+    (restoredState) => {
+      vi.useFakeTimers()
+      const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+      let camera = { x: 0, y: 0, z: 1 }
+      let selectedShapeIds: string[] = []
+      let currentToolId = 'select'
+      const zoomToBounds = vi.fn()
+      const editor = {
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => camera,
+        setCamera: vi.fn((nextCamera: { x: number; y: number; z: number }) => { camera = nextCamera }),
+        getSelectedShapeIds: () => selectedShapeIds,
+        setSelectedShapes: vi.fn((shapeIds: string[]) => { selectedShapeIds = shapeIds }),
+        getCurrentToolId: () => currentToolId,
+        setCurrentTool: vi.fn((toolId: string) => { currentToolId = toolId }),
+        getShapePageBounds: vi.fn(() => ({ x: 10, y: 20, w: 780, h: 390 })),
+        zoomToBounds,
+        timers: { setTimeout: window.setTimeout },
+      }
+
+      render(<CanvasEditor inputSessionKey="tab-1:data" />)
+      act(() => mountedProps?.onMount?.(editor))
+      act(() => {
+        if (restoredState === 'camera') editor.setCamera({ x: 32, y: -18, z: 1.25 })
+        if (restoredState === 'selection') editor.setSelectedShapes(['shape:restored-selection'])
+        if (restoredState === 'tool') editor.setCurrentTool('draw')
+        shapes.push({
+          id: 'shape:market',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'market-overview', title: 'Market' },
+        })
+        vi.advanceTimersByTime(250)
+      })
+
+      expect(screen.getByRole('navigation', { name: '数据画板阅读视图' })).toBeVisible()
+      expect(zoomToBounds).not.toHaveBeenCalled()
+    },
+  )
+
+  it('auto-fits delayed trading panels only after all five reading panels arrive at the default initial view', () => {
+    vi.useFakeTimers()
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+
+    render(<CanvasEditor inputSessionKey="tab-1:data" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => ({ x: 0.00001, y: -0.00001, z: 1.00001 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds: vi.fn(() => ({ x: 10, y: 20, w: 780, h: 390 })),
+        zoomToBounds,
+        timers: { setTimeout: window.setTimeout },
+      })
+      shapes.push(
+        {
+          id: 'shape:market',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'market-overview', title: 'Market' },
+        },
+        {
+          id: 'shape:stock',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'stock-pool', title: 'Pool' },
+        },
+        {
+          id: 'shape:yishui',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+        },
+        {
+          id: 'shape:announcements',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'announcements', title: 'Announcements' },
+        },
+        {
+          id: 'shape:system',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'system-status', title: 'System' },
+        },
+      )
+      vi.advanceTimersByTime(250)
+    })
+
+    expect(zoomToBounds).toHaveBeenCalledOnce()
+    expect(within(screen.getByRole('navigation', { name: '数据画板阅读视图' })).getAllByRole('button')).toHaveLength(6)
+  })
+
+  it('keeps rescanning partial trading panels until the full overview plus five reading entries arrive', () => {
+    vi.useFakeTimers()
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+    let notifyDocumentChange = () => {}
+
+    render(<CanvasEditor inputSessionKey="tab-1:data" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => ({ x: 0.00001, y: -0.00001, z: 1.00001 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds: vi.fn((shapeOrId: { id: string } | string) => {
+          const id = typeof shapeOrId === 'string' ? shapeOrId : shapeOrId.id
+          if (id === 'shape:market') return { x: 10, y: 20, w: 780, h: 390 }
+          if (id === 'shape:yishui') return { x: 10, y: 900, w: 1620, h: 900 }
+          if (id === 'shape:stock') return { x: 840, y: 20, w: 780, h: 390 }
+          if (id === 'shape:announcements') return { x: 10, y: 460, w: 780, h: 390 }
+          if (id === 'shape:system') return { x: 840, y: 460, w: 780, h: 390 }
+          return undefined
+        }),
+        zoomToBounds,
+        timers: { setTimeout: window.setTimeout },
+        store: {
+          listen: (listener: () => void) => {
+            notifyDocumentChange = listener
+            return () => { notifyDocumentChange = () => {} }
+          },
+        },
+      })
+    })
+
+    act(() => {
+      shapes.push({
+        id: 'shape:market',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'market-overview', title: '市场主线' },
+      })
+      notifyDocumentChange()
+      vi.advanceTimersByTime(250)
+    })
+
+    const partialNavigation = screen.getByRole('navigation', { name: '数据画板阅读视图' })
+    expect(within(partialNavigation).getAllByRole('button')).toHaveLength(2)
+    expect(zoomToBounds).not.toHaveBeenCalled()
+
+    act(() => {
+      shapes.push(
+        {
+          id: 'shape:yishui',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+        },
+        {
+          id: 'shape:stock',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'stock-pool', title: '个人选股池' },
+        },
+        {
+          id: 'shape:announcements',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'announcements', title: '公告观察' },
+        },
+        {
+          id: 'shape:system',
+          type: 'trading-panel',
+          meta: { template: 'shortline-trading-v1' },
+          props: { panelKind: 'system-status', title: '数据状态' },
+        },
+      )
+      notifyDocumentChange()
+      vi.advanceTimersByTime(250)
+    })
+
+    const fullNavigation = screen.getByRole('navigation', { name: '数据画板阅读视图' })
+    expect(within(fullNavigation).getAllByRole('button')).toHaveLength(6)
+    for (const label of ['全景', '市场主线', '义水推演', '个人选股池', '公告观察', '数据状态']) {
+      expect(within(fullNavigation).getByRole('button', { name: `数据视图：${label}` })).toBeInTheDocument()
+    }
+    expect(zoomToBounds).toHaveBeenCalledOnce()
+  })
+
+  it('auto-fits the standalone today-overview board on the initial screen', () => {
+    vi.useFakeTimers()
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+
+    render(<CanvasEditor inputSessionKey="tab-1:today" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => ({ x: 0, y: 0, z: 1 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds: vi.fn(() => ({ x: 40, y: 60, w: 1860, h: 900 })),
+        zoomToBounds,
+        timers: { setTimeout: window.setTimeout },
+      })
+      shapes.push({
+        id: 'shape:today',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'today-overview', title: '今天怎么看' },
+      })
+      vi.advanceTimersByTime(250)
+    })
+
+    expect(screen.queryByRole('navigation', { name: '数据画板阅读视图' })).not.toBeInTheDocument()
+    expect(zoomToBounds).toHaveBeenCalledWith(
+      { x: 40, y: 48, w: 1892, h: 932 },
+      { inset: 48, immediate: true },
+    )
+  })
+
+  it('auto-fits template board references on the overview board so real double-click targets stay visible', () => {
+    vi.useFakeTimers()
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+    const getShapePageBounds = vi.fn((shapeOrId: { id: string } | string) => {
+      const id = typeof shapeOrId === 'string' ? shapeOrId : shapeOrId.id
+      if (id === 'shape:today-ref') return { x: 0, y: 0, w: 620, h: 330 }
+      if (id === 'shape:data-ref') return { x: 660, y: 0, w: 620, h: 330 }
+      if (id === 'shape:logic-ref') return { x: 1320, y: 0, w: 620, h: 330 }
+      if (id === 'shape:experience-ref') return { x: 330, y: 370, w: 620, h: 330 }
+      if (id === 'shape:mindset-ref') return { x: 990, y: 370, w: 620, h: 330 }
+      return undefined
+    })
+
+    render(<CanvasEditor inputSessionKey="tab-1:root" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => ({ x: 0, y: 0, z: 1 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds,
+        zoomToBounds,
+        timers: { setTimeout: window.setTimeout },
+      })
+      shapes.push(
+        { id: 'shape:today-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '今天怎么看' } },
+        { id: 'shape:data-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '数据' } },
+        { id: 'shape:logic-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '逻辑' } },
+        { id: 'shape:experience-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '经验' } },
+        { id: 'shape:mindset-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '心态' } },
+      )
+      vi.advanceTimersByTime(250)
+    })
+
+    expect(zoomToBounds).toHaveBeenCalledWith(
+      { x: 0, y: 0, w: 2120, h: 820 },
+      { inset: 48, immediate: true },
+    )
+  })
+
+  it('keeps rescanning after a free-form note and a single root entry until all five template references arrive', () => {
+    vi.useFakeTimers()
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+    let notifyDocumentChange = () => {}
+    const getShapePageBounds = vi.fn((shapeOrId: { id: string } | string) => {
+      const id = typeof shapeOrId === 'string' ? shapeOrId : shapeOrId.id
+      if (id === 'shape:today-ref') return { x: 0, y: 0, w: 620, h: 330 }
+      if (id === 'shape:data-ref') return { x: 660, y: 0, w: 620, h: 330 }
+      if (id === 'shape:logic-ref') return { x: 1320, y: 0, w: 620, h: 330 }
+      if (id === 'shape:experience-ref') return { x: 330, y: 370, w: 620, h: 330 }
+      if (id === 'shape:mindset-ref') return { x: 990, y: 370, w: 620, h: 330 }
+      return undefined
+    })
+
+    render(<CanvasEditor inputSessionKey="tab-1:root" />)
+    act(() => {
+      mountedProps?.onMount?.({
+        updateInstanceState: vi.fn(),
+        getCurrentPageShapes: () => shapes,
+        getCamera: () => ({ x: 0, y: 0, z: 1 }),
+        getSelectedShapeIds: () => [],
+        getCurrentToolId: () => 'select',
+        getShapePageBounds,
+        zoomToBounds,
+        timers: { setTimeout: window.setTimeout },
+        store: {
+          listen: (listener: () => void) => {
+            notifyDocumentChange = listener
+            return () => { notifyDocumentChange = () => {} }
+          },
+        },
+      })
+    })
+
+    act(() => {
+      shapes.push(
+        { id: 'shape:personal-note', type: 'note', meta: {}, props: { text: '盘中个人备注' } },
+        { id: 'shape:today-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '今天怎么看' } },
+      )
+      notifyDocumentChange()
+      vi.advanceTimersByTime(250)
+    })
+
+    expect(screen.queryByRole('navigation', { name: '数据画板阅读视图' })).not.toBeInTheDocument()
+    expect(zoomToBounds).not.toHaveBeenCalled()
+
+    act(() => {
+      shapes.push(
+        { id: 'shape:data-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '数据' } },
+        { id: 'shape:logic-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '逻辑' } },
+        { id: 'shape:experience-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '经验' } },
+        { id: 'shape:mindset-ref', type: 'board-reference', meta: { template: 'shortline-trading-v1' }, props: { titleFallback: '心态' } },
+      )
+      notifyDocumentChange()
+      vi.advanceTimersByTime(250)
+    })
+
+    expect(zoomToBounds).toHaveBeenCalledWith(
+      { x: 0, y: 0, w: 2120, h: 820 },
+      { inset: 48, immediate: true },
+    )
+  })
+
+  it('ignores a trading-template scan scheduled for a previous input session', () => {
+    const scheduled: Array<() => void> = []
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+    const editor = {
+      updateInstanceState: vi.fn(),
+      getCurrentPageShapes: () => shapes,
+      getCamera: () => ({ x: 0, y: 0, z: 1 }),
+      getSelectedShapeIds: () => [],
+      getCurrentToolId: () => 'select',
+      getShapePageBounds: vi.fn(() => ({ x: 10, y: 20, w: 780, h: 390 })),
+      zoomToBounds,
+      timers: {
+        setTimeout: (callback: () => void) => {
+          scheduled.push(callback)
+          return 10_000 + scheduled.length
+        },
+      },
+    }
+    const view = render(<CanvasEditor inputSessionKey="tab-1:board-a" />)
+    act(() => mountedProps?.onMount?.(editor))
+
+    shapes.push(
+      {
+        id: 'shape:market',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'market-overview', title: 'Market' },
+      },
+      {
+        id: 'shape:yishui',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+      },
+      {
+        id: 'shape:stock',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'stock-pool', title: 'Pool' },
+      },
+      {
+        id: 'shape:announcements',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'announcements', title: 'Announcements' },
+      },
+      {
+        id: 'shape:system',
+        type: 'trading-panel',
+        meta: { template: 'shortline-trading-v1' },
+        props: { panelKind: 'system-status', title: 'System' },
+      },
+    )
+    view.rerender(<CanvasEditor inputSessionKey="tab-1:board-b" />)
+
+    act(() => {
+      for (const callback of [...scheduled]) callback()
+    })
+
+    expect(scheduled).toHaveLength(2)
+    expect(zoomToBounds).toHaveBeenCalledOnce()
+  })
+
+  it('invalidates delayed scans and preserves a newer debug editor on unmount', () => {
+    const scheduled: Array<() => void> = []
+    const shapes: Array<{ id: string; type: string; meta?: Record<string, unknown>; props?: Record<string, unknown> }> = []
+    const zoomToBounds = vi.fn()
+    const editor = {
+      updateInstanceState: vi.fn(),
+      getCurrentPageShapes: () => shapes,
+      getShapePageBounds: vi.fn(() => ({ x: 0, y: 0, w: 780, h: 390 })),
+      zoomToBounds,
+      timers: {
+        setTimeout: (callback: () => void) => {
+          scheduled.push(callback)
+          return 20_000 + scheduled.length
+        },
+      },
+    }
+    const debugWindow = window as Window & { __INFINITE_BOARD_EDITOR__?: unknown }
+    const view = render(<CanvasEditor inputSessionKey="tab-1:board-a" />)
+    act(() => mountedProps?.onMount?.(editor))
+
+    expect(debugWindow.__INFINITE_BOARD_EDITOR__).toBe(editor)
+    const replacementEditor = { replacement: true }
+    debugWindow.__INFINITE_BOARD_EDITOR__ = replacementEditor
+    view.unmount()
+    shapes.push({
+      id: 'shape:market',
+      type: 'trading-panel',
+      meta: { template: 'shortline-trading-v1' },
+      props: { panelKind: 'market-overview', title: 'Market' },
+    })
+    act(() => {
+      for (const callback of scheduled) callback()
+    })
+
+    expect(zoomToBounds).not.toHaveBeenCalled()
+    expect(debugWindow.__INFINITE_BOARD_EDITOR__).toBe(replacementEditor)
+    delete debugWindow.__INFINITE_BOARD_EDITOR__
+  })
+
+  it('clears its own debug editor on unmount', () => {
+    const editor = { updateInstanceState: vi.fn() }
+    const debugWindow = window as Window & { __INFINITE_BOARD_EDITOR__?: unknown }
+    const view = render(<CanvasEditor />)
+    act(() => mountedProps?.onMount?.(editor))
+
+    expect(debugWindow.__INFINITE_BOARD_EDITOR__).toBe(editor)
+    view.unmount()
+
+    expect(debugWindow.__INFINITE_BOARD_EDITOR__).toBeUndefined()
   })
 
   it('groups pen and eraser, promotes frame, and distinguishes the child-board icon', () => {
@@ -396,6 +1011,18 @@ describe('CanvasEditor', () => {
     expect(remove).toHaveBeenCalledWith(reference)
     expect(beforeDelete?.(reference, 'remote')).toBeUndefined()
     expect(remove).toHaveBeenCalledOnce()
+
+    const protectedReference = {
+      ...reference,
+      meta: { protectedCore: true },
+    }
+    const protectedPanel = {
+      type: 'trading-panel',
+      meta: { protectedCore: true },
+    }
+    expect(beforeDelete?.(protectedReference, 'user')).toBe(false)
+    expect(beforeDelete?.(protectedPanel, 'user')).toBe(false)
+    expect(remove).toHaveBeenCalledOnce()
   })
 
   it('shows four midpoint anchors and creates a bound arrow from the exact shape edge', () => {
@@ -571,6 +1198,125 @@ describe('CanvasEditor', () => {
     expect(boardReferenceActions.renameTarget).toHaveBeenCalledWith(shape)
     expect(boardReferenceActions.changeKind).toHaveBeenCalledWith(shape, 'link')
     expect(boardReferenceActions.remove).toHaveBeenCalledWith(shape)
+  })
+
+  it('offers the today-overview and Yishui inference panels in the native context menu', () => {
+    const shape = {
+      id: 'shape:trading',
+      type: 'trading-panel',
+      meta: { template: 'shortline-trading-v1' },
+      props: {
+        panelKind: 'market-overview',
+        title: '市场环境与主线',
+      },
+    }
+    const markHistoryStoppingPoint = vi.fn()
+    const updateShape = vi.fn((update: { props: typeof shape.props }) => {
+      shape.props = update.props
+    })
+    hookEditor = {
+      getOnlySelectedShape: vi.fn(() => shape),
+      getCurrentPageShapes: vi.fn(() => [shape]),
+      getInstanceState: vi.fn(() => ({ isReadonly: false })),
+      markHistoryStoppingPoint,
+      updateShape,
+    }
+    render(<CanvasEditor />)
+    const ContextMenu = mountedProps?.components?.ContextMenu
+    if (!ContextMenu) throw new Error('Expected native context menu override')
+
+    render(<>{ContextMenu({})}</>)
+    expect(screen.getByTestId('context-menu.trading-panel-yishui')).toHaveTextContent('替换此面板为义水推演')
+    fireEvent.click(screen.getByTestId('context-menu.trading-panel-yishui'))
+
+    expect(markHistoryStoppingPoint).toHaveBeenCalledWith('trading_panel_kind:yishui-inference')
+    expect(updateShape).toHaveBeenCalledWith({
+      id: shape.id,
+      type: shape.type,
+      props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+    })
+    expect(screen.getByRole('navigation', { name: '数据画板阅读视图' }))
+      .toHaveTextContent('义水推演')
+
+    fireEvent.click(screen.getByTestId('context-menu.trading-panel-today'))
+
+    expect(markHistoryStoppingPoint).toHaveBeenCalledWith('trading_panel_kind:today-overview')
+    expect(updateShape).toHaveBeenCalledWith({
+      id: shape.id,
+      type: shape.type,
+      props: { panelKind: 'today-overview', title: '今天怎么看' },
+    })
+  })
+
+  it('disables the Yishui replacement when another Yishui panel already exists', () => {
+    const selected = {
+      id: 'shape:market',
+      type: 'trading-panel',
+      meta: { template: 'shortline-trading-v1' },
+      props: { panelKind: 'market-overview', title: '市场环境与主线' },
+    }
+    const existingYishui = {
+      id: 'shape:yishui',
+      type: 'trading-panel',
+      meta: { template: 'shortline-trading-v1' },
+      props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+    }
+    const updateShape = vi.fn()
+    hookEditor = {
+      getOnlySelectedShape: vi.fn(() => selected),
+      getCurrentPageShapes: vi.fn(() => [selected, existingYishui]),
+      getInstanceState: vi.fn(() => ({ isReadonly: false })),
+      markHistoryStoppingPoint: vi.fn(),
+      updateShape,
+    }
+    render(<CanvasEditor />)
+    const ContextMenu = mountedProps?.components?.ContextMenu
+    if (!ContextMenu) throw new Error('Expected native context menu override')
+
+    render(<>{ContextMenu({})}</>)
+    const replacement = screen.getByTestId('context-menu.trading-panel-yishui')
+    expect(replacement).toBeDisabled()
+    fireEvent.click(replacement)
+    expect(updateShape).not.toHaveBeenCalled()
+  })
+
+  it('keeps protected core entry and panel context menus read-only at the UI boundary', () => {
+    const actions = {
+      enter: vi.fn(),
+      openInNewTab: vi.fn(),
+      renameTarget: vi.fn(),
+      changeKind: vi.fn(),
+      remove: vi.fn(),
+    }
+    hookEditor = {
+      getOnlySelectedShape: vi.fn(() => ({
+        id: 'shape:today-entry',
+        type: 'board-reference',
+        meta: { protectedCore: true },
+        props: { kind: 'embed' },
+      })),
+      getInstanceState: vi.fn(() => ({ isReadonly: false })),
+    }
+    render(<CanvasEditor boardReferenceActions={actions} />)
+    const ContextMenu = mountedProps?.components?.ContextMenu
+    if (!ContextMenu) throw new Error('Expected native context menu override')
+
+    const view = render(<>{ContextMenu({})}</>)
+    expect(screen.getByTestId('context-menu.board-reference-enter')).toBeInTheDocument()
+    expect(screen.queryByTestId('context-menu.board-reference-kind')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('context-menu.board-reference-remove')).not.toBeInTheDocument()
+
+    hookEditor = {
+      getOnlySelectedShape: vi.fn(() => ({
+        id: 'shape:today-core',
+        type: 'trading-panel',
+        meta: { protectedCore: true },
+        props: { panelKind: 'today-overview', title: '今天怎么看' },
+      })),
+      getInstanceState: vi.fn(() => ({ isReadonly: false })),
+    }
+    view.rerender(<>{ContextMenu({})}</>)
+    expect(screen.queryByTestId('context-menu.trading-panel-market')).not.toBeInTheDocument()
   })
 
   it('merges table and mind-map operations into the native context menu', () => {

@@ -85,7 +85,28 @@ import {
   type CloseTabDecision,
   type WorkspaceTab,
 } from './workspace-tabs'
+import type { TradingPanelKind } from '@infinite-board/tldraw-adapter'
 import { TldrawWorkspaceEditor } from './TldrawWorkspaceEditor'
+import { TradingDataBridge } from '../trading/TradingDataBridge'
+import { ClipboardCommandHistoryStore } from './clipboard-command-history'
+
+function hasTradingPanel(projectData: ProjectHomeData | undefined): boolean {
+  return projectData?.boards.some((board) => {
+    const snapshot = board.tldrawSnapshot as {
+      store?: Record<string, { type?: unknown }>
+      document?: { store?: Record<string, { type?: unknown }> }
+    }
+    const store = snapshot.document?.store ?? snapshot.store ?? {}
+    return Object.values(store).some((record) => record.type === 'trading-panel')
+  }) ?? false
+}
+
+export function shouldUseRealtimeBoard(
+  enableRealtime: boolean,
+  snapshotAccess: 'unknown' | 'full' | 'projected' | 'redacted' | undefined,
+): boolean {
+  return enableRealtime && snapshotAccess === 'full'
+}
 
 export interface ClipboardCommandReceipt {
   commandId: string
@@ -165,6 +186,7 @@ export interface WorkspaceShellProps {
   routeBoardId?: string
   routePathReferenceIds?: readonly string[]
   routeHistoryState?: unknown
+  routeFocusPanelKind?: TradingPanelKind
   client: WorkspaceClient
   navigate: BoardNavigationNavigate
   enableRealtime?: boolean
@@ -179,11 +201,13 @@ export function WorkspaceShell({
   routeBoardId,
   routePathReferenceIds = [],
   routeHistoryState,
+  routeFocusPanelKind,
   client,
   navigate,
   enableRealtime = true,
 }: WorkspaceShellProps) {
   const projectDataRef = useRef<ProjectHomeData | undefined>(undefined)
+  const activeTabIdRef = useRef<string | undefined>(undefined)
   const sharedEditor = useMemo(() => new TldrawWorkspaceEditor(undefined), [projectId])
   const workspace = useMemo(
     () =>
@@ -221,17 +245,41 @@ export function WorkspaceShell({
   const [drawioImport, setDrawioImport] = useState<{ key: string; file?: File }>()
   const [navigationBlocked, setNavigationBlocked] = useState<WorkspaceNavigationBlockedError>()
   const [pendingInboundLocation, setPendingInboundLocation] = useState<{ boardId: string; shapeId: string }>()
-  const clipboardCommands = useRef(new Map<string, Array<{ commandId: string; state: 'applied' | 'undone' }>>())
+  const clipboardCommands = useRef(new ClipboardCommandHistoryStore())
   const mountedWorkspace = useRef<WorkspaceTabs | undefined>(undefined)
   const handledRouteKey = useRef<string | undefined>(undefined)
+  const routeTransitionToken = useRef(0)
+  const routeTransitionQueue = useRef(Promise.resolve())
+  const visualImportQueue = useRef(Promise.resolve())
+  const localNavigationGenerationRef = useRef(0)
   const lastBoardRouteId = useRef(routeBoardId)
   const projectHomeExitAttempted = useRef(false)
   const latestProjectRefresh = useRef(0)
   const [projectHomeReady, setProjectHomeReady] = useState(!routeBoardId)
+  const projectDataReady = Boolean(projectData)
+  const routePathKey = routePathReferenceIds.join(',')
+  const historyState = isBrowserBoardHistoryState(routeHistoryState)
+    ? routeHistoryState
+    : undefined
+  const routeHistoryEntryId = historyState?.entryId ?? ''
+  const routeHistoryProjectId = historyState?.projectId
+  const routeHistoryTabId = historyState?.tabId
+
+  projectDataRef.current = projectData
+  activeTabIdRef.current = workspaceState.activeTabId
 
   useEffect(() => {
     projectDataRef.current = projectData
   }, [projectData])
+
+  const commitTabRef = useRef(boardNavigation.commitTab)
+  useEffect(() => {
+    commitTabRef.current = boardNavigation.commitTab
+  }, [boardNavigation.commitTab])
+
+  useEffect(() => {
+    activeTabIdRef.current = workspaceState.activeTabId
+  }, [workspaceState.activeTabId])
 
   const guardWorkspaceExit = useCallback(async () => {
     setNavigationBlocked(undefined)
@@ -363,29 +411,38 @@ export function WorkspaceShell({
   }, [boardNavigation, routeBoardId, workspace, workspaceState])
 
   useEffect(() => {
-    if (!routeBoardId || !projectData) return
+    if (!routeBoardId || !projectDataReady) return
     let disposed = false
     let routeTransitionSettled = false
-    const stateEntryId = isBrowserBoardHistoryState(routeHistoryState)
-      ? routeHistoryState.entryId
-      : ''
-    const routeKey = `${routeBoardId}|${routePathReferenceIds.join(',')}|${stateEntryId}`
+    const routeKey = `${routeBoardId}|${routePathKey}|${routeHistoryEntryId}|${routeFocusPanelKind ?? ''}`
     if (handledRouteKey.current === routeKey) return
     handledRouteKey.current = routeKey
+    const transitionToken = routeTransitionToken.current + 1
+    routeTransitionToken.current = transitionToken
+    const localNavigationGeneration = localNavigationGenerationRef.current
     setRouteLoadError(undefined)
+    const isStaleTransition = () =>
+      disposed
+      || routeTransitionToken.current !== transitionToken
+      || handledRouteKey.current !== routeKey
+      || localNavigationGenerationRef.current !== localNavigationGeneration
 
-    void (async () => {
+    const queuedTransition = routeTransitionQueue.current.then(async () => {
+      if (isStaleTransition()) return
       if (
-        isBrowserBoardHistoryState(routeHistoryState) &&
-        routeHistoryState.projectId === projectId
+        historyState &&
+        routeHistoryProjectId === projectId
+        && routeHistoryTabId
       ) {
-        const stateTab = workspace.getTab(routeHistoryState.tabId)
+        const stateTab = workspace.getTab(routeHistoryTabId)
         const stateIndex = stateTab?.session.history.findIndex(
-          (entry) => entry.entryId === routeHistoryState.entryId,
+          (entry) => entry.entryId === routeHistoryEntryId,
         ) ?? -1
         if (stateTab && stateIndex >= 0) {
+          if (isStaleTransition()) return
           const tab = await workspace.goToHistoryEntry(stateTab.tabId, stateIndex)
-          boardNavigation.commitTab(tab, true)
+          if (isStaleTransition()) return
+          commitTabRef.current(tab, true, routeFocusPanelKind ? { focusPanelKind: routeFocusPanelKind } : {})
           return
         }
       }
@@ -394,26 +451,45 @@ export function WorkspaceShell({
         projectId,
         routeBoardId,
         routePathReferenceIds,
-        projectData.references,
+        projectDataRef.current?.references ?? [],
       )
       if (sharedPath.length > 0) {
+        if (isStaleTransition()) return
         let tab = await workspace.openBoardInCurrentTab(sharedPath[0]!.sourceBoardId)
+        if (isStaleTransition()) return
         for (const reference of sharedPath) {
+          if (isStaleTransition()) return
           tab = await workspace.enterReference(tab.tabId, reference, 'current')
+          if (isStaleTransition()) return
         }
-        boardNavigation.commitTab(tab, true)
+        commitTabRef.current(tab, true, {
+          includePath: true,
+          ...(routeFocusPanelKind ? { focusPanelKind: routeFocusPanelKind } : {}),
+        })
         return
       }
 
       const active = workspace.tabs.find((tab) => tab.tabId === workspace.activeTabId)
-      const tab = active?.boardId === routeBoardId
-        ? active
-        : await workspace.openBoardInCurrentTab(routeBoardId)
-      boardNavigation.commitTab(tab, true)
-    })().catch((error: unknown) => {
+      if (active?.boardId === routeBoardId) {
+        if (isStaleTransition()) return
+        commitTabRef.current(
+          active,
+          true,
+          routeFocusPanelKind ? { focusPanelKind: routeFocusPanelKind } : {},
+        )
+        return
+      }
+      if (isStaleTransition()) return
+      const tab = await workspace.openBoardInCurrentTab(routeBoardId)
+      if (isStaleTransition()) return
+      commitTabRef.current(tab, true, routeFocusPanelKind ? { focusPanelKind: routeFocusPanelKind } : {})
+    })
+    routeTransitionQueue.current = queuedTransition.catch(() => undefined)
+
+    queuedTransition.catch((error: unknown) => {
       // A tab can be closed while its earlier history-state route transition
       // is still queued. The next route effect owns navigation in that case.
-      if (disposed) return
+      if (isStaleTransition()) return
       if (error instanceof Error && error.message.startsWith('Unknown workspace tab:')) return
       setRouteLoadError(chineseErrorMessage(error, '无法打开画板。画板可能不存在，或当前账号没有访问权限。'))
     }).finally(() => {
@@ -429,12 +505,14 @@ export function WorkspaceShell({
       }
     }
   }, [
-    boardNavigation,
-    projectData,
     projectId,
+    projectDataReady,
     routeBoardId,
-    routeHistoryState,
-    routePathReferenceIds,
+    routeHistoryEntryId,
+    routeHistoryProjectId,
+    routeHistoryTabId,
+    routePathKey,
+    routeFocusPanelKind,
     routeLoadAttempt,
     workspace,
   ])
@@ -482,15 +560,32 @@ export function WorkspaceShell({
         void clipboard.read()
           .then(async (payload) => {
             if (!payload) return
+            // Realtime rooms may have projected a newer durable snapshot after
+            // this tab loaded (including tldraw's initial schema normalization).
+            // Clipboard paste is a structural command, so synchronize the tab
+            // before reading its CAS revision instead of intentionally causing
+            // a 409 and retrying the command against an unknown newer state.
+            const sync = await workspace.syncBeforeStructuralCommand(activeTab.tabId)
+            if (!sync.ok) throw new Error('BOARD_FLUSH_FAILED')
+            const commandTab = workspace.getTab(activeTab.tabId)
+            if (
+              !commandTab
+              || commandTab.boardId !== activeTab.boardId
+              || workspace.activeTabId !== activeTab.tabId
+            ) {
+              throw new Error('CLIPBOARD_TARGET_CHANGED')
+            }
             const receipt = await client.pasteClipboard(
-              activeTab.boardId,
+              commandTab.boardId,
               payload,
-              activeTab.session.lastKnownRevision,
+              sync.revision,
             )
-            workspaceState.adoptCommandCommit(activeTab.tabId, receipt.snapshot, receipt.revision)
-            const commands = clipboardCommands.current.get(activeTab.tabId) ?? []
-            commands.push({ commandId: receipt.commandId, state: 'applied' })
-            clipboardCommands.current.set(activeTab.tabId, commands)
+            if (receipt.boardId !== commandTab.boardId) throw new Error('CLIPBOARD_TARGET_CHANGED')
+            clipboardCommands.current.record(commandTab.tabId, commandTab.boardId, receipt.commandId)
+            const currentTab = workspace.getTab(commandTab.tabId)
+            if (currentTab?.boardId === receipt.boardId) {
+              workspaceState.adoptCommandCommit(currentTab.tabId, receipt.snapshot, receipt.revision)
+            }
           })
           .catch((error: unknown) => {
             toast.error(chineseErrorMessage(error, '粘贴失败，请稍后重试。'))
@@ -500,26 +595,41 @@ export function WorkspaceShell({
       const redoShortcut = event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey)
       const undoShortcut = event.key.toLowerCase() === 'z' && !event.shiftKey
       if (undoShortcut || redoShortcut) {
-        const commands = clipboardCommands.current.get(activeTab.tabId) ?? []
-        const command = [...commands].reverse().find((candidate) =>
-          undoShortcut ? candidate.state === 'applied' : candidate.state === 'undone',
-        )
-        if (!command) return
+        const commandId = undoShortcut
+          ? clipboardCommands.current.nextUndo(activeTab.tabId, activeTab.boardId)
+          : clipboardCommands.current.nextRedo(activeTab.tabId, activeTab.boardId)
+        if (!commandId) return
         event.preventDefault()
-        const replay = undoShortcut
-          ? client.undoClipboard(command.commandId, activeTab.session.lastKnownRevision)
-          : client.redoClipboard(command.commandId, activeTab.session.lastKnownRevision)
-        void replay.then((receipt) => {
-          command.state = undoShortcut ? 'undone' : 'applied'
-          workspaceState.adoptCommandCommit(activeTab.tabId, receipt.snapshot, receipt.revision)
+        void workspace.syncBeforeStructuralCommand(activeTab.tabId).then(async (sync) => {
+          if (!sync.ok) throw new Error('BOARD_FLUSH_FAILED')
+          const commandTab = workspace.getTab(activeTab.tabId)
+          if (
+            !commandTab
+            || commandTab.boardId !== activeTab.boardId
+            || workspace.activeTabId !== activeTab.tabId
+          ) {
+            throw new Error('CLIPBOARD_TARGET_CHANGED')
+          }
+          const receipt = undoShortcut
+            ? await client.undoClipboard(commandId, sync.revision)
+            : await client.redoClipboard(commandId, sync.revision)
+          if (receipt.boardId !== commandTab.boardId) throw new Error('CLIPBOARD_TARGET_CHANGED')
+          const confirmed = undoShortcut
+            ? clipboardCommands.current.confirmUndo(commandTab.tabId, commandTab.boardId, commandId)
+            : clipboardCommands.current.confirmRedo(commandTab.tabId, commandTab.boardId, commandId)
+          if (!confirmed) throw new Error('STALE_CLIPBOARD_COMMAND')
+          const currentTab = workspace.getTab(commandTab.tabId)
+          if (currentTab?.boardId === receipt.boardId) {
+            workspaceState.adoptCommandCommit(currentTab.tabId, receipt.snapshot, receipt.revision)
+          }
         }).catch((error: unknown) => {
           toast.error(chineseErrorMessage(error, '撤销或重做失败，请稍后重试。'))
         })
       }
     }
-    window.addEventListener('keydown', handleClipboardShortcut)
-    return () => window.removeEventListener('keydown', handleClipboardShortcut)
-  }, [client, clipboard, projectData, projectId, workspaceState])
+    window.addEventListener('keydown', handleClipboardShortcut, { capture: true })
+    return () => window.removeEventListener('keydown', handleClipboardShortcut, { capture: true })
+  }, [client, clipboard, projectData, projectId, workspace, workspaceState])
 
   const openBoard = async (boardId: string, mode: 'current' | 'new') => {
     await refreshProject()
@@ -692,40 +802,49 @@ export function WorkspaceShell({
   }
 
   const importVisual = async (input: VisualImportInput) => {
-    const active = workspace.tabs.find((tab) => tab.tabId === workspace.activeTabId)
-    let resolvedInput = input
-    let beforePersist: (() => Promise<void>) | undefined
-    if (input.target.kind === 'current-board') {
-      if (!active || active.boardId !== input.target.boardId) throw new Error('NO_ACTIVE_BOARD')
-      if (!workspaceState.acquireEditingLease(active.tabId).applied) {
-        throw new Error('BOARD_EDITING_LEASE_REQUIRED')
+    const queuedImport = visualImportQueue.current.then(async () => {
+      const active = workspace.tabs.find((tab) => tab.tabId === workspace.activeTabId)
+      let resolvedInput = input
+      let beforePersist: (() => Promise<void>) | undefined
+      let expectedRevision: number | undefined
+      if (input.target.kind === 'current-board') {
+        if (!active || active.boardId !== input.target.boardId) throw new Error('NO_ACTIVE_BOARD')
+        if (!workspaceState.acquireEditingLease(active.tabId).applied) {
+          throw new Error('BOARD_EDITING_LEASE_REQUIRED')
+        }
+        const editor = (workspaceState.activeEditor as TldrawWorkspaceEditor | undefined)?.getTldrawEditor()
+        const pagePoint = editor
+          ? editor.screenToPage(input.target.dropPoint)
+          : input.target.dropPoint
+        const dropPoint = { x: pagePoint.x, y: pagePoint.y }
+        resolvedInput = {
+          ...input,
+          target: { ...input.target, dropPoint, ...(editor ? { pageId: editor.getCurrentPageId() } : {}) },
+        }
+        beforePersist = async () => {
+          const sync = await workspace.syncBeforeStructuralCommand(active.tabId)
+          if (!sync.ok) throw new Error('BOARD_FLUSH_FAILED')
+          expectedRevision = sync.revision
+        }
       }
-      const editor = (workspaceState.activeEditor as TldrawWorkspaceEditor | undefined)?.getTldrawEditor()
-      const pagePoint = editor
-        ? editor.screenToPage(input.target.dropPoint)
-        : input.target.dropPoint
-      const dropPoint = { x: pagePoint.x, y: pagePoint.y }
-      resolvedInput = {
-        ...input,
-        target: { ...input.target, dropPoint, ...(editor ? { pageId: editor.getCurrentPageId() } : {}) },
-      }
-      beforePersist = async () => {
-        const flushes = await workspace.flushBeforePageClose()
-        if (flushes.some((result) => !result.ok)) throw new Error('BOARD_FLUSH_FAILED')
-      }
-    }
 
-    const result = beforePersist
-      ? await importVisualFile(resolvedInput, undefined, { beforePersist })
-      : await importVisualFile(resolvedInput)
-    setTemporaryProgress(undefined)
-    if (result.createdBoard) {
-      await openBoard(result.boardId, 'new')
-    } else if (active) {
-      workspaceState.adoptCommandCommit(active.tabId, result.snapshot, result.revision)
-      await refreshProject()
-    }
-    return result
+      const result = beforePersist
+        ? await importVisualFile(resolvedInput, undefined, {
+            beforePersist,
+            getExpectedRevision: () => expectedRevision,
+          })
+        : await importVisualFile(resolvedInput)
+      setTemporaryProgress(undefined)
+      if (result.createdBoard) {
+        await openBoard(result.boardId, 'new')
+      } else if (active) {
+        workspaceState.adoptCommandCommit(active.tabId, result.snapshot, result.revision)
+        await refreshProject()
+      }
+      return result
+    })
+    visualImportQueue.current = queuedImport.then(() => undefined, () => undefined)
+    return queuedImport
   }
 
   const dropController = useMemo(() => createDropImportController({
@@ -827,6 +946,9 @@ export function WorkspaceShell({
           projectId={projectId}
           client={client}
           onOpenBoard={(boardId, mode) => void openBoard(boardId, mode)}
+          onOpenTradingPanel={(boardId, panelKind) => navigate(
+            `/projects/${encodeURIComponent(projectId)}/boards/${encodeURIComponent(boardId)}?focusPanel=${encodeURIComponent(panelKind)}`,
+          )}
           onImport={() => setImportWizard({ key: createBrowserUuid() })}
           onImportDrawio={() => setDrawioImport({ key: createBrowserUuid() })}
           onFeishuImported={async (result) => {
@@ -862,6 +984,13 @@ export function WorkspaceShell({
     readOnly: tab.readOnly,
   }))
   const activeTab = workspaceState.tabs.find((tab) => tab.tabId === workspaceState.activeTabId)
+  const activeRealtimeEnabled = shouldUseRealtimeBoard(
+    enableRealtime,
+    activeTab?.session.snapshotAccess,
+  )
+  const activeSnapshotAccessPending = Boolean(
+    enableRealtime && activeTab?.session.snapshotAccess === 'unknown',
+  )
   const activeEditor = workspaceState.activeEditor as TldrawWorkspaceEditor | undefined
   const activeHistoryEntries = activeTab
     ? historyBreadcrumbEntries(activeTab.session.history, activeTab.session.historyIndex)
@@ -915,34 +1044,47 @@ export function WorkspaceShell({
     await openBoard(reference.sourceBoardId, 'current')
   }
 
-  const adoptReferenceCommit = async (commit: { snapshot: unknown; revision: number }) => {
-    if (!activeTab) return
-    workspaceState.adoptCommandCommit(activeTab.tabId, commit.snapshot, commit.revision)
+  const adoptReferenceCommit = async (
+    tabId: string,
+    commit: { snapshot: unknown; revision: number },
+  ) => {
+    workspaceState.adoptCommandCommit(tabId, commit.snapshot, commit.revision)
     await refreshProject()
   }
 
-  const flushActiveBeforeStructuralCommand = async (): Promise<typeof activeTab> => {
+  const flushActiveBeforeStructuralCommand = async (): Promise<{
+    tab: NonNullable<typeof activeTab>
+    revision: number
+  } | undefined> => {
     if (!activeTab) return undefined
-    const results = await workspace.flushBeforePageClose()
-    if (results.some((result) => !result.ok)) throw new Error('BOARD_FLUSH_FAILED')
-    return workspace.getTab(activeTab.tabId)
+    const sync = await workspace.syncBeforeStructuralCommand(activeTab.tabId)
+    if (!sync.ok) throw new Error('BOARD_FLUSH_FAILED')
+    const commandTab = workspace.getTab(activeTab.tabId)
+    if (
+      !commandTab
+      || commandTab.boardId !== activeTab.boardId
+      || workspace.activeTabId !== activeTab.tabId
+    ) {
+      throw new Error('BOARD_COMMAND_TARGET_CHANGED')
+    }
+    return { tab: commandTab, revision: sync.revision }
   }
 
   const createReference = async (input: CreateBoardReferenceInput, placement?: { x: number; y: number }) => {
     if (!activeTab || !requestEditIntent()) return
     try {
-      const commandTab = await flushActiveBeforeStructuralCommand()
-      if (!commandTab) return
+      const command = await flushActiveBeforeStructuralCommand()
+      if (!command) return
       const shapeId = `shape:${createBrowserUuid()}`
       const commit = input.mode === 'existing'
-        ? await client.createBoardReference(activeTab.boardId, {
+        ? await client.createBoardReference(command.tab.boardId, {
             targetBoardId: input.targetBoardId,
             shapeId,
             kind: input.kind,
-            expectedRevision: commandTab.session.lastKnownRevision,
+            expectedRevision: command.revision,
             ...(placement ? { placement } : {}),
           })
-        : await client.createBoardReference(activeTab.boardId, {
+        : await client.createBoardReference(command.tab.boardId, {
             newBoard: {
               id: `board-${createBrowserUuid()}`,
               title: input.title,
@@ -950,12 +1092,12 @@ export function WorkspaceShell({
             },
             shapeId,
             kind: 'embed',
-            expectedRevision: commandTab.session.lastKnownRevision,
+            expectedRevision: command.revision,
             ...(placement ? { placement } : {}),
           })
       setCreateReferenceDialogOpen(false)
       setCreateReferencePlacement(undefined)
-      await adoptReferenceCommit(commit)
+      await adoptReferenceCommit(command.tab.tabId, commit)
     } catch (error) {
       setTemporaryProgress(chineseErrorMessage(error, '无法插入子画板，请稍后重试。'))
     }
@@ -964,11 +1106,11 @@ export function WorkspaceShell({
   const updateReferenceKind = async (referenceId: string, kind: BoardReferenceKind) => {
     if (!requestEditIntent()) return
     try {
-      const commandTab = await flushActiveBeforeStructuralCommand()
-      if (!commandTab) return
-      await adoptReferenceCommit(await client.updateBoardReference(referenceId, {
+      const command = await flushActiveBeforeStructuralCommand()
+      if (!command) return
+      await adoptReferenceCommit(command.tab.tabId, await client.updateBoardReference(referenceId, {
         kind,
-        expectedRevision: commandTab.session.lastKnownRevision,
+        expectedRevision: command.revision,
       }))
     } catch (error) {
       setTemporaryProgress(chineseErrorMessage(error, '无法更新画板引用，请稍后重试。'))
@@ -978,30 +1120,57 @@ export function WorkspaceShell({
   const removeReference = async (referenceId: string) => {
     if (!requestEditIntent()) return
     try {
-      const commandTab = await flushActiveBeforeStructuralCommand()
-      if (!commandTab) return
-      await adoptReferenceCommit(await client.removeBoardReference(
+      const command = await flushActiveBeforeStructuralCommand()
+      if (!command) return
+      await adoptReferenceCommit(command.tab.tabId, await client.removeBoardReference(
         referenceId,
-        commandTab.session.lastKnownRevision,
+        command.revision,
       ))
     } catch (error) {
       setTemporaryProgress(chineseErrorMessage(error, '无法移除画板引用，请稍后重试。'))
     }
   }
 
+  const resolveReferenceNavigation = (shape: BoardReferenceShape) => {
+    const activeTabId = activeTabIdRef.current
+    if (!activeTabId) return undefined
+    const activeTabEntry = workspace.getTab(activeTabId)
+    if (!activeTabEntry) return undefined
+    const currentBoardId = activeTabEntry.boardId
+    const reference = projectDataRef.current?.references.find((candidate) => (
+      candidate.sourceBoardId === currentBoardId
+      && candidate.shapeId === shape.id
+      && candidate.targetBoardId === shape.props.targetBoardId
+    )) ?? projectDataRef.current?.references.find((candidate) => (
+      candidate.id === shape.props.referenceId
+      && candidate.sourceBoardId === currentBoardId
+      && candidate.targetBoardId === shape.props.targetBoardId
+    )) ?? projectDataRef.current?.references.find((candidate) => (
+      candidate.id === shape.props.referenceId
+      && candidate.sourceBoardId === currentBoardId
+    ))
+    if (!reference) return undefined
+    const sourceTab = workspace.tabs.find((candidate) => candidate.boardId === reference.sourceBoardId)
+    if (sourceTab) return { reference, tabId: sourceTab.tabId }
+    return activeTabEntry.boardId === reference.sourceBoardId
+      ? { reference, tabId: activeTabId }
+      : undefined
+  }
+
   const openReference = (shape: BoardReferenceShape) => {
-    if (!activeTab) return
-    const reference = projectData?.references.find((candidate) => candidate.id === shape.props.referenceId)
-    if (reference) void boardNavigation.enterReference(activeTab.tabId, reference, 'current')
+    const resolved = resolveReferenceNavigation(shape)
+    if (!resolved) return
+    localNavigationGenerationRef.current += 1
+    void boardNavigation.enterReference(resolved.tabId, resolved.reference, 'current')
   }
 
   const boardReferenceActions = activeTab ? {
     enter: openReference,
     openInNewTab: (shape: BoardReferenceShape) => {
-      const reference = projectData?.references.find(
-        (candidate) => candidate.id === shape.props.referenceId,
-      )
-      if (reference) void boardNavigation.enterReference(activeTab.tabId, reference, 'new-tab')
+      const resolved = resolveReferenceNavigation(shape)
+      if (!resolved) return
+      localNavigationGenerationRef.current += 1
+      void boardNavigation.enterReference(resolved.tabId, resolved.reference, 'new-tab')
     },
     renameTarget: (shape: BoardReferenceShape) => {
       const boardId = shape.props.targetBoardId
@@ -1028,6 +1197,7 @@ export function WorkspaceShell({
 
   return (
     <div className="workspace-shell workspace-shell--board">
+      {hasTradingPanel(projectData) ? <TradingDataBridge /> : null}
       <BoardTabStrip
         tabs={tabs}
         activeTabId={workspaceState.activeTabId}
@@ -1057,8 +1227,13 @@ export function WorkspaceShell({
           onOpenSource={(reference) => void openInboundSource(reference)}
         />
       ) : null}
-      {activeTab && activeEditor ? (
-        enableRealtime ? <RealtimeBoardPage
+      {activeTab?.session.snapshotAccess === 'projected' ? (
+        <p className="privacy-projection-notice" role="status">
+          此画板包含你无权访问的私密引用，已以只读模式打开，并停用实时协作。
+        </p>
+      ) : null}
+      {activeTab && activeEditor && !activeSnapshotAccessPending ? (
+        activeRealtimeEnabled ? <RealtimeBoardPage
           title={boardTitle(projectData, activeTab.boardId)}
           navigation={navigationElement}
           projectId={projectId}
@@ -1074,6 +1249,9 @@ export function WorkspaceShell({
           {...(isCommentClient(client) ? { commentClient: client } : {})}
           onBeforePdfExport={flushForPdfExport}
           onEditIntent={requestEditIntent}
+          {...(activeTab.boardId === routeBoardId && routeFocusPanelKind
+            ? { initialTradingPanelKind: routeFocusPanelKind }
+            : {})}
           onCreateReference={(center) => {
             setCreateReferencePlacement({
               x: center.x - BOARD_REFERENCE_DEFAULT_WIDTH / 2,
@@ -1105,6 +1283,9 @@ export function WorkspaceShell({
           {...(isCommentClient(client) ? { commentClient: client } : {})}
           onBeforePdfExport={flushForPdfExport}
           onEditIntent={requestEditIntent}
+          {...(activeTab.boardId === routeBoardId && routeFocusPanelKind
+            ? { initialTradingPanelKind: routeFocusPanelKind }
+            : {})}
           onCreateReference={(center) => {
             setCreateReferencePlacement({
               x: center.x - BOARD_REFERENCE_DEFAULT_WIDTH / 2,

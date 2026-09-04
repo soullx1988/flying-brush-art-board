@@ -140,3 +140,47 @@ test('the opt-in realtime workspace reconnects its visible canvas after a full r
     (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.getShape(id),
   ), shapeId)).toBe(true)
 })
+
+test('the realtime workspace reconnects and persists an edit created while the browser was offline', async ({ context, page, request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const projectId = `project-realtime-offline-${suffix}`
+  const boardId = `board-realtime-offline-${suffix}`
+  expect((await request.post('http://localhost:8787/api/projects', {
+    data: {
+      id: projectId,
+      title: 'Realtime offline recovery',
+      rootBoard: { id: boardId, title: 'Offline recovery' },
+    },
+  })).ok()).toBe(true)
+
+  const socketUrls: string[] = []
+  page.on('websocket', (socket) => socketUrls.push(socket.url()))
+  await page.goto(`/projects/${projectId}/boards/${boardId}?realtime=1`)
+  await expect(page.getByLabel('白板画布')).toBeVisible()
+  await expect.poll(() => socketUrls.length).toBeGreaterThanOrEqual(1)
+
+  await context.setOffline(true)
+  const shapeId = await page.evaluate(() => {
+    const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+    if (!editor) throw new Error('Realtime workspace editor was not mounted')
+    const id = `shape:realtime-offline-${crypto.randomUUID()}`
+    editor.createShapes([{ id, type: 'geo', x: 180, y: 210 }])
+    return id
+  })
+  await expect.poll(() => page.evaluate((id) => Boolean(
+    (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.getShape(id),
+  ), shapeId)).toBe(true)
+
+  const offlineBoard = await (await request.get(`http://localhost:8787/api/boards/${encodeURIComponent(boardId)}`)).json() as {
+    tldrawSnapshot: { store?: Record<string, unknown> }
+  }
+  expect(offlineBoard.tldrawSnapshot.store?.[shapeId]).toBeUndefined()
+
+  await context.setOffline(false)
+  await expect.poll(() => socketUrls.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(2)
+  await expect.poll(async () => {
+    const response = await request.get(`http://localhost:8787/api/boards/${encodeURIComponent(boardId)}`)
+    const board = await response.json() as { tldrawSnapshot: { store?: Record<string, unknown> } }
+    return Boolean(board.tldrawSnapshot.store?.[shapeId])
+  }, { timeout: 15_000 }).toBe(true)
+})

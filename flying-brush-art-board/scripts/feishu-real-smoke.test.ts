@@ -30,7 +30,7 @@ describe('Feishu real smoke gate', () => {
   it('requires a completed local OAuth session before a real request', async () => {
     const errors: string[] = []
     await expect(runFeishuRealSmoke([], {
-      FEISHU_REAL_SMOKE: '1', FEISHU_APP_ID: 'local-app-id', FEISHU_APP_SECRET: 'local-app-secret',
+      FEISHU_REAL_SMOKE: '1', FEISHU_APP_ID: 'local-app-id', FEISHU_APP_SECRET: 'local-app-secret', FEISHU_REAL_OPEN_ID: 'user-a',
     }, {
       credentialStore: { read: () => undefined } as never,
       error: (message) => errors.push(message),
@@ -42,7 +42,7 @@ describe('Feishu real smoke gate', () => {
     const calls: string[] = []
     const output: string[] = []
     await expect(runFeishuRealSmoke([], {
-      FEISHU_REAL_SMOKE: '1', FEISHU_APP_ID: 'local-app-id', FEISHU_APP_SECRET: 'local-app-secret', FEISHU_REAL_WHITEBOARD_URL: 'board-token',
+      FEISHU_REAL_SMOKE: '1', FEISHU_APP_ID: 'local-app-id', FEISHU_APP_SECRET: 'local-app-secret', FEISHU_REAL_OPEN_ID: 'user-a', FEISHU_REAL_WHITEBOARD_URL: 'board-token',
     }, {
       credentialStore: { read: () => ({ accessToken: 'access', refreshToken: 'refresh', scopes: [] }) } as never,
       resolveWhiteboardToken: async () => { calls.push('resolve'); return 'resolved-token' },

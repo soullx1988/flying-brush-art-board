@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPngFixture } from '../../../../../packages/test-fixtures/src/media.js'
 
 import { createDatabase, type LocalDatabase } from '../../db/schema.js'
 import { AssetRepository, AssetUsageRepository } from '../assets/asset-repository.js'
@@ -29,7 +31,8 @@ describe('importFeishuBoard', () => {
   afterEach(() => { database.close(); rmSync(assetDirectory, { recursive: true, force: true }) })
 
   it('downloads resources into the content-addressed store and creates exactly one Board without inferred references', async () => {
-    const bytes = new Uint8Array([1, 2, 3])
+    const bytes = createPngFixture()
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
     const client = {
       listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [
         { id: 'image', type: 'image', x: 10, y: 20, width: 100, height: 80, mediaToken: 'media', mimeType: 'image/png' },
@@ -37,18 +40,18 @@ describe('importFeishuBoard', () => {
       ] }),
       getWhiteboardTheme: vi.fn().mockResolvedValue({ backgroundColor: '#f6f7f9', primaryColor: '#3370ff' }),
       downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array([9])),
-      downloadMedia: vi.fn().mockResolvedValue({ bytes, mime: 'image/png', sha256: '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81' }),
+      downloadMedia: vi.fn().mockResolvedValue({ bytes, mime: 'image/png', sha256 }),
     }
     const importFeishuBoard = createImportFeishuService({ database, assets, client, now: () => now, id: () => 'imported' })
     const result = await importFeishuBoard({ whiteboardToken: 'board_token', projectId: 'project' })
 
     expect(result.boardId).toBe('board:feishu-imported')
     expect(result.theme).toMatchObject({ background: '#f6f7f9', primary: '#3370ff' })
-    expect(result.scene.elements.find((element) => element.type === 'image')).toMatchObject({ src: 'asset://039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81' })
+    expect(result.scene.elements.find((element) => element.type === 'image')).toMatchObject({ src: `asset://${sha256}` })
     expect(new BoardRepository(database).listByProject('project')).toHaveLength(2)
     expect(new AssetUsageRepository(database).listByProject('project')).toHaveLength(1)
     expect(new BoardReferenceRepository(database).listByProject('project')).toEqual([])
-    expect(readdirSync(assetDirectory)).toEqual(['039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81'])
+    expect(readdirSync(assetDirectory)).toEqual([sha256])
   })
 
   it('preserves an actionable media failure report and leaves no partial Board or asset', async () => {

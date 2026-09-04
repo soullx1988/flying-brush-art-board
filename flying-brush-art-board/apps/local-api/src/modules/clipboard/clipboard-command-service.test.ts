@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { BoardReferenceRecord, MaterializedClipboardPatch } from '@infinite-board/board-core'
+import { createPngFixture } from '../../../../../packages/test-fixtures/src/media.js'
 import {
   assertBoardReferenceSnapshotConsistent,
   createBoardReferenceShape,
@@ -16,7 +17,7 @@ import { BoardReferenceRepository } from '../board-references/board-reference-re
 import { BoardRepository, RevisionConflictError } from '../boards/board-repository.js'
 import { ProjectRepository } from '../projects/project-repository.js'
 import { createDatabase, type LocalDatabase } from '../../db/schema.js'
-import { ClipboardCommandService } from './clipboard-command-service.js'
+import { ClipboardCommandService, StaleClipboardCommandError } from './clipboard-command-service.js'
 
 const now = '2026-07-23T00:00:00.000Z'
 const sessionId = 'session:test'
@@ -72,13 +73,23 @@ describe('clipboard command service', () => {
     rmSync(assetDirectory, { recursive: true, force: true })
   })
 
-  function patch(bytes = new Uint8Array([1, 2, 3])): MaterializedClipboardPatch {
+  function patch(bytes = createPngFixture()): MaterializedClipboardPatch {
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     return {
       nextSnapshot: { store: [{ id: 'shape:paste' }] },
       idMap: { 'shape:source': 'shape:paste' },
       assetBlobs: [{ sha256, mime: 'image/png', size: bytes.byteLength, bytes }],
       assetUsages: [{ shapeId: 'shape:paste', assetRecordId: 'asset:paste', sha256 }],
+      referenceCandidates: [],
+    }
+  }
+
+  function snapshotPatch(ids: string[]): MaterializedClipboardPatch {
+    return {
+      nextSnapshot: { store: ids.map((id) => ({ id })) },
+      idMap: {},
+      assetBlobs: [],
+      assetUsages: [],
       referenceCandidates: [],
     }
   }
@@ -126,6 +137,59 @@ describe('clipboard command service', () => {
     expect(usages.listByProject('project-1')).toHaveLength(1)
   })
 
+  it('refuses to undo or redo across a newer realtime edit without overwriting it', () => {
+    const receipt = service.applyMaterializedClipboardCommand('A', 0, snapshotPatch(['shape:paste']), sessionId)
+    boards.saveRealtimeSnapshot('A', { store: [{ id: 'shape:paste' }, { id: 'shape:collaborator' }] })
+
+    expect(() => service.undo(receipt.commandId, 2, sessionId)).toThrow(StaleClipboardCommandError)
+    expect(boards.get('A')).toMatchObject({
+      revision: 2,
+      tldrawSnapshot: { store: [{ id: 'shape:paste' }, { id: 'shape:collaborator' }] },
+    })
+
+    const cleanReceipt = service.applyMaterializedClipboardCommand(
+      'A',
+      2,
+      snapshotPatch(['shape:paste', 'shape:collaborator', 'shape:second']),
+      sessionId,
+    )
+    service.undo(cleanReceipt.commandId, 3, sessionId)
+    boards.saveRealtimeSnapshot('A', {
+      store: [{ id: 'shape:paste' }, { id: 'shape:collaborator' }, { id: 'shape:after-undo' }],
+    })
+
+    expect(() => service.redo(cleanReceipt.commandId, 5, sessionId)).toThrow(StaleClipboardCommandError)
+    expect(boards.get('A')).toMatchObject({
+      revision: 5,
+      tldrawSnapshot: {
+        store: [{ id: 'shape:paste' }, { id: 'shape:collaborator' }, { id: 'shape:after-undo' }],
+      },
+    })
+  })
+
+  it('supports stacked LIFO undo and forward-order redo using snapshot boundaries', () => {
+    const first = service.applyMaterializedClipboardCommand('A', 0, snapshotPatch(['shape:A']), sessionId)
+    const second = service.applyMaterializedClipboardCommand(
+      'A',
+      1,
+      snapshotPatch(['shape:A', 'shape:B']),
+      sessionId,
+    )
+
+    service.undo(second.commandId, 2, sessionId)
+    expect(boards.get('A')?.tldrawSnapshot).toEqual({ store: [{ id: 'shape:A' }] })
+    service.undo(first.commandId, 3, sessionId)
+    expect(boards.get('A')?.tldrawSnapshot).toEqual({ store: [] })
+
+    service.redo(first.commandId, 4, sessionId)
+    expect(boards.get('A')?.tldrawSnapshot).toEqual({ store: [{ id: 'shape:A' }] })
+    service.redo(second.commandId, 5, sessionId)
+    expect(boards.get('A')).toMatchObject({
+      revision: 6,
+      tldrawSnapshot: { store: [{ id: 'shape:A' }, { id: 'shape:B' }] },
+    })
+  })
+
   it('does not allow another application session to replay a clipboard receipt', () => {
     const receipt = service.applyMaterializedClipboardCommand('A', 0, patch(), 'session:one')
 
@@ -141,7 +205,7 @@ describe('clipboard command service', () => {
   })
 
   it('rolls back snapshot and asset usages when a patch cannot create its relation', () => {
-    const initial = patch(new Uint8Array([1]))
+    const initial = patch(createPngFixture(1, 2))
     assets.materializeForBoard({
       projectId: 'project-1',
       boardId: 'A',
@@ -158,7 +222,7 @@ describe('clipboard command service', () => {
   })
 
   it('removes newly materialized asset metadata and files when the transaction fails after asset storage', () => {
-    const existing = patch(new Uint8Array([9]))
+    const existing = patch(createPngFixture(2, 1))
     assets.materializeForBoard({
       projectId: 'project-1',
       boardId: 'A',

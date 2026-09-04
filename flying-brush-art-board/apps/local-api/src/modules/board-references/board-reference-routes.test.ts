@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createBoardReferenceShape } from '@infinite-board/tldraw-adapter'
+import { createPngFixture } from '../../../../../packages/test-fixtures/src/media.js'
 
 import { buildApp } from '../../app.js'
 import { createDatabase, type LocalDatabase } from '../../db/schema.js'
@@ -301,10 +302,11 @@ describe('board reference routes', () => {
     }
   })
 
-  it('rejects non-loopback host configuration and invalid or oversized asset inputs', async () => {
+  it('rejects invalid, oversized, and MIME-spoofed assets while keeping the API healthy', async () => {
     await expect(buildApp({ host: '0.0.0.0' })).rejects.toThrow('Loopback host required')
 
-    const app = await buildApp({ database, assetDirectory, maxAssetBytes: 3 })
+    const validPng = createPngFixture()
+    const app = await buildApp({ database, assetDirectory, maxAssetBytes: validPng.byteLength })
     try {
       const invalid = await app.inject({ method: 'POST', url: '/api/assets', payload: { mime: 'bad', base64: 'AA==' } })
       const invalidBase64 = await app.inject({ method: 'POST', url: '/api/assets', payload: { mime: 'image/png', base64: 'A===' } })
@@ -312,19 +314,29 @@ describe('board reference routes', () => {
       const atLimit = await app.inject({
         method: 'POST',
         url: '/api/assets',
-        payload: { mime: 'image/png', base64: Buffer.from([1, 2, 3]).toString('base64') },
+        payload: { mime: 'image/png', base64: Buffer.from(validPng).toString('base64') },
       })
       const oversized = await app.inject({
         method: 'POST',
         url: '/api/assets',
-        payload: { mime: 'image/png', base64: Buffer.from([1, 2, 3, 4]).toString('base64') },
+        payload: { mime: 'image/png', base64: Buffer.from([...validPng, 0]).toString('base64') },
       })
+      const spoofedPng = await app.inject({
+        method: 'POST',
+        url: '/api/assets',
+        payload: { mime: 'image/png', base64: Buffer.from([1, 2, 3]).toString('base64') },
+      })
+      const healthAfterSpoof = await app.inject({ method: 'GET', url: '/health' })
 
       expect(invalid.statusCode).toBe(400)
       expect(invalidBase64.statusCode).toBe(400)
       expect(nonCanonicalBase64.statusCode).toBe(400)
       expect(atLimit.statusCode).toBe(201)
       expect(oversized.statusCode).toBe(413)
+      expect(spoofedPng.statusCode).toBe(422)
+      expect(spoofedPng.json()).toEqual({ code: 'ASSET_CONTENT_INVALID', reason: 'MAGIC_MISMATCH' })
+      expect(healthAfterSpoof.statusCode).toBe(200)
+      expect(healthAfterSpoof.json()).toMatchObject({ status: 'ok', database: 'ok' })
     } finally {
       await app.close()
     }
@@ -332,7 +344,7 @@ describe('board reference routes', () => {
 
   it('removes an unused uploaded asset row and blob through the compensation route', async () => {
     const app = await buildApp({ database, assetDirectory })
-    const bytes = new Uint8Array([1, 2, 3])
+    const bytes = createPngFixture()
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     try {
       const uploaded = await app.inject({
@@ -350,7 +362,7 @@ describe('board reference routes', () => {
       expect(database.prepare('SELECT COUNT(*) AS count FROM assets WHERE sha256 = ?').get(sha256)).toEqual({ count: 0 })
       expect(existsSync(join(assetDirectory, sha256))).toBe(false)
 
-      const usedBytes = new Uint8Array([4, 5, 6])
+      const usedBytes = createPngFixture(2, 1)
       const usedSha256 = createHash('sha256').update(usedBytes).digest('hex')
       await app.inject({
         method: 'POST',
@@ -362,7 +374,8 @@ describe('board reference routes', () => {
       ) VALUES (?, ?, ?, ?, ?, ?)`).run('project-1', 'A', 'shape:used-asset', 'asset:used-asset', usedSha256, now)
 
       const protectedAsset = await app.inject({ method: 'DELETE', url: `/api/assets/${usedSha256}` })
-      expect(protectedAsset.statusCode).toBe(404)
+      expect(protectedAsset.statusCode).toBe(409)
+      expect(protectedAsset.json()).toEqual({ code: 'ASSET_IN_USE' })
       expect(database.prepare('SELECT COUNT(*) AS count FROM assets WHERE sha256 = ?').get(usedSha256)).toEqual({ count: 1 })
       expect(existsSync(join(assetDirectory, usedSha256))).toBe(true)
     } finally {

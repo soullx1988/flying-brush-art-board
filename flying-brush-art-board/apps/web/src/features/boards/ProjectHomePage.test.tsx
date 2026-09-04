@@ -195,6 +195,40 @@ describe('ProjectHomePage', () => {
     expect(screen.getByRole('combobox', { name: '默认画板' })).toHaveTextContent('Research')
   })
 
+  it('opens the Yishui panel directly from the project header when present', async () => {
+    const client = createClient()
+    vi.mocked(client.getProject).mockResolvedValueOnce({
+      ...structuredClone(projectData),
+      boards: projectData.boards.map((board) => board.id === 'board-b' ? {
+        ...board,
+        title: '数据',
+        tldrawSnapshot: {
+          store: {
+            'shape:yishui': {
+              id: 'shape:yishui',
+              type: 'trading-panel',
+              meta: { template: 'shortline-trading-v1' },
+              props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+            },
+          },
+        },
+      } : board),
+    })
+    const onOpenTradingPanel = vi.fn()
+
+    render(
+      <ProjectHomePage
+        projectId="project-1"
+        client={client}
+        onOpenBoard={vi.fn()}
+        onOpenTradingPanel={onOpenTradingPanel}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '打开义水推演' }))
+
+    expect(onOpenTradingPanel).toHaveBeenCalledWith('board-b', 'yishui-inference')
+  })
+
   it('renames the project and removes it after an explicit confirmation', async () => {
     const client = createClient()
     const onProjectDeleted = vi.fn()

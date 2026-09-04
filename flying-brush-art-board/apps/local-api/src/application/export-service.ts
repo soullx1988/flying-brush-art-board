@@ -9,6 +9,11 @@ import { AssetUsageRepository } from '../modules/assets/asset-repository.js'
 import type { BoardReferenceRepository } from '../modules/board-references/board-reference-repository.js'
 import type { BoardRepository } from '../modules/boards/board-repository.js'
 import type { ProjectRepository } from '../modules/projects/project-repository.js'
+import {
+  tradingWorkbenchSnapshot,
+  type TradingSource,
+} from '../modules/trading/trading-source.js'
+import { canAccessBoard, canAccessProject, projectPrivacyProjection, projectWithProjectedRoot } from '../privacy/board-access-policy.js'
 
 function snapshotStore(snapshot: unknown): Record<string, unknown> {
   if (!snapshot || typeof snapshot !== 'object') return {}
@@ -24,44 +29,91 @@ export class ExportApplicationService {
     private readonly boards: BoardRepository,
     private readonly references: BoardReferenceRepository,
     private readonly assets: AssetRepository,
+    private readonly tradingSource?: Pick<TradingSource, 'getSnapshot'>,
   ) {}
 
-  projectIboard(projectId: string): { bytes: Uint8Array; fileName: string; mimeType: string } {
+  projectIboard(projectId: string, actorOpenId: string): { bytes: Uint8Array; fileName: string; mimeType: string } {
     const project = this.projects.get(projectId)
     if (!project) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
+    if (!canAccessProject(project, actorOpenId, this.projects.isMember(project.id, actorOpenId))) {
+      throw Object.assign(new Error('PROJECT_ACCESS_DENIED'), { code: 'PROJECT_ACCESS_DENIED' })
+    }
+    const projection = projectPrivacyProjection(
+      this.boards.listByProject(projectId),
+      this.references.listByProject(projectId),
+      'export',
+    )
+    const projectedProject = projectWithProjectedRoot(project, projection.boards)
     return {
       bytes: exportProjectToIboard({
-        project,
-        boards: this.boards.listByProject(projectId),
-        references: this.references.listByProject(projectId),
-        assets: this.exportAssets(projectId),
+        project: projectedProject,
+        boards: projection.boards,
+        references: projection.references,
+        assets: this.exportAssets(projectId, projection.redactedBoardIds),
       }),
       fileName: `${project.title.trim() || project.id}.iboard`,
       mimeType: 'application/vnd.infinite-board+zip',
     }
   }
 
-  async projectPdf(projectId: string): Promise<{ bytes: Uint8Array; fileName: string; mimeType: string }> {
+  async projectPdf(projectId: string, actorOpenId: string): Promise<{ bytes: Uint8Array; fileName: string; mimeType: string }> {
     const project = this.projects.get(projectId)
     if (!project) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
-    const input: ProjectPdfInput = { project, boards: this.boards.listByProject(projectId), references: this.references.listByProject(projectId) }
+    if (!canAccessProject(project, actorOpenId, this.projects.isMember(project.id, actorOpenId))) {
+      throw Object.assign(new Error('PROJECT_ACCESS_DENIED'), { code: 'PROJECT_ACCESS_DENIED' })
+    }
+    const projection = projectPrivacyProjection(
+      this.boards.listByProject(projectId),
+      this.references.listByProject(projectId),
+      'export',
+    )
+    const projectedProject = projectWithProjectedRoot(project, projection.boards)
+    const frozenTradingSnapshot = this.tradingSource
+      ? tradingWorkbenchSnapshot(await this.tradingSource.getSnapshot())
+      : undefined
+    const input: ProjectPdfInput = {
+      project: projectedProject,
+      boards: projection.boards,
+      references: projection.references,
+      ...(frozenTradingSnapshot ? { tradingSnapshot: frozenTradingSnapshot } : {}),
+    }
     input.assets = this.pdfAssetSources(input)
     return { bytes: await renderProjectToPdf(input), fileName: `${project.title.trim() || project.id}.pdf`, mimeType: 'application/pdf' }
   }
 
-  async boardPdf(boardId: string): Promise<{ bytes: Uint8Array; fileName: string; mimeType: string }> {
+  async boardPdf(boardId: string, actorOpenId: string): Promise<{ bytes: Uint8Array; fileName: string; mimeType: string }> {
     const board = this.boards.get(boardId)
     if (!board) throw Object.assign(new Error('BOARD_NOT_FOUND'), { code: 'BOARD_NOT_FOUND' })
     const project = this.projects.get(board.projectId)
     if (!project) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
-    const input: ProjectPdfInput = { project: { ...project, rootBoardId: board.id }, boards: [board], references: [] }
+    if (!canAccessBoard(board, project, actorOpenId, this.projects.isMember(project.id, actorOpenId))) {
+      throw Object.assign(new Error('BOARD_ACCESS_DENIED'), { code: 'BOARD_ACCESS_DENIED' })
+    }
+    const projection = projectPrivacyProjection(
+      this.boards.listByProject(project.id),
+      this.references.listByProject(project.id),
+      'export',
+      actorOpenId,
+    )
+    const projectedBoard = projection.boards.find((candidate) => candidate.id === board.id)
+    if (!projectedBoard) throw Object.assign(new Error('BOARD_ACCESS_DENIED'), { code: 'BOARD_ACCESS_DENIED' })
+    const frozenTradingSnapshot = this.tradingSource
+      ? tradingWorkbenchSnapshot(await this.tradingSource.getSnapshot())
+      : undefined
+    const input: ProjectPdfInput = {
+      project: { ...project, rootBoardId: board.id },
+      boards: [projectedBoard],
+      references: [],
+      ...(frozenTradingSnapshot ? { tradingSnapshot: frozenTradingSnapshot } : {}),
+    }
     input.assets = this.pdfAssetSources(input)
     return { bytes: await renderProjectToPdf(input), fileName: `${board.title.trim() || board.id}.pdf`, mimeType: 'application/pdf' }
   }
 
-  private exportAssets(projectId: string): IboardAssetInputV1[] {
+  private exportAssets(projectId: string, redactedBoardIds: ReadonlySet<string>): IboardAssetInputV1[] {
     const usagesByHash = new Map<string, ReturnType<AssetUsageRepository['listByProject']>>()
     for (const usage of new AssetUsageRepository(this.database).listByProject(projectId)) {
+      if (redactedBoardIds.has(usage.boardId)) continue
       const usages = usagesByHash.get(usage.sha256) ?? []
       usages.push(usage)
       usagesByHash.set(usage.sha256, usages)

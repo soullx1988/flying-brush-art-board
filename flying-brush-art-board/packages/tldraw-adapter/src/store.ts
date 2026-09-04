@@ -10,12 +10,14 @@ import { boardReferenceShapeUtils } from './shapes/board-reference/BoardReferenc
 import { enhancedArrowShapeUtils } from './shapes/arrow/EnhancedArrowShapeUtil.js'
 import { mindMapShapeUtils } from './shapes/mind-map/MindMapShapeUtil.js'
 import { tableShapeUtils } from './shapes/table/TableShapeUtil.js'
+import { tradingPanelShapeUtils } from './shapes/trading-panel/TradingPanelShapeUtil.js'
 
 export const boardShapeUtils = [
   ...enhancedArrowShapeUtils,
   ...boardReferenceShapeUtils,
   ...tableShapeUtils,
   ...mindMapShapeUtils,
+  ...tradingPanelShapeUtils,
 ] as const
 
 const replacedShapeTypes = new Set<string>(boardShapeUtils.map((shapeUtil) => shapeUtil.type))

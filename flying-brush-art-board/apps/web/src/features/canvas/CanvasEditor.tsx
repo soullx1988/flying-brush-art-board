@@ -33,6 +33,7 @@ import {
   type Editor,
   type TLArrowShape,
   type TLAnyShapeUtilConstructor,
+  type TLShapeId,
   type TLComponents,
   type TLUiContextMenuProps,
   type TLUiOverrides,
@@ -80,6 +81,7 @@ import {
   setMindMapTheme,
   tableShapeTools,
   tableShapeUtils,
+  tradingPanelShapeUtils,
   toggleTableHeaderRow,
   updateTableCellStyles,
   toggleMindMapCollapsed,
@@ -95,6 +97,8 @@ import {
   type TableCellTextColor,
   type TableFontFamily,
   type TableTextAlign,
+  type TradingPanelKind,
+  type TradingPanelShape,
   setBoardReferenceOpenHandler,
   type BoardReferenceShape,
 } from '@infinite-board/tldraw-adapter'
@@ -103,6 +107,7 @@ import type { CommentThreadView } from '../comments/comment-client'
 import { CANVAS_ASSET_URLS } from './tldraw-assets'
 
 export const CANVAS_TLDRAW_OPTIONS = {
+  createTextOnCanvasDoubleClick: false,
   maxShapesPerPage: 10_000,
 } as const
 
@@ -127,6 +132,8 @@ export interface CanvasEditorProps {
   store?: TLStore
   /** Changes whenever the active tab starts editing a different Board. */
   inputSessionKey?: string
+  /** On direct-entry routes, focus this template panel after the snapshot is ready. */
+  initialTradingPanelKind?: TradingPanelKind
   /**
    * When supplied, tldraw starts as read-only and this synchronous gate must
    * approve an edit intent before tldraw receives a mutable input event.
@@ -159,7 +166,116 @@ export interface BoardReferenceActions {
   remove(shape: BoardReferenceShape): void
 }
 
+interface TradingPanelViewPreset {
+  id: TLShapeId
+  label: string
+}
+
+const TRADING_TEMPLATE_KEY = 'shortline-trading-v1'
+const TRADING_PANEL_VIEW_LABELS: Record<string, string> = {
+  'today-overview': '今天怎么看',
+  'market-overview': '市场主线',
+  'yishui-inference': '义水推演',
+  'stock-pool': '个人选股池',
+  announcements: '公告观察',
+  'system-status': '数据状态',
+}
+
+const TRADING_PANEL_VIEW_ORDER = ['market-overview', 'yishui-inference', 'stock-pool', 'announcements', 'system-status']
+const TRADING_PANEL_FOCUS_TOP_GUTTER = 120
+const TRADING_PANEL_FOCUS_BOTTOM_GUTTER = 72
+const TRADING_PANEL_FOCUS_RIGHT_GUTTER = 180
+const TRADING_TODAY_FOCUS_TOP_GUTTER = 12
+const TRADING_TODAY_FOCUS_BOTTOM_GUTTER = 20
+const TRADING_TODAY_FOCUS_RIGHT_GUTTER = 32
+const TRADING_TODAY_FOCUS_CONTENT_WIDTH = 1860
+const TRADING_TODAY_FOCUS_CONTENT_HEIGHT = 900
+const TRADING_OVERVIEW_FOCUS_BOTTOM_GUTTER = 120
+const TRADING_OVERVIEW_FOCUS_RIGHT_GUTTER = 180
+const INITIAL_VIEW_EPSILON = 0.0001
+const CANVAS_IDLE_STYLE_TOOLS = new Set(['draw', 'text', 'note', 'geo'])
+
 const BOARD_DRAG_TYPE = 'application/x-infinite-board-board-id'
+
+function listTemplateTradingPanels(shapes: ReturnType<Editor['getCurrentPageShapes']>) {
+  const firstByKind = new Map<string, (typeof shapes)[number]>()
+  for (const shape of shapes) {
+    if (shape.type !== 'trading-panel' || shape.meta?.template !== TRADING_TEMPLATE_KEY) continue
+    const kind = String((shape.props as { panelKind?: unknown }).panelKind ?? '')
+    if (!TRADING_PANEL_VIEW_ORDER.includes(kind) || firstByKind.has(kind)) continue
+    firstByKind.set(kind, shape)
+  }
+  return TRADING_PANEL_VIEW_ORDER.flatMap((kind) => {
+    const shape = firstByKind.get(kind)
+    return shape ? [{ shape, kind }] : []
+  })
+}
+
+function buildTradingPanelViewPresets(
+  shapes: ReturnType<Editor['getCurrentPageShapes']>,
+): TradingPanelViewPreset[] {
+  return listTemplateTradingPanels(shapes).map(({ shape, kind }) => ({
+    id: shape.id,
+    label: TRADING_PANEL_VIEW_LABELS[kind]
+      ?? String((shape.props as { title?: unknown }).title ?? '数据面板'),
+  }))
+}
+
+function findTemplateTodayOverviewPanel(shapes: ReturnType<Editor['getCurrentPageShapes']>) {
+  return shapes.find((shape) => (
+    shape.type === 'trading-panel'
+    && shape.meta?.template === TRADING_TEMPLATE_KEY
+    && (shape.props as { panelKind?: unknown }).panelKind === 'today-overview'
+  ))
+}
+
+function listTemplateBoardReferences(shapes: ReturnType<Editor['getCurrentPageShapes']>) {
+  return shapes.filter((shape) => (
+    shape.type === 'board-reference'
+    && shape.meta?.template === TRADING_TEMPLATE_KEY
+  ))
+}
+
+function mergeShapeBounds(
+  editor: Pick<Editor, 'getShapePageBounds'>,
+  shapes: ReturnType<Editor['getCurrentPageShapes']>,
+) {
+  let merged:
+    | { x: number; y: number; w: number; h: number }
+    | undefined
+  for (const shape of shapes) {
+    const bounds = editor.getShapePageBounds(shape)
+    if (!bounds) continue
+    if (!merged) {
+      merged = { ...bounds }
+      continue
+    }
+    const left = Math.min(merged.x, bounds.x)
+    const top = Math.min(merged.y, bounds.y)
+    const right = Math.max(merged.x + merged.w, bounds.x + bounds.w)
+    const bottom = Math.max(merged.y + merged.h, bounds.y + bounds.h)
+    merged = { x: left, y: top, w: right - left, h: bottom - top }
+  }
+  return merged
+}
+
+function isDefaultInitialCanvasView(editor: Editor): boolean {
+  const camera = editor.getCamera()
+  return Math.abs(camera.x) <= INITIAL_VIEW_EPSILON
+    && Math.abs(camera.y) <= INITIAL_VIEW_EPSILON
+    && Math.abs(camera.z - 1) <= INITIAL_VIEW_EPSILON
+    && editor.getSelectedShapeIds().length === 0
+    && editor.getCurrentToolId() === 'select'
+}
+
+function getTodayOverviewFocusBounds(bounds: { x: number; y: number; w: number; h: number }) {
+  return {
+    x: bounds.x,
+    y: bounds.y - TRADING_TODAY_FOCUS_TOP_GUTTER,
+    w: Math.min(bounds.w, TRADING_TODAY_FOCUS_CONTENT_WIDTH) + TRADING_TODAY_FOCUS_RIGHT_GUTTER,
+    h: Math.min(bounds.h, TRADING_TODAY_FOCUS_CONTENT_HEIGHT) + TRADING_TODAY_FOCUS_TOP_GUTTER + TRADING_TODAY_FOCUS_BOTTOM_GUTTER,
+  }
+}
 
 const CANVAS_UI_OVERRIDES = {
   tools(editor, tools) {
@@ -200,6 +316,7 @@ const CANVAS_SHAPE_UTILS = [
   ...boardReferenceShapeUtils,
   ...tableShapeUtils,
   ...mindMapShapeUtils,
+  ...tradingPanelShapeUtils,
 ] as TLAnyShapeUtilConstructor[]
 const CANVAS_TOOLS = [...tableShapeTools, ...mindMapShapeTools]
 
@@ -582,15 +699,25 @@ function TableTextStylePanel(props: TLUiStylePanelProps) {
 function CanvasTextStylePanel(props: TLUiStylePanelProps) {
   const editor = useEditor()
   const selectedShape = useValue('canvas style panel selected shape', () => editor.getOnlySelectedShape(), [editor])
+  const isReadonly = useValue('canvas style panel readonly', () => editor.getInstanceState().isReadonly, [editor])
+  const currentToolId = useValue('canvas style panel current tool', () => editor.getCurrentToolId(), [editor])
   const interactionTarget = useSyncExternalStore(
     (listener) => subscribeCanvasShapeInteractionTarget(editor, listener),
     () => getCanvasShapeInteractionTarget(editor),
     () => undefined,
   )
+  if (!selectedShape) {
+    if (isReadonly || !CANVAS_IDLE_STYLE_TOOLS.has(currentToolId)) return null
+    return <DefaultStylePanel {...props} />
+  }
   if (selectedShape?.type === 'table' && interactionTarget?.type === 'table' && interactionTarget.shapeId === selectedShape.id) {
     return <TableTextStylePanel {...props} />
   }
-  return <MindMapTextStylePanel {...props} />
+  if (selectedShape?.type === 'mind-map') {
+    return <MindMapTextStylePanel {...props} />
+  }
+  if (isReadonly) return null
+  return <DefaultStylePanel {...props} />
 }
 
 function MindMapTextStylePanel(props: TLUiStylePanelProps) {
@@ -709,8 +836,12 @@ function MindMapTextStylePanel(props: TLUiStylePanelProps) {
 
 function BoardReferenceContextMenu({
   actions,
+  onTradingPanelViewsChange,
   ...props
-}: TLUiContextMenuProps & { actions?: BoardReferenceActions }) {
+}: TLUiContextMenuProps & {
+  actions?: BoardReferenceActions
+  onTradingPanelViewsChange?(views: TradingPanelViewPreset[]): void
+}) {
   const editor = useEditor()
   const shape = useValue(
     'selected canvas shape',
@@ -764,6 +895,31 @@ function BoardReferenceContextMenu({
     ? mindMapShape?.props.nodes.find((node) => node.id === mindMapTarget.nodeId)
     : getMindMapRoot(mindMapShape?.props ?? { w: 1, h: 1, layout: 'right', nodes: [] })
   const mindMapRoot = mindMapShape ? getMindMapRoot(mindMapShape.props) : undefined
+  const tradingPanelShape = shape?.type === 'trading-panel' ? shape as TradingPanelShape : undefined
+  const pageShapes = typeof editor.getCurrentPageShapes === 'function'
+    ? editor.getCurrentPageShapes()
+    : []
+  const hasOtherYishuiPanel = Boolean(tradingPanelShape && pageShapes.some((candidate) => (
+    candidate.id !== tradingPanelShape.id
+    && candidate.type === 'trading-panel'
+    && (candidate.props as { panelKind?: unknown }).panelKind === 'yishui-inference'
+  )))
+  const yishuiReplacementDisabled = tradingPanelShape?.props.panelKind === 'yishui-inference'
+    || hasOtherYishuiPanel
+  const updateTradingPanel = (panelKind: TradingPanelKind, title: string) => {
+    if (!tradingPanelShape || editor.getInstanceState().isReadonly) return
+    if (tradingPanelShape.props.panelKind === panelKind) return
+    if (panelKind === 'yishui-inference' && hasOtherYishuiPanel) return
+    editor.markHistoryStoppingPoint(`trading_panel_kind:${panelKind}`)
+    editor.updateShape<TradingPanelShape>({
+      id: tradingPanelShape.id,
+      type: tradingPanelShape.type,
+      props: { panelKind, title },
+    })
+    if (typeof editor.getCurrentPageShapes === 'function') {
+      onTradingPanelViewsChange?.(buildTradingPanelViewPresets(editor.getCurrentPageShapes()))
+    }
+  }
   const manualArrowShape = shape?.type === 'arrow'
     && shape.props.kind === 'elbow'
     && readManualElbowRoute(shape.meta)
@@ -777,13 +933,15 @@ function BoardReferenceContextMenu({
           <TldrawUiMenuItem id="board-reference-enter" label="进入画板" readonlyOk onSelect={() => actions.enter(shape as BoardReferenceShape)} />
           <TldrawUiMenuItem id="board-reference-new-tab" label="在新标签页打开" readonlyOk onSelect={() => actions.openInNewTab(shape as BoardReferenceShape)} />
           <TldrawUiMenuItem id="board-reference-rename" label="重命名目标画板" readonlyOk onSelect={() => actions.renameTarget(shape as BoardReferenceShape)} />
-          <TldrawUiMenuItem
-            id="board-reference-kind"
-            label={shape.props.kind === 'embed' ? '切换为普通链接' : '切换为嵌入画板'}
-            readonlyOk
-            onSelect={() => actions.changeKind(shape as BoardReferenceShape, shape.props.kind === 'embed' ? 'link' : 'embed')}
-          />
-          <TldrawUiMenuItem id="board-reference-remove" label="移除引用（目标画板会保留）" readonlyOk onSelect={() => actions.remove(shape as BoardReferenceShape)} />
+          {shape.meta?.protectedCore !== true ? <>
+            <TldrawUiMenuItem
+              id="board-reference-kind"
+              label={shape.props.kind === 'embed' ? '切换为普通链接' : '切换为嵌入画板'}
+              readonlyOk
+              onSelect={() => actions.changeKind(shape as BoardReferenceShape, shape.props.kind === 'embed' ? 'link' : 'embed')}
+            />
+            <TldrawUiMenuItem id="board-reference-remove" label="移除引用（目标画板会保留）" readonlyOk onSelect={() => actions.remove(shape as BoardReferenceShape)} />
+          </> : null}
         </TldrawUiMenuGroup>
       ) : null}
       {tableShape && tableTarget && tableRowIndex >= 0 && tableColumnIndex >= 0 ? (
@@ -904,6 +1062,21 @@ function BoardReferenceContextMenu({
               updateMindMap(setMindMapTheme(mindMapShape.props, themes[(index + 1) % themes.length]!), 'mind_map_cycle_theme')
             }}
           />
+        </TldrawUiMenuGroup>
+      ) : null}
+      {tradingPanelShape && tradingPanelShape.meta?.protectedCore !== true ? (
+        <TldrawUiMenuGroup id="trading-panel">
+          <TldrawUiMenuItem id="trading-panel-today" label="显示今天怎么看" onSelect={() => updateTradingPanel('today-overview', '今天怎么看')} />
+          <TldrawUiMenuItem id="trading-panel-market" label="显示市场环境与主线" onSelect={() => updateTradingPanel('market-overview', '市场环境与主线')} />
+          <TldrawUiMenuItem
+            id="trading-panel-yishui"
+            label="替换此面板为义水推演"
+            disabled={yishuiReplacementDisabled}
+            onSelect={() => updateTradingPanel('yishui-inference', '义水北路推演画板')}
+          />
+          <TldrawUiMenuItem id="trading-panel-pool" label="显示个人选股池" onSelect={() => updateTradingPanel('stock-pool', '个人选股池')} />
+          <TldrawUiMenuItem id="trading-panel-announcements" label="显示公告观察源" onSelect={() => updateTradingPanel('announcements', '公告观察源')} />
+          <TldrawUiMenuItem id="trading-panel-system" label="显示数据源状态" onSelect={() => updateTradingPanel('system-status', '数据源与生产就绪状态')} />
         </TldrawUiMenuGroup>
       ) : null}
       {manualArrowShape ? (
@@ -1170,6 +1343,7 @@ export function CanvasEditor({
   licenseKey = getCanvasLicenseKey(),
   store,
   inputSessionKey,
+  initialTradingPanelKind,
   onEditIntent,
   onMount,
   onBoardReferenceOpen,
@@ -1190,15 +1364,23 @@ export function CanvasEditor({
   onBoardReferenceDrop,
 }: CanvasEditorProps) {
   const editorRef = useRef<Editor | undefined>(undefined)
+  const [tradingPanelViews, setTradingPanelViews] = useState<TradingPanelViewPreset[]>([])
+  const [activeTradingPanelView, setActiveTradingPanelView] = useState<TLShapeId | 'overview'>('overview')
   const inputEnabledRef = useRef(onEditIntent === undefined)
   const inputSessionKeyRef = useRef(inputSessionKey)
+  const initialTradingPanelKindRef = useRef(initialTradingPanelKind)
   const commentPointerId = useRef<number | undefined>(undefined)
   const referencePointerId = useRef<number | undefined>(undefined)
   const referenceDeleteGuardDisposerRef = useRef<(() => void) | undefined>(undefined)
   const contextMenuReplayRequestRef = useRef(0)
   const contextMenuReplayActiveRef = useRef(false)
+  const initialViewportFitAllowedRef = useRef(true)
+  const initialViewportFitGenerationRef = useRef(0)
+  const initialViewportFitTimerRef = useRef<number | undefined>(undefined)
+  const initialViewportFitSubscriptionRef = useRef<(() => void) | undefined>(undefined)
   const componentPropsRef = useRef({
     boardReferenceActions,
+    onTradingPanelViewsChange: setTradingPanelViews,
     commentThreads,
     commentToolActive,
     pendingCommentAnchor,
@@ -1211,6 +1393,7 @@ export function CanvasEditor({
   })
   componentPropsRef.current = {
     boardReferenceActions,
+    onTradingPanelViewsChange: setTradingPanelViews,
     commentThreads,
     commentToolActive,
     pendingCommentAnchor,
@@ -1221,6 +1404,7 @@ export function CanvasEditor({
     onFocusCommentThread,
     onMoveCommentThread,
   }
+  initialTradingPanelKindRef.current = initialTradingPanelKind
 
   const isCommentPinTarget = (target: EventTarget | null): boolean =>
     target instanceof Element && Boolean(target.closest('.comment-pin'))
@@ -1311,6 +1495,7 @@ export function CanvasEditor({
         {...(componentPropsRef.current.boardReferenceActions
           ? { actions: componentPropsRef.current.boardReferenceActions }
           : {})}
+        onTradingPanelViewsChange={componentPropsRef.current.onTradingPanelViewsChange}
       />
     ),
     Toolbar: () => {
@@ -1338,7 +1523,7 @@ export function CanvasEditor({
     },
   }), [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!onBoardReferenceOpen) return
     return setBoardReferenceOpenHandler(onBoardReferenceOpen)
   }, [onBoardReferenceOpen])
@@ -1347,9 +1532,138 @@ export function CanvasEditor({
     if (!referenceToolActive) referencePointerId.current = undefined
   }, [referenceToolActive])
 
+  const cancelInitialViewportFit = () => {
+    initialViewportFitGenerationRef.current += 1
+    if (initialViewportFitTimerRef.current !== undefined) {
+      window.clearTimeout(initialViewportFitTimerRef.current)
+      initialViewportFitTimerRef.current = undefined
+    }
+  }
+
+  const scheduleInitialTradingTemplateFit = (editor: Editor, sessionKey: string | undefined) => {
+    cancelInitialViewportFit()
+    const generation = initialViewportFitGenerationRef.current
+    const schedule = editor.timers?.setTimeout?.bind(editor.timers) ?? window.setTimeout
+
+    const scanTradingTemplate = (remainingAttempts: number) => {
+      initialViewportFitTimerRef.current = undefined
+      if (
+        generation !== initialViewportFitGenerationRef.current
+        || inputSessionKeyRef.current !== sessionKey
+        || editorRef.current !== editor
+      ) return
+
+      const initialShapes = editor.getCurrentPageShapes()
+      const tradingPanels = listTemplateTradingPanels(initialShapes)
+      if (tradingPanels.length > 0) {
+        setTradingPanelViews(buildTradingPanelViewPresets(initialShapes))
+        const requestedPanel = initialTradingPanelKindRef.current
+          ? tradingPanels.find((panel) => panel.kind === initialTradingPanelKindRef.current)
+          : undefined
+        if (requestedPanel) {
+          if (initialViewportFitAllowedRef.current && isDefaultInitialCanvasView(editor)) {
+            const bounds = editor.getShapePageBounds(requestedPanel.shape)
+            setActiveTradingPanelView(requestedPanel.shape.id)
+            if (bounds) editor.zoomToBounds({
+              x: bounds.x,
+              y: bounds.y - TRADING_PANEL_FOCUS_TOP_GUTTER,
+              w: bounds.w + TRADING_PANEL_FOCUS_RIGHT_GUTTER,
+              h: bounds.h + TRADING_PANEL_FOCUS_TOP_GUTTER + TRADING_PANEL_FOCUS_BOTTOM_GUTTER,
+            }, { inset: 48, immediate: true })
+          }
+          return
+        }
+        if (initialTradingPanelKindRef.current && remainingAttempts > 0) {
+          initialViewportFitTimerRef.current = schedule(
+            () => scanTradingTemplate(remainingAttempts - 1),
+            150,
+          )
+          return
+        }
+        if (
+          tradingPanels.length === TRADING_PANEL_VIEW_ORDER.length
+          && initialViewportFitAllowedRef.current
+          && isDefaultInitialCanvasView(editor)
+        ) {
+          const bounds = editor.getShapePageBounds(tradingPanels[0]!.shape)
+          setActiveTradingPanelView(tradingPanels[0]!.shape.id)
+          if (bounds) editor.zoomToBounds({
+            x: bounds.x,
+            y: bounds.y - TRADING_PANEL_FOCUS_TOP_GUTTER,
+            w: bounds.w + TRADING_PANEL_FOCUS_RIGHT_GUTTER,
+            h: bounds.h + TRADING_PANEL_FOCUS_TOP_GUTTER + TRADING_PANEL_FOCUS_BOTTOM_GUTTER,
+          }, { inset: 48, immediate: true })
+        }
+        return
+      }
+
+      const todayOverviewPanel = findTemplateTodayOverviewPanel(initialShapes)
+      if (todayOverviewPanel) {
+        setTradingPanelViews([])
+        setActiveTradingPanelView('overview')
+        if (initialViewportFitAllowedRef.current && isDefaultInitialCanvasView(editor)) {
+          const bounds = editor.getShapePageBounds(todayOverviewPanel)
+            if (bounds) editor.zoomToBounds(getTodayOverviewFocusBounds(bounds), { inset: 48, immediate: true })
+        }
+        return
+      }
+
+      const templateReferences = listTemplateBoardReferences(initialShapes)
+      if (templateReferences.length > 0) {
+        setTradingPanelViews([])
+        setActiveTradingPanelView('overview')
+        if (
+          templateReferences.length === 5
+          && initialViewportFitAllowedRef.current
+          && isDefaultInitialCanvasView(editor)
+        ) {
+          const bounds = mergeShapeBounds(editor, templateReferences)
+          if (bounds) editor.zoomToBounds({
+            x: bounds.x,
+            y: bounds.y,
+            w: bounds.w + TRADING_OVERVIEW_FOCUS_RIGHT_GUTTER,
+            h: bounds.h + TRADING_OVERVIEW_FOCUS_BOTTOM_GUTTER,
+          }, { inset: 48, immediate: true })
+        }
+        return
+      }
+
+      if (initialShapes.length > 0) {
+        setTradingPanelViews([])
+        setActiveTradingPanelView('overview')
+        return
+      }
+
+      if (remainingAttempts > 0) {
+        initialViewportFitTimerRef.current = schedule(
+          () => scanTradingTemplate(remainingAttempts - 1),
+          150,
+        )
+      }
+    }
+
+    initialViewportFitTimerRef.current = schedule(() => scanTradingTemplate(8), 250)
+  }
+
+  const takeViewportControl = () => {
+    initialViewportFitAllowedRef.current = false
+    cancelInitialViewportFit()
+  }
+
   useEffect(() => () => {
+    const mountedEditor = editorRef.current
+    cancelInitialViewportFit()
+    initialViewportFitSubscriptionRef.current?.()
+    initialViewportFitSubscriptionRef.current = undefined
     referenceDeleteGuardDisposerRef.current?.()
     referenceDeleteGuardDisposerRef.current = undefined
+    editorRef.current = undefined
+    if ((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV) {
+      const debugWindow = window as Window & { __INFINITE_BOARD_EDITOR__?: Editor }
+      if (debugWindow.__INFINITE_BOARD_EDITOR__ === mountedEditor) {
+        delete debugWindow.__INFINITE_BOARD_EDITOR__
+      }
+    }
   }, [])
 
   const setTldrawReadOnly = (isReadonly: boolean) => {
@@ -1367,11 +1681,42 @@ export function CanvasEditor({
     return true
   }
 
+  const focusTradingPanel = (shapeId?: TLShapeId) => {
+    const editor = editorRef.current
+    if (!editor) return
+    if (!shapeId) {
+      setActiveTradingPanelView('overview')
+      editor.zoomToFit({ animation: { duration: 180 } })
+      return
+    }
+    const bounds = editor.getShapePageBounds(shapeId)
+    if (bounds) {
+      setActiveTradingPanelView(shapeId)
+      editor.zoomToBounds({
+        x: bounds.x,
+        y: bounds.y - TRADING_PANEL_FOCUS_TOP_GUTTER,
+        w: bounds.w + TRADING_PANEL_FOCUS_RIGHT_GUTTER,
+        h: bounds.h + TRADING_PANEL_FOCUS_TOP_GUTTER + TRADING_PANEL_FOCUS_BOTTOM_GUTTER,
+      }, {
+        inset: 48,
+        animation: { duration: 180 },
+      })
+    }
+  }
+
   useEffect(() => {
     const sessionChanged = inputSessionKeyRef.current !== inputSessionKey
     if (sessionChanged) {
+      cancelInitialViewportFit()
       inputSessionKeyRef.current = inputSessionKey
       inputEnabledRef.current = onEditIntent === undefined
+      initialViewportFitAllowedRef.current = true
+      setTradingPanelViews([])
+      setActiveTradingPanelView('overview')
+      const editor = editorRef.current
+      if (editor && typeof (editor as Partial<Editor>).getCurrentPageShapes === 'function') {
+        scheduleInitialTradingTemplateFit(editor, inputSessionKey)
+      }
     }
     if (sessionChanged && editorRef.current && onEditIntent) {
       requestEditAccess()
@@ -1386,6 +1731,10 @@ export function CanvasEditor({
       aria-label="白板画布"
       data-reference-tool-active={referenceToolActive ? 'true' : 'false'}
       onPointerDownCapture={(event) => {
+        // Initial snapshots may arrive shortly after tldraw mounts. Once the
+        // user starts a gesture, a delayed initial zoom must never move the
+        // camera underneath that gesture and invalidate its screen points.
+        takeViewportControl()
         // Any new pointer gesture supersedes a pending replay. A genuine right
         // click will schedule a fresh request from its later contextmenu event;
         // a right-button drag will not, so it remains canvas panning.
@@ -1435,11 +1784,18 @@ export function CanvasEditor({
           ...(localPoint ? { shapeOffsetX: localPoint.x, shapeOffsetY: localPoint.y } : {}),
         })
       }}
-      onPasteCapture={requestEditAccess}
+      onPasteCapture={() => {
+        takeViewportControl()
+        requestEditAccess()
+      }}
+      onWheelCapture={() => {
+        takeViewportControl()
+      }}
       onDragOverCapture={(event) => {
         if (event.dataTransfer.types.includes(BOARD_DRAG_TYPE)) event.preventDefault()
       }}
       onDropCapture={(event) => {
+        takeViewportControl()
         const boardId = event.dataTransfer.getData(BOARD_DRAG_TYPE)
         if (boardId && onBoardReferenceDrop && editorRef.current) {
           if (!requestEditAccess()) return
@@ -1476,6 +1832,7 @@ export function CanvasEditor({
         scheduleNativeContextMenuReplay(event)
       }}
       onKeyDownCapture={(event) => {
+        takeViewportControl()
         if (event.key === 'Escape') {
           contextMenuReplayRequestRef.current += 1
           if (referenceToolActive && onReferenceToolCancel) {
@@ -1488,6 +1845,33 @@ export function CanvasEditor({
         if (!isNonEditingShortcut(event)) requestEditAccess()
       }}
     >
+      {tradingPanelViews.length > 0 ? (
+        <nav
+          className="trading-panel-view-switcher"
+          aria-label="数据画板阅读视图"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => focusTradingPanel()}
+            aria-label="数据视图：全景"
+            aria-pressed={activeTradingPanelView === 'overview'}
+          >
+            全景
+          </button>
+          {tradingPanelViews.map((view) => (
+            <button
+              type="button"
+              key={view.id}
+              onClick={() => focusTradingPanel(view.id)}
+              aria-label={`数据视图：${view.label}`}
+              aria-pressed={activeTradingPanelView === view.id}
+            >
+              {view.label}
+            </button>
+          ))}
+        </nav>
+      ) : null}
       <Tldraw
         assetUrls={CANVAS_ASSET_URLS}
         options={CANVAS_TLDRAW_OPTIONS}
@@ -1499,17 +1883,32 @@ export function CanvasEditor({
         {...(store ? { store } : {})}
         locale="zh-cn"
         onMount={(editor) => {
+          cancelInitialViewportFit()
+          initialViewportFitSubscriptionRef.current?.()
+          initialViewportFitSubscriptionRef.current = undefined
           editorRef.current = editor
+          initialViewportFitAllowedRef.current = true
           referenceDeleteGuardDisposerRef.current?.()
           referenceDeleteGuardDisposerRef.current = editor.sideEffects?.registerBeforeDeleteHandler(
             'shape',
             (shape, source) => {
-              if (source !== 'user' || shape.type !== 'board-reference') return
+              if (source !== 'user') return
+              if (shape.meta?.protectedCore === true) return false
+              if (shape.type !== 'board-reference') return
               componentPropsRef.current.boardReferenceActions?.remove(shape as BoardReferenceShape)
               return false
             },
           )
           editor.setStyleForNextShapes?.(ArrowShapeKindStyle, 'elbow')
+          if (
+            typeof (editor as Partial<Editor>).getCurrentPageShapes === 'function'
+          ) {
+            scheduleInitialTradingTemplateFit(editor, inputSessionKeyRef.current)
+            initialViewportFitSubscriptionRef.current = editor.store?.listen?.(
+              () => scheduleInitialTradingTemplateFit(editor, inputSessionKeyRef.current),
+              { scope: 'document' },
+            )
+          }
           onMount?.(editor)
           requestEditAccess()
           setTldrawReadOnly(!inputEnabledRef.current)

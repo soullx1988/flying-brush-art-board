@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -10,10 +10,16 @@ export interface FeishuCredentials {
 }
 
 interface EncryptedPayload {
-  version: 1
+  version: 2
+  subjectHash: string
   iv: string
   tag: string
   ciphertext: string
+}
+
+interface StoredCredentials {
+  openId: string
+  credentials: FeishuCredentials
 }
 
 interface ProtectedKeyEnvelope {
@@ -65,53 +71,76 @@ export interface EncryptedCredentialStoreOptions {
 }
 
 export class EncryptedCredentialStore {
-  private readonly credentialPath: string
+  private readonly directory: string
   private readonly keyPath: string
 
   constructor({ directory }: EncryptedCredentialStoreOptions) {
     mkdirSync(directory, { recursive: true })
-    this.credentialPath = join(directory, 'feishu-import-credentials.json')
+    this.directory = directory
     this.keyPath = join(directory, 'feishu-import-credentials.key')
   }
 
-  read(): FeishuCredentials | undefined {
-    if (!existsSync(this.credentialPath)) return undefined
+  read(openId: string): FeishuCredentials | undefined {
+    const subjectHash = this.subjectHash(openId)
+    const credentialPath = this.credentialPath(subjectHash)
+    if (!existsSync(credentialPath)) return undefined
     try {
-      const payload = JSON.parse(readFileSync(this.credentialPath, 'utf8')) as EncryptedPayload
-      if (payload.version !== 1) throw new Error('FEISHU_CREDENTIAL_VERSION_UNSUPPORTED')
+      const payload = JSON.parse(readFileSync(credentialPath, 'utf8')) as EncryptedPayload
+      if (payload.version !== 2) throw new Error('FEISHU_CREDENTIAL_VERSION_UNSUPPORTED')
+      if (payload.subjectHash !== subjectHash) throw new Error('FEISHU_CREDENTIAL_SUBJECT_MISMATCH')
       const decipher = createDecipheriv('aes-256-gcm', this.key(), Buffer.from(payload.iv, 'base64url'))
+      decipher.setAAD(Buffer.from(subjectHash, 'utf8'))
       decipher.setAuthTag(Buffer.from(payload.tag, 'base64url'))
       const plaintext = Buffer.concat([
         decipher.update(Buffer.from(payload.ciphertext, 'base64url')),
         decipher.final(),
       ])
-      return JSON.parse(plaintext.toString('utf8')) as FeishuCredentials
+      const stored = JSON.parse(plaintext.toString('utf8')) as StoredCredentials
+      if (stored.openId !== openId) throw new Error('FEISHU_CREDENTIAL_SUBJECT_MISMATCH')
+      if (!stored.credentials || typeof stored.credentials.accessToken !== 'string' || typeof stored.credentials.refreshToken !== 'string' || !Array.isArray(stored.credentials.scopes)) {
+        throw new Error('FEISHU_CREDENTIAL_PAYLOAD_INVALID')
+      }
+      return stored.credentials
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('FEISHU_CREDENTIAL_')) throw error
       throw new Error('FEISHU_CREDENTIAL_DECRYPTION_FAILED')
     }
   }
 
-  replace(credentials: FeishuCredentials): void {
+  replace(openId: string, credentials: FeishuCredentials): void {
+    const subjectHash = this.subjectHash(openId)
+    const credentialPath = this.credentialPath(subjectHash)
     const iv = randomBytes(12)
     const cipher = createCipheriv('aes-256-gcm', this.key(), iv)
-    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(credentials), 'utf8'), cipher.final()])
+    cipher.setAAD(Buffer.from(subjectHash, 'utf8'))
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ openId, credentials } satisfies StoredCredentials), 'utf8'), cipher.final()])
     const payload: EncryptedPayload = {
-      version: 1,
+      version: 2,
+      subjectHash,
       iv: iv.toString('base64url'),
       tag: cipher.getAuthTag().toString('base64url'),
       ciphertext: ciphertext.toString('base64url'),
     }
-    const temporaryPath = `${this.credentialPath}.${randomBytes(8).toString('hex')}.tmp`
+    const temporaryPath = `${credentialPath}.${randomBytes(8).toString('hex')}.tmp`
     try {
-      this.atomicWrite(temporaryPath, this.credentialPath, JSON.stringify(payload))
+      this.atomicWrite(temporaryPath, credentialPath, JSON.stringify(payload))
     } finally {
       if (existsSync(temporaryPath)) unlinkSync(temporaryPath)
     }
   }
 
-  clear(): void {
-    if (existsSync(this.credentialPath)) unlinkSync(this.credentialPath)
+  clear(openId: string): void {
+    const credentialPath = this.credentialPath(this.subjectHash(openId))
+    if (existsSync(credentialPath)) unlinkSync(credentialPath)
+  }
+
+  private subjectHash(openId: string): string {
+    if (typeof openId !== 'string' || openId.length === 0 || openId.length > 512) throw new Error('FEISHU_CREDENTIAL_SUBJECT_INVALID')
+    return createHash('sha256').update(openId, 'utf8').digest('hex')
+  }
+
+  private credentialPath(subjectHash: string): string {
+    return join(this.directory, `feishu-import-credentials-${subjectHash}.json`)
   }
 
   private key(): Buffer {

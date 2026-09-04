@@ -38,6 +38,32 @@ export const boardsTable = sqliteTable(
   ],
 )
 
+export const projectAccessPoliciesTable = sqliteTable('project_access_policies', {
+  projectId: text('project_id').primaryKey().references(() => projectsTable.id, { onDelete: 'cascade' }),
+  ownerOpenId: text('owner_open_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+})
+
+export const projectMembersTable = sqliteTable(
+  'project_members',
+  {
+    projectId: text('project_id').notNull().references(() => projectsTable.id, { onDelete: 'cascade' }),
+    memberOpenId: text('member_open_id').notNull(),
+    role: text('role', { enum: ['owner', 'member'] }).notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.memberOpenId] })],
+)
+
+export const boardAccessPoliciesTable = sqliteTable('board_access_policies', {
+  boardId: text('board_id').primaryKey().references(() => boardsTable.id, { onDelete: 'cascade' }),
+  accessLevel: text('access_level', { enum: ['project', 'owner-only'] }).notNull(),
+  ownerOpenId: text('owner_open_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+})
+
 export const boardReferencesTable = sqliteTable(
   'board_references',
   {
@@ -72,6 +98,16 @@ export const assetsTable = sqliteTable('assets', {
   size: integer('size').notNull(),
   createdAt: text('created_at').notNull(),
 })
+
+export const assetUploadOwnersTable = sqliteTable(
+  'asset_upload_owners',
+  {
+    sha256: text('sha256').notNull().references(() => assetsTable.sha256, { onDelete: 'cascade' }),
+    ownerOpenId: text('owner_open_id').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sha256, table.ownerOpenId] })],
+)
 
 export const assetUsagesTable = sqliteTable(
   'asset_usages',
@@ -479,6 +515,73 @@ CREATE TABLE mcp_oauth_refresh_tokens (
   revoked_at TEXT
 );
 CREATE INDEX idx_mcp_oauth_refresh_grant ON mcp_oauth_refresh_tokens(grant_id, expires_at);` },
+  { id: '0011_trading_workspace_bootstrap', sql: `
+CREATE TABLE workspace_bootstrap_markers (
+  template_key TEXT PRIMARY KEY,
+  template_version INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);` },
+  { id: '0012_board_privacy', sql: `
+CREATE TABLE project_access_policies (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  owner_open_id TEXT NOT NULL CHECK(length(trim(owner_open_id)) > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE board_access_policies (
+  board_id TEXT PRIMARY KEY REFERENCES boards(id) ON DELETE CASCADE,
+  access_level TEXT NOT NULL CHECK(access_level IN ('project','owner-only')),
+  owner_open_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK(
+    (access_level = 'project' AND owner_open_id IS NULL)
+    OR (access_level = 'owner-only' AND owner_open_id IS NOT NULL AND length(trim(owner_open_id)) > 0)
+  )
+);
+CREATE TABLE project_members (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  member_open_id TEXT NOT NULL CHECK(length(trim(member_open_id)) > 0),
+  role TEXT NOT NULL CHECK(role IN ('owner','member')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(project_id, member_open_id)
+);
+CREATE INDEX idx_project_members_user ON project_members(member_open_id, project_id);
+CREATE INDEX idx_board_access_owner ON board_access_policies(owner_open_id, access_level);` },
+  { id: '0013_asset_upload_owners', sql: `
+CREATE TABLE asset_upload_owners (
+  sha256 TEXT NOT NULL REFERENCES assets(sha256) ON DELETE CASCADE,
+  owner_open_id TEXT NOT NULL CHECK(length(trim(owner_open_id)) > 0),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(sha256, owner_open_id)
+);
+CREATE INDEX idx_asset_upload_owners_user ON asset_upload_owners(owner_open_id, created_at);` },
+  { id: '0014_owner_scoped_workspace_bootstrap', sql: `
+ALTER TABLE workspace_bootstrap_markers RENAME TO workspace_bootstrap_markers_legacy;
+CREATE TABLE workspace_bootstrap_markers (
+  template_key TEXT NOT NULL,
+  owner_open_id TEXT NOT NULL CHECK(length(trim(owner_open_id)) > 0),
+  template_version INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  PRIMARY KEY(template_key, owner_open_id)
+);
+INSERT INTO workspace_bootstrap_markers (
+  template_key, owner_open_id, template_version, project_id, applied_at
+)
+SELECT
+  legacy.template_key,
+  COALESCE(policy.owner_open_id, '__legacy_unclaimed__'),
+  legacy.template_version,
+  legacy.project_id,
+  legacy.applied_at
+FROM workspace_bootstrap_markers_legacy AS legacy
+LEFT JOIN project_access_policies AS policy ON policy.project_id = legacy.project_id;
+DROP TABLE workspace_bootstrap_markers_legacy;
+CREATE INDEX idx_workspace_bootstrap_project ON workspace_bootstrap_markers(project_id);` },
+  { id: '0015_realtime_snapshot_board_revision', sql: `
+ALTER TABLE realtime_room_snapshots ADD COLUMN board_revision INTEGER;` },
 ] as const
 
 export function listAppliedDatabaseMigrations(database: LocalDatabase): string[] {

@@ -23,7 +23,7 @@ export default defineConfig({
     include: ['pdfjs-dist/legacy/build/pdf.mjs'],
   },
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: developmentPort,
     strictPort: true,
     proxy: {

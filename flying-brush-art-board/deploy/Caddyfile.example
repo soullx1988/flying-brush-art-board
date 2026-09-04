@@ -1,4 +1,4 @@
-http://{$APP_DOMAIN} {
+https://{$APP_DOMAIN} {
   encode zstd gzip
 
   route {
@@ -11,7 +11,10 @@ http://{$APP_DOMAIN} {
     }
 
     @backend path /api/* /auth/* /realtime* /health
-    reverse_proxy @backend 127.0.0.1:8787
+    reverse_proxy @backend 127.0.0.1:8787 {
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto {scheme}
+    }
 
     root * {$WEB_ROOT}
     try_files {path} /index.html

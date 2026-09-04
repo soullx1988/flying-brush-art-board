@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module'
+
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { describe, expect, it } from 'vitest'
 
@@ -14,6 +16,7 @@ import {
   renderProjectToPdf,
   renderSnapshotToSvg,
   type ProjectPdfOutlineItem,
+  type ProjectPdfTradingSnapshot,
 } from './project-pdf.js'
 
 const now = '2026-07-23T00:00:00.000Z'
@@ -106,6 +109,135 @@ function fixture() {
   return { project, boards, references }
 }
 
+const frozenTradingSnapshot: ProjectPdfTradingSnapshot = {
+  status: 'ready',
+  updatedAt: '2026-08-10T02:04:00.000Z',
+  tradeDate: '2026-08-10',
+  sourceLabel: 'PDF快照源',
+  revision: 'revision-pdf-uat',
+  streamId: 'stream-pdf-uat',
+  sequence: 42,
+  sourceGeneratedAt: '2026-08-10T02:03:00.000Z',
+  availableAt: '2026-08-10T02:04:00.000Z',
+  freshness: 'CURRENT',
+  sourceHealth: 'CURRENT',
+  freshUntil: '2099-08-10T02:03:00.000Z',
+  todayOverview: {
+    currentPhase: 'auction_final',
+    currentPhaseLabel: '09:25竞价复核',
+    overallState: 'OBSERVATION_ONLY',
+    canParticipate: false,
+    participationSummary: '当前只允许人工复核，不产生交易动作。',
+    unattendedAction: '保持观察，不产生新的交易动作。',
+    focusFamily: '科技主线',
+    focusSummary: '科技主线延续，今天先看芯片与竞价龙头承接。',
+    phaseStatus: 'REVIEW_ONLY',
+    marketDecision: 'PENDING',
+    executionAuthority: 'REVIEW_ONLY',
+    summaryLines: ['09:25 只复核冻结观察对象，不允许临时升级执行。'],
+    decisionChain: [{
+      id: 'step-auction',
+      label: '竞价复核',
+      status: 'READ_ONLY',
+      summary: '竞价事实只作人工复核。',
+    }],
+    changes: [{ id: 'change-phase', label: '当前阶段', summary: '已进入竞价复核。' }],
+    auction: {
+      status: 'READY',
+      leader: {
+        code: '600001',
+        name: '回归股份',
+        auctionChangePct: 9.98,
+        sealAmountCny: 125000000,
+      },
+    },
+  },
+  market: {
+    environmentVerdict: '试运行环境',
+    nodeVerdict: '回归节点',
+    limitUpTotal: 31,
+    limitDownTotal: 4,
+    highestBoardLevel: 5,
+    summaryLines: ['中文文本层必须可检索'],
+  },
+  themes: [{ name: 'PDF快照主线', heat: 88.5, structure: '梯队完整' }],
+  stocks: [{
+    code: '600001',
+    name: '回归股份',
+    score: 92.6,
+    action: '观察',
+    reason: '结构完整',
+  }],
+  announcements: [{
+    id: 'announcement-pdf-uat',
+    title: '回归公告标题',
+    verificationStatus: 'VERIFIED',
+    summary: '回归公告摘要',
+    publishedAt: '2026-08-10T01:00:00.000Z',
+    names: ['回归股份'],
+    codes: ['600001'],
+  }],
+  readiness: {
+    state: 'OBSERVATION_ONLY',
+    executionEligible: false,
+    observationEligible: true,
+    reasonCount: 1,
+  },
+  services: [{ name: 'PDF桥接服务', status: 'CURRENT', detail: '单次快照注入' }],
+}
+
+function tradingPanelBoardSnapshot() {
+  const panels = [
+    { id: 'market', panelKind: 'market-overview', title: '市场环境与主线', x: 0, y: 0 },
+    { id: 'stocks', panelKind: 'stock-pool', title: '个人选股池', x: 760, y: 0 },
+    { id: 'announcements', panelKind: 'announcements', title: '公告观察源', x: 0, y: 460 },
+    { id: 'system', panelKind: 'system-status', title: '数据源与生产就绪状态', x: 760, y: 460 },
+  ]
+  return {
+    store: Object.fromEntries([
+      ['page:trading-pdf', {
+        id: 'page:trading-pdf', typeName: 'page', name: '数据画板', index: 'a1', meta: {},
+      }],
+      ...panels.map((panel, index) => [`shape:${panel.id}`, {
+        id: `shape:${panel.id}`,
+        typeName: 'shape',
+        type: 'trading-panel',
+        parentId: 'page:trading-pdf',
+        index: `a${index + 1}`,
+        x: panel.x,
+        y: panel.y,
+        props: { w: 720, h: 420, panelKind: panel.panelKind, title: panel.title },
+        meta: {},
+      }]),
+    ]),
+  }
+}
+
+function todayOverviewBoardSnapshot() {
+  return {
+    store: {
+      'page:today-pdf': {
+        id: 'page:today-pdf',
+        typeName: 'page',
+        name: '今天怎么看',
+        index: 'a1',
+        meta: {},
+      },
+      'shape:today': {
+        id: 'shape:today',
+        typeName: 'shape',
+        type: 'trading-panel',
+        parentId: 'page:today-pdf',
+        index: 'a1',
+        x: 0,
+        y: 0,
+        props: { w: 1480, h: 900, panelKind: 'today-overview', title: '今天怎么看' },
+        meta: {},
+      },
+    },
+  }
+}
+
 describe('project PDF', () => {
   it('accepts 200 Boards and rejects Board 201 before returning a partial PDF', async () => {
     const project = { ...fixture().project, rootBoardId: 'board-0' }
@@ -161,6 +293,35 @@ describe('project PDF', () => {
       index: 'z1', x: 0, y: 0, props: { w: 1, h: 1, geo: 'rectangle' }, meta: {},
     }
     expect(() => renderSnapshotToSvg({ store })).toThrow('PDF_SHAPE_LIMIT_EXCEEDED')
+  })
+
+  it('rejects a project whose cumulative shape count exceeds 20,000 before rendering any page', async () => {
+    const base = fixture()
+    const store = (prefix: string) => Object.fromEntries(Array.from(
+      { length: MAX_PROJECT_PDF_SHAPES / 2 + 1 },
+      (_, index) => [`shape:${prefix}-${index}`, {
+        id: `shape:${prefix}-${index}`,
+        typeName: 'shape',
+        type: 'geo',
+        parentId: `page:${prefix}`,
+        index: `a${index}`,
+        x: index % 100,
+        y: Math.floor(index / 100),
+        props: { w: 1, h: 1, geo: 'rectangle' },
+        meta: {},
+      }],
+    ))
+    const boards: StoredBoard[] = [
+      { ...base.boards[0]!, id: 'board-cumulative-a', tldrawSnapshot: { store: store('a') } },
+      { ...base.boards[1]!, id: 'board-cumulative-b', tldrawSnapshot: { store: store('b') } },
+    ]
+
+    await expect(renderProjectToPdf({
+      ...base,
+      project: { ...base.project, rootBoardId: boards[0]!.id },
+      boards,
+      references: [],
+    })).rejects.toThrow('PDF_PROJECT_SHAPE_LIMIT_EXCEEDED')
   })
 
   it('renders persisted manual elbow routes as orthogonal polylines', () => {
@@ -269,6 +430,100 @@ describe('project PDF', () => {
     expect(outline?.map((item) => item.title)).toEqual(['BOARD-A', 'BOARD-B'])
     expect(outline?.[0]?.items.map((item) => item.title)).toEqual(['BOARD-C'])
     expect(outline?.[1]?.items.map((item) => item.title)).toEqual(['BOARD-C'])
+  })
+
+  it('fails the whole export when the SVG renderer throws instead of returning a blank page', async () => {
+    const nodeRequire = createRequire(import.meta.url)
+    const modulePath = nodeRequire.resolve('svg-to-pdfkit')
+    nodeRequire(modulePath)
+    const cachedModule = nodeRequire.cache[modulePath]!
+    const originalRenderer = cachedModule.exports
+    cachedModule.exports = () => {
+      throw new Error('synthetic SVG failure')
+    }
+
+    try {
+      await expect(renderProjectToPdf(fixture())).rejects.toThrow('PDF_SVG_RENDER_FAILED:board-a')
+    } finally {
+      cachedModule.exports = originalRenderer
+    }
+  })
+
+  it('renders every trading panel from the same frozen snapshot as native semantic SVG', () => {
+    const svg = renderSnapshotToSvg(tradingPanelBoardSnapshot(), {}, frozenTradingSnapshot)
+
+    expect(svg.match(/data-fact-state="CURRENT"/g)).toHaveLength(4)
+    expect(svg).not.toContain('data-panel-kind="today-overview"')
+    expect(svg).not.toContain('今天怎么看')
+    expect(svg).toContain('data-panel-kind="market-overview"')
+    expect(svg).toContain('市场环境与主线')
+    expect(svg).toContain('PDF快照主线')
+    expect(svg).toContain('个人选股池')
+    expect(svg).toContain('回归股份 600001')
+    expect(svg).toContain('公告观察源')
+    expect(svg).toContain('回归公告标题')
+    expect(svg).toContain('数据源与生产就绪状态')
+    expect(svg).toContain('PDF桥接服务')
+    expect(svg).not.toContain('<foreignObject')
+  })
+
+  it('renders the standalone today-overview board from the same frozen snapshot as native semantic SVG', () => {
+    const svg = renderSnapshotToSvg(todayOverviewBoardSnapshot(), {}, frozenTradingSnapshot)
+
+    expect(svg.match(/data-fact-state="CURRENT"/g)).toHaveLength(1)
+    expect(svg).toContain('data-panel-kind="today-overview"')
+    expect(svg).toContain('今天怎么看')
+    expect(svg).toContain('当前只允许人工复核，不产生交易动作。')
+    expect(svg).toContain('竞价事实只作人工复核。')
+    expect(svg).toContain('如果我没空')
+    expect(svg).toContain('保持观察，不产生新的交易动作。')
+  })
+
+  it('exports searchable Chinese text for Board titles and live trading facts', async () => {
+    const project: ProjectRecord = {
+      id: 'project-chinese-pdf',
+      title: '中文PDF回归项目',
+      rootBoardId: 'board-chinese-pdf',
+      formatVersion: 1,
+      createdAt: now,
+      updatedAt: now,
+    }
+    const board: StoredBoard = {
+      id: 'board-chinese-pdf',
+      projectId: project.id,
+      title: '中文PDF回归画板',
+      tldrawSnapshot: tradingPanelBoardSnapshot(),
+      revision: 0,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    const bytes = await renderProjectToPdf({
+      project,
+      boards: [board],
+      references: [],
+      tradingSnapshot: frozenTradingSnapshot,
+    })
+    const document = await getDocument({ data: bytes }).promise
+    const page = await document.getPage(1)
+    const content = await page.getTextContent()
+    const text = content.items.map((item) => 'str' in item ? item.str : '').join('')
+
+    expect(text).toContain('中文PDF回归画板')
+    expect(text).toContain('市场环境与主线')
+    expect(text).toContain('PDF快照主线')
+    expect(text).toContain('回归股份')
+    expect(text).toContain('回归公告标题')
+    expect(text).toContain('PDF桥接服务')
+  })
+
+  it('marks trading panels unavailable when no source snapshot was injected', () => {
+    const svg = renderSnapshotToSvg(tradingPanelBoardSnapshot())
+
+    expect(svg.match(/data-fact-state="UNAVAILABLE"/g)).toHaveLength(4)
+    expect(svg).toContain('数据源暂不可用')
+    expect(svg).not.toContain('回归股份')
+    expect(svg).not.toContain('data-panel-kind="today-overview"')
   })
 
   it('renders snapshots as bounded SVG without copying executable asset URLs', () => {

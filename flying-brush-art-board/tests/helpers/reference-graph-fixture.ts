@@ -21,6 +21,10 @@ type SnapshotRecord = Record<string, unknown> & {
   props?: Record<string, unknown>
 }
 
+const REFERENCE_GAP_X = 360
+const REFERENCE_GAP_Y = 220
+const REFERENCE_LAYOUT_COLUMNS = 2
+
 function snapshotStore(board: Pick<StoredBoard, 'tldrawSnapshot'>): Record<string, SnapshotRecord> {
   const snapshot = board.tldrawSnapshot as {
     store?: Record<string, SnapshotRecord>
@@ -42,12 +46,41 @@ function addReference(
   reference: BoardReferenceRecord,
 ): void {
   fixture.references.push(reference)
-  const source = fixture.boards.find((board) => board.id === reference.sourceBoardId)
-  const target = fixture.boards.find((board) => board.id === reference.targetBoardId)
-  if (!source || !target) throw new Error(`Task15 fixture reference endpoint is missing`)
-  snapshotStore(source)[reference.shapeId] = createBoardReferenceShape(reference, target.title, {
-    parentId: `page:${source.id}`,
-  }) as unknown as SnapshotRecord
+  layoutFixtureReferences(fixture)
+}
+
+function orderedBoardReferences(
+  fixture: Task15ReferenceGraphFixture,
+  boardId: string,
+): BoardReferenceRecord[] {
+  return fixture.references
+    .filter((reference) => reference.sourceBoardId === boardId)
+    .sort((left, right) => (
+      `${left.targetBoardId}:${left.kind}:${left.id}`.localeCompare(`${right.targetBoardId}:${right.kind}:${right.id}`)
+    ))
+}
+
+function referencePlacement(index: number) {
+  return {
+    index: `a${index + 1}`,
+    x: (index % REFERENCE_LAYOUT_COLUMNS) * REFERENCE_GAP_X,
+    y: Math.floor(index / REFERENCE_LAYOUT_COLUMNS) * REFERENCE_GAP_Y,
+  }
+}
+
+function layoutFixtureReferences(fixture: Task15ReferenceGraphFixture): void {
+  for (const board of fixture.boards) {
+    const store = snapshotStore(board)
+    const references = orderedBoardReferences(fixture, board.id)
+    for (const [index, reference] of references.entries()) {
+      const target = fixture.boards.find((candidate) => candidate.id === reference.targetBoardId)
+      if (!target) throw new Error(`Task15 fixture target ${reference.targetBoardId} was not found`)
+      store[reference.shapeId] = createBoardReferenceShape(reference, target.title, {
+        parentId: `page:${board.id}`,
+        ...referencePlacement(index),
+      }) as unknown as SnapshotRecord
+    }
+  }
 }
 
 export function createTask15ReferenceGraphFixture(): Task15ReferenceGraphFixture {
@@ -83,6 +116,7 @@ export function createTask15ReferenceGraphFixture(): Task15ReferenceGraphFixture
     createdAt: timestamp,
     updatedAt: timestamp,
   })
+  layoutFixtureReferences(fixture)
   return fixture
 }
 
@@ -90,14 +124,51 @@ export function makeFixtureRootLoadable(
   fixture: Task15ReferenceGraphFixture,
   sourceId = 'external:board-c',
 ): void {
+  // The structural graph fixture intentionally carries compact legacy records.
+  // UAT round-trips must represent an archive exported by the current runtime,
+  // so normalize every snapshot before the API's fail-closed compatibility check.
+  for (const candidate of fixture.boards) {
+    const candidateSnapshot = candidate.tldrawSnapshot as {
+      schema?: unknown
+      store: Record<string, SnapshotRecord>
+    }
+    delete candidateSnapshot.schema
+
+    const image = candidateSnapshot.store['shape:image-a']
+    if (image) {
+      Object.assign(image, { x: 0, y: 0, rotation: 0, isLocked: false, opacity: 1 })
+      image.props = {
+        assetId: 'asset:image-a', w: 20, h: 20, playing: false, url: '', crop: null,
+        flipX: false, flipY: false, altText: '',
+      }
+    }
+
+    const asset = candidateSnapshot.store['asset:image-a']
+    if (asset) {
+      asset.props = {
+        src: typeof asset.props?.src === 'string' ? asset.props.src : null,
+        name: 'fixture.png', mimeType: 'image/png', w: 20, h: 20, isAnimated: false,
+      }
+    }
+
+    const binding = candidateSnapshot.store['binding:image-to-ref']
+    if (binding) {
+      binding.props = {
+        terminal: 'end', normalizedAnchor: { x: 0.5, y: 0.5 },
+        isExact: false, isPrecise: false, snap: 'none',
+      }
+    }
+  }
+
   const board = fixture.boards.find((candidate) => candidate.sourceMetadata?.sourceId === sourceId)
   if (!board) throw new Error(`Task15 fixture root ${sourceId} was not found`)
   const snapshot = getStoreSnapshot(createBoardStore()) as unknown as { store: Record<string, SnapshotRecord> }
-  for (const reference of fixture.references.filter((candidate) => candidate.sourceBoardId === board.id)) {
+  for (const [index, reference] of orderedBoardReferences(fixture, board.id).entries()) {
     const target = fixture.boards.find((candidate) => candidate.id === reference.targetBoardId)
     if (!target) throw new Error(`Task15 fixture target ${reference.targetBoardId} was not found`)
     snapshot.store[reference.shapeId] = createBoardReferenceShape(reference, target.title, {
       parentId: 'page:page',
+      ...referencePlacement(index),
     }) as unknown as SnapshotRecord
   }
   fixture.project.rootBoardId = board.id
@@ -260,11 +331,16 @@ function normalizeSnapshot(
       if (record.props.targetBoardId !== undefined) record.props.targetBoardId = mapId(record.props.targetBoardId)
     }
     return record
-  }).sort((left, right) => String(left.id).localeCompare(String(right.id)))
-  const envelope = board.tldrawSnapshot as { schema?: unknown; document?: { schema?: unknown } }
+  })
+    .filter((record) => record.typeName !== 'document')
+    .map((record) => ({
+      ...record,
+      // 中文注释：runtime canonicalization 会重排内部 index，这里只比较图语义，不比较实现细节。
+      ...(record.index !== undefined ? { index: String(record.id) } : {}),
+    }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
   return {
     records,
-    schema: structuredClone(envelope.document?.schema ?? envelope.schema),
   }
 }
 

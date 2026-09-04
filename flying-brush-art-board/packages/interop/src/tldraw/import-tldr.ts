@@ -1,5 +1,7 @@
 import {
   T,
+  createShapePropsMigrationIds,
+  createShapePropsMigrationSequence,
   createTLStore,
   parseTldrawJsonFile,
   toRichText,
@@ -46,7 +48,23 @@ const boardReferenceShapeProps = {
   kind: T.literalEnum('embed', 'link'),
   titleFallback: T.string,
   thumbnailAssetId: T.string.optional(),
+  previewMode: T.literalEnum('content', 'private').optional(),
 }
+
+const boardReferenceMigrationIds = createShapePropsMigrationIds('board-reference', {
+  AddPreviewMode: 1,
+})
+const boardReferenceMigrations = createShapePropsMigrationSequence({
+  sequence: [{
+    id: boardReferenceMigrationIds.AddPreviewMode,
+    up: (props) => {
+      if (props.previewMode === undefined) props.previewMode = 'content'
+    },
+    down: (props) => {
+      delete props.previewMode
+    },
+  }],
+})
 
 const tableShapeProps = {
   w: T.number,
@@ -87,7 +105,7 @@ const importSchema = createTLSchema({
     ...defaultShapeSchemas,
     'board-reference': {
       props: boardReferenceShapeProps,
-      migrations: { sequence: [] },
+      migrations: boardReferenceMigrations,
     },
     table: { props: tableShapeProps, migrations: { sequence: [] } },
     'mind-map': { props: mindMapShapeProps, migrations: { sequence: [] } },

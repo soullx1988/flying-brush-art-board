@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createDatabase } from '../../db/schema.js'
 import { LocalUserDirectory } from './local-user-directory.js'
+import { UserNotAllowedError } from './allowed-user-directory.js'
 
 describe('LocalUserDirectory', () => {
   it('records useful Feishu identity fields and refreshes the last login time', async () => {
@@ -27,6 +28,18 @@ describe('LocalUserDirectory', () => {
       union_id: null,
       last_login_at: '2026-07-29T01:00:00.000Z',
     })
+    database.close()
+  })
+
+  it('rejects an unlisted first login before persisting identity and hides a removed identity', async () => {
+    const database = createDatabase(':memory:')
+    const unrestricted = new LocalUserDirectory(database)
+    unrestricted.recordLogin({ openId: 'ou_removed', name: '已移除用户' })
+
+    const restricted = new LocalUserDirectory(database, () => new Date(), new Set(['ou_owner']))
+    expect(() => restricted.recordLogin({ openId: 'ou_unknown', name: '陌生用户' })).toThrow(UserNotAllowedError)
+    expect(database.prepare('SELECT COUNT(*) AS count FROM app_users WHERE open_id=?').get('ou_unknown')).toEqual({ count: 0 })
+    expect(await restricted.findByOpenId('ou_removed')).toBeUndefined()
     database.close()
   })
 })

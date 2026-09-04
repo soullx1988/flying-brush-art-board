@@ -3,6 +3,7 @@ import { T, type RecordProps, type TLShape } from 'tldraw'
 import type { BoardReferenceKind } from '@infinite-board/board-core'
 
 export const BOARD_REFERENCE_SHAPE_TYPE = 'board-reference' as const
+export type BoardReferencePreviewMode = 'content' | 'private'
 
 export interface BoardReferenceShapeProps {
   w: number
@@ -12,6 +13,8 @@ export interface BoardReferenceShapeProps {
   kind: BoardReferenceKind
   titleFallback: string
   thumbnailAssetId?: string
+  /** Missing on legacy snapshots; absence intentionally retains the public content preview. */
+  previewMode?: BoardReferencePreviewMode
 }
 
 declare module '@tldraw/tlschema' {
@@ -30,6 +33,13 @@ export const boardReferenceShapeProps: RecordProps<BoardReferenceShape> = {
   kind: T.literalEnum('embed', 'link'),
   titleFallback: T.string,
   thumbnailAssetId: T.string.optional(),
+  previewMode: T.literalEnum('content', 'private').optional(),
+}
+
+export function getBoardReferencePreviewMode(
+  props: Pick<BoardReferenceShapeProps, 'previewMode'>,
+): BoardReferencePreviewMode {
+  return props.previewMode === 'private' ? 'private' : 'content'
 }
 
 export function isBoardReferenceShapeRecord(
@@ -44,6 +54,7 @@ export function isBoardReferenceShapeRecord(
     typeof props.referenceId === 'string' &&
     typeof props.targetBoardId === 'string' &&
     (props.kind === 'embed' || props.kind === 'link') &&
-    typeof props.titleFallback === 'string'
+    typeof props.titleFallback === 'string' &&
+    (props.previewMode === undefined || props.previewMode === 'content' || props.previewMode === 'private')
   )
 }

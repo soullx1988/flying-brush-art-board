@@ -47,7 +47,7 @@ describe('BoardDocumentCoordinator', () => {
     } finally { database.close() }
   })
 
-  it('rejects a stale command revision after a realtime snapshot projection', async () => {
+  it('invalidates a stale structural command after a changed realtime projection', async () => {
     const { database, coordinator } = setup()
     try {
       new BoardRepository(database).saveRealtimeSnapshot('b', { version: 1 })
@@ -60,6 +60,30 @@ describe('BoardDocumentCoordinator', () => {
         async mutate() { return { snapshot: { version: 2 }, result: undefined } },
       })).rejects.toBeInstanceOf(RevisionConflictError)
 
+      await expect(coordinator.runCommand({
+        boardId: 'b',
+        actorOpenId: 'ou_1',
+        reason: 'snapshot-save',
+        expectedRevision: 1,
+        async mutate(snapshot) {
+          expect(snapshot).toEqual({ version: 1 })
+          return { snapshot: { version: 2 }, result: undefined }
+        },
+      })).resolves.toMatchObject({ snapshot: { version: 2 }, revision: 2 })
+
+      await expect(coordinator.read('b')).resolves.toEqual({ snapshot: { version: 2 }, revision: 2 })
+    } finally { database.close() }
+  })
+
+  it('returns the committed command result when realtime broadcasting fails', async () => {
+    const { database, realtime, coordinator } = setup()
+    try {
+      realtime.applyCommittedSnapshot.mockRejectedValueOnce(new Error('ROOM_COMPACT_FAILED'))
+
+      await expect(coordinator.runCommand({
+        boardId: 'b', actorOpenId: 'ou_1', reason: 'clipboard-paste',
+        async mutate() { return { snapshot: { version: 1 }, result: 'committed' } },
+      })).resolves.toEqual({ snapshot: { version: 1 }, revision: 1, result: 'committed' })
       await expect(coordinator.read('b')).resolves.toEqual({ snapshot: { version: 1 }, revision: 1 })
     } finally { database.close() }
   })

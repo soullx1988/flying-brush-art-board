@@ -2,6 +2,11 @@ import { expect, loginPage, test, type APIRequestContext } from './test.js'
 
 const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:8787'
 
+interface BoardState {
+  revision: number
+  tldrawSnapshot: { store?: Record<string, Record<string, unknown>> }
+}
+
 async function seedBoards(request: APIRequestContext, suffix: string) {
   const projectId = `project-reference-${suffix}`
   const sourceBoardId = `board-source-${suffix}`
@@ -17,6 +22,23 @@ async function seedBoards(request: APIRequestContext, suffix: string) {
     data: { id: targetBoardId, title: 'Target board' },
   })).ok()).toBe(true)
   return { projectId, sourceBoardId, targetBoardId }
+}
+
+async function readBoard(request: APIRequestContext, boardId: string): Promise<BoardState> {
+  const response = await request.get(`${API_BASE}/api/boards/${encodeURIComponent(boardId)}`)
+  expect(response.ok()).toBe(true)
+  return response.json() as Promise<BoardState>
+}
+
+function emptyTextShapeCount(board: BoardState): number {
+  return Object.values(board.tldrawSnapshot.store ?? {}).filter((record) => (
+    record?.typeName === 'shape'
+    && record?.type === 'text'
+    && typeof record.props === 'object'
+    && record.props !== null
+    && typeof (record.props as { text?: unknown }).text === 'string'
+    && ((record.props as { text: string }).text).trim() === ''
+  )).length
 }
 
 test('creates a board reference and exposes its transactional right-click actions', async ({ page, request }) => {
@@ -162,13 +184,17 @@ test('routes realtime direct deletion through the reference command and retries 
     expect(firstRemovalState.ok()).toBe(true)
     expect(await firstRemovalState.json()).toEqual([])
 
+    const revisionResponse = await request.get(`${API_BASE}/api/boards/${sourceBoardId}`)
+    expect(revisionResponse.ok()).toBe(true)
+    const { revision: currentRevision } = await revisionResponse.json() as { revision: number }
+
     const secondShapeId = `shape:delete-second-${crypto.randomUUID()}`
     const recreated = await request.post(`${API_BASE}/api/boards/${sourceBoardId}/references`, {
       data: {
         targetBoardId,
         shapeId: secondShapeId,
         kind: 'embed',
-        expectedRevision: 2,
+        expectedRevision: currentRevision,
       },
     })
     expect(recreated.status()).toBe(201)
@@ -306,6 +332,7 @@ test('double-clicking a board reference enters it without creating canvas text',
   await page.waitForFunction((id) => Boolean(
     (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.getShapePageBounds(id),
   ), shapeId)
+  const sourceBoardBefore = await readBoard(request, sourceBoardId)
   const point = await page.evaluate((id) => {
     const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
     const bounds = editor?.getShapePageBounds(id)
@@ -316,6 +343,9 @@ test('double-clicking a board reference enters it without creating canvas text',
   await page.mouse.dblclick(point.x, point.y)
 
   await expect(page).toHaveURL(new RegExp(`/boards/${targetBoardId}(?:\\?|$)`))
+  const sourceBoardAfter = await readBoard(request, sourceBoardId)
+  expect(sourceBoardAfter.revision).toBe(sourceBoardBefore.revision)
+  expect(emptyTextShapeCount(sourceBoardAfter)).toBe(emptyTextShapeCount(sourceBoardBefore))
 })
 
 test('an existing reference shape is available after an opt-in realtime cold start', async ({ page, request }) => {

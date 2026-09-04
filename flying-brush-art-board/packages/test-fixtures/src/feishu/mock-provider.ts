@@ -68,7 +68,7 @@ const theme: FeishuMockTheme = {
   grid: '#e5e7eb',
 }
 
-const pngSignature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+const pngSignature = tinyPngFixture
 
 export interface MockFeishuProvider {
   createAuthorizationUrl(input: { state: string; codeChallenge?: string; redirectUri: string }): string
@@ -179,3 +179,4 @@ export function createMockFeishuProvider(
     },
   }
 }
+import { tinyPngFixture } from '../media.js'

@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,11 @@ import { buildApp } from '../../app.js'
 import { createDatabase, type LocalDatabase } from '../../db/schema.js'
 import { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import { BoardRepository } from '../boards/board-repository.js'
+import type { AllowedUser, AllowedUserDirectory } from '../auth/allowed-user-directory.js'
+import { OAuthStateRepository } from '../auth/oauth-state-repository.js'
+import { SESSION_COOKIE_NAME } from '../auth/auth-plugin.js'
+import { SessionRepository } from '../auth/session-repository.js'
+import { UserDirectoryCache } from '../auth/user-directory-cache.js'
 import { ProjectRepository } from '../projects/project-repository.js'
 import { FeishuImportSessionStore } from './import-routes.js'
 
@@ -59,6 +65,64 @@ describe('Feishu import routes', () => {
   it('requires a connection and explicit confirmation and cleans cancelled sessions', async () => {
     const app = await buildApp({ database, assetDirectory: directory, feishuImport: { connected: () => false } })
     expect(await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'token' } })).toMatchObject({ statusCode: 401 })
+    await app.close()
+  })
+
+  it('passes the authenticated actor through import clients and prevents B from deleting or committing A session', async () => {
+    const userA = { openId: 'user-a', name: 'User A' }
+    const userB = { openId: 'user-b', name: 'User B' }
+    const users = new Map<string, AllowedUser>([[userA.openId, userA], [userB.openId, userB]])
+    const allowedUsers: AllowedUserDirectory = {
+      async findByOpenId(openId) { return users.get(openId) },
+      async checkHealth() { return 'ok' },
+      async close() {},
+    }
+    const loginSessions = new SessionRepository(database)
+    const connected = vi.fn((openId: string) => openId === userA.openId)
+    const resolveToken = vi.fn().mockResolvedValue('board_token')
+    const client = {
+      listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [] }),
+      getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+      downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array()),
+      downloadMedia: vi.fn(),
+    }
+    const app = await buildApp({
+      database,
+      assetDirectory: directory,
+      authentication: {
+        oauth: {
+          createAuthorizationUrl: ({ state }) => new URL(`https://accounts.example.test/authorize?state=${state}`),
+          async exchangeCode() { return userA },
+        },
+        states: new OAuthStateRepository(database, undefined, 'test-only OAuth state secret with at least 32 bytes'),
+        sessions: loginSessions,
+        users: new UserDirectoryCache(allowedUsers),
+      },
+      feishuImport: { connected, resolveWhiteboardToken: resolveToken, client },
+    })
+    const cookieA = `${SESSION_COOKIE_NAME}=${loginSessions.create(userA)}`
+    const cookieB = `${SESSION_COOKIE_NAME}=${loginSessions.create(userB)}`
+    const inspected = await app.inject({
+      method: 'POST', url: '/api/import/feishu/inspect', headers: { cookie: cookieA }, payload: { url: 'board_token' },
+    })
+    expect(inspected.statusCode).toBe(200)
+    const sessionId = inspected.json().sessionId as string
+    expect(connected).toHaveBeenCalledWith(userA.openId)
+    expect(resolveToken).toHaveBeenCalledWith('board_token', expect.objectContaining({ actorOpenId: userA.openId }))
+    expect(client.listWhiteboardNodes).toHaveBeenCalledWith('board_token', expect.objectContaining({ actorOpenId: userA.openId }))
+
+    expect(await app.inject({ method: 'DELETE', url: `/api/import/feishu/sessions/${encodeURIComponent(sessionId)}`, headers: { cookie: cookieB } })).toMatchObject({ statusCode: 204 })
+    const crossUserCommit = await app.inject({
+      method: 'POST', url: '/api/import/feishu/commit', headers: { cookie: cookieB },
+      payload: { sessionId, target: { kind: 'existing', projectId: 'project' }, confirmed: true },
+    })
+    expect(crossUserCommit.statusCode).toBe(404)
+    expect(crossUserCommit.json()).toEqual({ code: 'FEISHU_IMPORT_SESSION_NOT_FOUND' })
+    const ownerCommit = await app.inject({
+      method: 'POST', url: '/api/import/feishu/commit', headers: { cookie: cookieA },
+      payload: { sessionId, target: { kind: 'existing', projectId: 'project' }, confirmed: true },
+    })
+    expect(ownerCommit.statusCode).toBe(200)
     await app.close()
   })
 
@@ -190,6 +254,199 @@ describe('Feishu import routes', () => {
     expect((await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })).statusCode).toBe(200)
     expect(sessions.size).toBe(1)
     await vi.waitFor(() => expect(sessions.size).toBe(0), { timeout: 500 })
+    expect(sessions.totalRetainedByteLength).toBe(0)
+    await app.close()
+  })
+
+  it('rejects an oversized node list before downloading preview or retaining a session', async () => {
+    const sessions = new FeishuImportSessionStore()
+    const downloadWhiteboardPreview = vi.fn().mockResolvedValue(new Uint8Array())
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken: vi.fn().mockResolvedValue('board_token'),
+      sessionStore: sessions,
+      limits: { maxNodes: 1 },
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [
+          { id: 'one', type: 'text', x: 0, y: 0, width: 10, height: 10, text: 'one' },
+          { id: 'two', type: 'text', x: 10, y: 0, width: 10, height: 10, text: 'two' },
+        ] }),
+        getWhiteboardTheme: vi.fn(),
+        downloadWhiteboardPreview,
+        downloadMedia: vi.fn(),
+      },
+    } })
+
+    const response = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(response.statusCode).toBe(413)
+    expect(response.json()).toEqual({ code: 'FEISHU_IMPORT_NODE_LIMIT_EXCEEDED' })
+    expect(downloadWhiteboardPreview).not.toHaveBeenCalled()
+    expect(sessions.size).toBe(0)
+    expect(sessions.totalRetainedByteLength).toBe(0)
+    await app.close()
+  })
+
+  it('rejects an oversized preview without retaining a session', async () => {
+    const sessions = new FeishuImportSessionStore()
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken: vi.fn().mockResolvedValue('board_token'),
+      sessionStore: sessions,
+      limits: { maxPreviewBytes: 2 },
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [] }),
+        getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+        downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+        downloadMedia: vi.fn(),
+      },
+    } })
+
+    const response = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(response.statusCode).toBe(413)
+    expect(response.json()).toEqual({ code: 'FEISHU_IMPORT_PREVIEW_TOO_LARGE' })
+    expect(sessions.size).toBe(0)
+    expect(sessions.totalRetainedByteLength).toBe(0)
+    await app.close()
+  })
+
+  it('rejects a single oversized media download without retaining bytes or assets', async () => {
+    const sessions = new FeishuImportSessionStore()
+    const bytes = new Uint8Array([1, 2, 3])
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken: vi.fn().mockResolvedValue('board_token'),
+      sessionStore: sessions,
+      limits: { maxMediaItemBytes: 2 },
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [{ id: 'image', type: 'image', x: 0, y: 0, width: 10, height: 10, mediaToken: 'media' }] }),
+        getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+        downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array()),
+        downloadMedia: vi.fn().mockResolvedValue({ bytes, mime: 'image/png', sha256: createHash('sha256').update(bytes).digest('hex') }),
+      },
+    } })
+
+    const response = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(response.statusCode).toBe(413)
+    expect(response.json()).toEqual({ code: 'FEISHU_IMPORT_MEDIA_TOO_LARGE' })
+    expect(sessions.size).toBe(0)
+    expect(sessions.totalRetainedByteLength).toBe(0)
+    expect(database.prepare('SELECT COUNT(*) AS count FROM assets').get()).toEqual({ count: 0 })
+    await app.close()
+  })
+
+  it('rejects aggregate media overflow and clears already downloaded media', async () => {
+    const sessions = new FeishuImportSessionStore()
+    const bytes = new Uint8Array([1, 2])
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken: vi.fn().mockResolvedValue('board_token'),
+      sessionStore: sessions,
+      limits: { maxMediaItemBytes: 2, maxTotalMediaBytes: 3 },
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [
+          { id: 'image-one', type: 'image', x: 0, y: 0, width: 10, height: 10, mediaToken: 'media-one' },
+          { id: 'image-two', type: 'image', x: 10, y: 0, width: 10, height: 10, mediaToken: 'media-two' },
+        ] }),
+        getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+        downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array()),
+        downloadMedia: vi.fn().mockResolvedValue({ bytes, mime: 'image/png', sha256: createHash('sha256').update(bytes).digest('hex') }),
+      },
+    } })
+
+    const response = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(response.statusCode).toBe(413)
+    expect(response.json()).toEqual({ code: 'FEISHU_IMPORT_TOTAL_MEDIA_TOO_LARGE' })
+    expect(sessions.size).toBe(0)
+    expect(sessions.totalRetainedByteLength).toBe(0)
+    expect(database.prepare('SELECT COUNT(*) AS count FROM assets').get()).toEqual({ count: 0 })
+    await app.close()
+  })
+
+  it('bounds repeated inspect sessions and rejects before another download', async () => {
+    const sessions = new FeishuImportSessionStore(Date.now, 60_000, { maxSessions: 1, maxRetainedSessionBytes: 1024 * 1024 })
+    const resolveWhiteboardToken = vi.fn().mockResolvedValue('board_token')
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken,
+      sessionStore: sessions,
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [] }),
+        getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+        downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array()),
+        downloadMedia: vi.fn(),
+      },
+    } })
+
+    expect((await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })).statusCode).toBe(200)
+    const rejected = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(rejected.statusCode).toBe(429)
+    expect(rejected.json()).toEqual({ code: 'FEISHU_IMPORT_SESSION_CAPACITY_EXCEEDED' })
+    expect(resolveWhiteboardToken).toHaveBeenCalledTimes(1)
+    expect(sessions.size).toBe(1)
+    expect(sessions.totalRetainedByteLength).toBeGreaterThan(0)
+    await app.close()
+  })
+
+  it('rejects a session that would exceed the retained-byte budget without residual accounting', async () => {
+    const sessions = new FeishuImportSessionStore(Date.now, 60_000, { maxSessions: 2, maxRetainedSessionBytes: 1 })
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken: vi.fn().mockResolvedValue('board_token'),
+      sessionStore: sessions,
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [] }),
+        getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+        downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array()),
+        downloadMedia: vi.fn(),
+      },
+    } })
+
+    const response = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(response.statusCode).toBe(413)
+    expect(response.json()).toEqual({ code: 'FEISHU_IMPORT_SESSION_BYTES_EXCEEDED' })
+    expect(sessions.size).toBe(0)
+    expect(sessions.totalRetainedByteLength).toBe(0)
+    await app.close()
+  })
+
+  it('bounds concurrent inspect downloads before allocating another session', async () => {
+    const sessions = new FeishuImportSessionStore()
+    let releaseFirst!: (token: string) => void
+    let firstStarted!: () => void
+    const started = new Promise<void>((resolve) => { firstStarted = resolve })
+    const resolveWhiteboardToken = vi.fn()
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { releaseFirst = resolve; firstStarted() }))
+      .mockResolvedValue('board_token')
+    const app = await buildApp({ database, assetDirectory: directory, feishuImport: {
+      connected: () => true,
+      resolveWhiteboardToken,
+      sessionStore: sessions,
+      limits: { maxConcurrentInspects: 1 },
+      client: {
+        listWhiteboardNodes: vi.fn().mockResolvedValue({ nodes: [] }),
+        getWhiteboardTheme: vi.fn().mockResolvedValue({}),
+        downloadWhiteboardPreview: vi.fn().mockResolvedValue(new Uint8Array()),
+        downloadMedia: vi.fn(),
+      },
+    } })
+
+    const first = app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+    await started
+    const rejected = await app.inject({ method: 'POST', url: '/api/import/feishu/inspect', payload: { url: 'board_token' } })
+
+    expect(rejected.statusCode).toBe(429)
+    expect(rejected.json()).toEqual({ code: 'FEISHU_IMPORT_CONCURRENCY_EXCEEDED' })
+    expect(resolveWhiteboardToken).toHaveBeenCalledTimes(1)
+    expect(sessions.size).toBe(0)
+    releaseFirst('board_token')
+    expect((await first).statusCode).toBe(200)
+    expect(sessions.size).toBe(1)
     await app.close()
   })
 })

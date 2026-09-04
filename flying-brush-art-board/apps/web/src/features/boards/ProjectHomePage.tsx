@@ -16,6 +16,7 @@ import type {
   ProjectRecord,
   StoredBoard,
 } from '@infinite-board/board-core'
+import type { TradingPanelKind } from '@infinite-board/tldraw-adapter'
 
 import { AllBoardsPanel } from './AllBoardsPanel'
 import { CreateBoardDialog } from './CreateBoardDialog'
@@ -26,6 +27,7 @@ import { createFeishuImportClient, FeishuImportWizard, type FeishuImportCommitRe
 import { createBrowserUuid } from '../../app/browser-uuid'
 import { subscribeApplicationEvents } from '../automation-presence/application-events'
 import { McpAccessPanel } from '../automation-presence/McpAccessPanel'
+import { findTradingPanelBoard } from '../trading/trading-panel-navigation'
 
 export interface ProjectHomeData {
   project: ProjectRecord
@@ -54,6 +56,7 @@ export interface ProjectHomePageProps {
   projectId: string
   client: ProjectHomeClient
   onOpenBoard(boardId: string, mode: 'current' | 'new'): void
+  onOpenTradingPanel?(boardId: string, panelKind: TradingPanelKind): void
   onImport?: () => void
   onImportDrawio?: () => void
   auditClient?: AuditClient
@@ -71,6 +74,7 @@ export function ProjectHomePage({
   projectId,
   client,
   onOpenBoard,
+  onOpenTradingPanel,
   onImport,
   onImportDrawio,
   auditClient,
@@ -265,6 +269,7 @@ export function ProjectHomePage({
       onDeleteBoard={deleteBoard}
     />
   )
+  const yishuiBoard = findTradingPanelBoard(data.boards, 'yishui-inference')
 
   const activityContent = auditClient ? (
     <AuditPanel projectId={projectId} client={auditClient} boards={data.boards} onOpenBoard={(boardId) => onOpenBoard(boardId, 'current')} />
@@ -323,6 +328,18 @@ export function ProjectHomePage({
           <p>{data.boards.length} 个画板 · {data.references.length} 条引用</p>
         </div>
         <div className="project-home__actions">
+          {yishuiBoard ? (
+            <Button
+              variant="accent"
+              icon={<ArrowSquareOut aria-hidden="true" />}
+              type="button"
+              onClick={() => onOpenTradingPanel
+                ? onOpenTradingPanel(yishuiBoard.id, 'yishui-inference')
+                : onOpenBoard(yishuiBoard.id, 'current')}
+            >
+              打开义水推演
+            </Button>
+          ) : null}
           <Button variant="accent" icon={<FolderOpen aria-hidden="true" />} type="button" onClick={() => onOpenBoard(data.project.rootBoardId, 'current')}>
             进入默认画板
           </Button>

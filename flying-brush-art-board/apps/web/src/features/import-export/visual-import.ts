@@ -52,12 +52,15 @@ export interface VisualImportDependencies {
     boardId: string
     payload: BoardClipboardPayload
     placement: { x: number; y: number }
+    expectedRevision?: number
   }): Promise<VisualImportCommit>
   renderPdfPages?(bytes: Uint8Array): Promise<PreparedVisualPage[]>
 }
 
 export interface VisualImportOptions {
   beforePersist?(): void | Promise<void>
+  expectedRevision?: number
+  getExpectedRevision?(): number | undefined
 }
 
 export interface VisualImportResult extends VisualImportCommit {
@@ -461,16 +464,18 @@ const browserDependencies: VisualImportDependencies = {
       snapshot: result.board.tldrawSnapshot,
     }
   },
-  async pasteVisuals({ boardId, payload, placement }) {
-    const board = await responseJson<{ revision: number }>(
-      await fetch(`/api/boards/${encodeURIComponent(boardId)}`),
-    )
+  async pasteVisuals({ boardId, payload, placement, expectedRevision }) {
+    const boardRevision = typeof expectedRevision === 'number'
+      ? expectedRevision
+      : (await responseJson<{ revision: number }>(
+          await fetch(`/api/boards/${encodeURIComponent(boardId)}`),
+        )).revision
     return responseJson(await fetch(`/api/boards/${encodeURIComponent(boardId)}/clipboard/paste`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         payload,
-        expectedRevision: board.revision,
+        expectedRevision: boardRevision,
         sessionId: defaultSessionId,
         placement,
       }),
@@ -485,7 +490,6 @@ export async function importVisualFile(
 ): Promise<VisualImportResult> {
   const mime = assertFileType(input.file)
   const pages = await preparePages(input.file, mime, dependencies)
-  await options.beforePersist?.()
   const uploads: UploadedVisualAsset[] = []
   try {
     for (const page of pages) {
@@ -494,6 +498,7 @@ export async function importVisualFile(
     const rasterized = mime === 'application/pdf'
 
     if (input.target.kind === 'new-board') {
+      await options.beforePersist?.()
       const snapshot = initialSnapshot()
       const boardId = randomId('board')
       const payload = visualPayload(
@@ -528,10 +533,15 @@ export async function importVisualFile(
       input.target.pageId ?? 'page:page',
       rasterized,
     )
+    await options.beforePersist?.()
     const commit = await dependencies.pasteVisuals({
       boardId: input.target.boardId,
       payload,
       placement: input.target.dropPoint,
+      ...(() => {
+        const expectedRevision = options.getExpectedRevision?.() ?? options.expectedRevision
+        return typeof expectedRevision === 'number' ? { expectedRevision } : {}
+      })(),
     })
     return {
       ...commit,

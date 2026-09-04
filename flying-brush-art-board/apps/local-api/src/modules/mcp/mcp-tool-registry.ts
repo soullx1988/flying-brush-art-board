@@ -23,6 +23,16 @@ import type { McpOAuthAccess, McpScope } from '../auth/mcp-oauth-repository.js'
 import type { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import type { BoardReferenceService } from '../board-references/board-reference-service.js'
 import type { BoardRepository } from '../boards/board-repository.js'
+import type { ProjectRepository } from '../projects/project-repository.js'
+import type { CommentRepository } from '../comments/comment-repository.js'
+import type { AssetRepository, AssetUsageRepository } from '../assets/asset-repository.js'
+import {
+  boardSnapshotAccessForActor,
+  canAccessBoard,
+  canAccessProject,
+  canManageProject,
+  projectPrivacyProjection,
+} from '../../privacy/board-access-policy.js'
 import { publicMcpError } from './mcp-errors.js'
 import type { McpDownloadService } from './mcp-download-service.js'
 
@@ -83,6 +93,10 @@ export interface McpToolRegistryDependencies {
   references: BoardReferenceService
   referenceRepository: BoardReferenceRepository
   boardRepository: BoardRepository
+  projectRepository: ProjectRepository
+  commentRepository: CommentRepository
+  assetRepository: AssetRepository
+  assetUsages: AssetUsageRepository
   comments: CommentApplicationService
   audits: AuditRepository
   exports: ExportApplicationService
@@ -155,6 +169,141 @@ function compact<T extends Record<string, unknown>>(value: T): { [K in keyof T]?
 
 export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, caller: McpCaller): McpServer {
   const server = new McpServer({ name: 'infinite-board', version: '2.0.0' }, { capabilities: { logging: {} } })
+  const canReadProject = (projectId: string) => {
+    const project = deps.projectRepository.get(projectId)
+    return Boolean(project && canAccessProject(
+      project,
+      caller.user.openId,
+      deps.projectRepository.isMember(project.id, caller.user.openId),
+    ))
+  }
+  const canReadBoard = (boardId: string) => {
+    const board = deps.boardRepository.get(boardId)
+    if (!board) return false
+    return canAccessBoard(
+      board,
+      deps.projectRepository.get(board.projectId),
+      caller.user.openId,
+      deps.projectRepository.isMember(board.projectId, caller.user.openId),
+    )
+  }
+  const requireProjectAccess = (projectId: string) => {
+    if (!deps.projectRepository.get(projectId)) {
+      throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
+    }
+    if (!canReadProject(projectId)) {
+      throw Object.assign(new Error('PROJECT_ACCESS_DENIED'), { code: 'PROJECT_ACCESS_DENIED' })
+    }
+  }
+  const requireProjectManagement = (projectId: string) => {
+    const project = deps.projectRepository.get(projectId)
+    if (!project) {
+      throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
+    }
+    if (!canManageProject(project, caller.user.openId)) {
+      throw Object.assign(new Error('PROJECT_ACCESS_DENIED'), { code: 'PROJECT_ACCESS_DENIED' })
+    }
+  }
+  const requireBoardAccess = (boardId: string) => {
+    if (!deps.boardRepository.get(boardId)) {
+      throw Object.assign(new Error('BOARD_NOT_FOUND'), { code: 'BOARD_NOT_FOUND' })
+    }
+    if (!canReadBoard(boardId)) {
+      throw Object.assign(new Error('BOARD_ACCESS_DENIED'), { code: 'BOARD_ACCESS_DENIED' })
+    }
+  }
+  const requireFullBoardSnapshot = (boardId: string) => {
+    requireBoardAccess(boardId)
+    const board = deps.boardRepository.get(boardId)!
+    const snapshotAccess = boardSnapshotAccessForActor(
+      board,
+      deps.boardRepository.listByProject(board.projectId),
+      caller.user.openId,
+    )
+    if (snapshotAccess !== 'full') {
+      throw Object.assign(new Error('BOARD_SNAPSHOT_PROJECTED_READ_ONLY'), {
+        code: 'BOARD_SNAPSHOT_PROJECTED_READ_ONLY',
+      })
+    }
+  }
+  const requireCommentDeletion = (threadId: string) => {
+    const thread = deps.commentRepository.getThread(threadId)
+    if (!thread) {
+      throw Object.assign(new Error('COMMENT_THREAD_NOT_FOUND'), { code: 'COMMENT_THREAD_NOT_FOUND' })
+    }
+    requireBoardAccess(thread.boardId)
+    const project = deps.projectRepository.get(thread.projectId)
+    if (thread.createdBy !== caller.user.openId && (!project || !canManageProject(project, caller.user.openId))) {
+      throw Object.assign(new Error('COMMENT_THREAD_DELETE_FORBIDDEN'), { code: 'COMMENT_THREAD_DELETE_FORBIDDEN' })
+    }
+  }
+  const authorizeInput = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(authorizeInput)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    const record = value as Record<string, unknown>
+    if (typeof record.projectId === 'string') requireProjectAccess(record.projectId)
+    for (const key of ['boardId', 'sourceBoardId', 'targetBoardId'] as const) {
+      if (typeof record[key] === 'string') requireBoardAccess(record[key])
+    }
+    if (typeof record.referenceId === 'string') {
+      const reference = deps.referenceRepository.get(record.referenceId)
+      if (!reference) throw Object.assign(new Error('BOARD_REFERENCE_NOT_FOUND'), { code: 'BOARD_REFERENCE_NOT_FOUND' })
+      requireBoardAccess(reference.sourceBoardId)
+      requireBoardAccess(reference.targetBoardId)
+    }
+    if (typeof record.threadId === 'string') {
+      const thread = deps.commentRepository.getThread(record.threadId)
+      if (!thread) throw Object.assign(new Error('COMMENT_THREAD_NOT_FOUND'), { code: 'COMMENT_THREAD_NOT_FOUND' })
+      requireBoardAccess(thread.boardId)
+    }
+    if (typeof record.messageId === 'string') {
+      const thread = deps.commentRepository.getThreadByMessageId(record.messageId)
+      if (!thread) throw Object.assign(new Error('COMMENT_MESSAGE_NOT_FOUND'), { code: 'COMMENT_MESSAGE_NOT_FOUND' })
+      requireBoardAccess(thread.boardId)
+    }
+    if (typeof record.assetSha256 === 'string') {
+      const usages = deps.assetUsages.listBySha256(record.assetSha256)
+      const isUploadOwner = deps.assetRepository.hasUploadOwnership(record.assetSha256, caller.user.openId)
+      if (!isUploadOwner && !usages.some((usage) => canReadBoard(usage.boardId))) {
+        throw Object.assign(new Error('ASSET_ACCESS_DENIED'), { code: 'ASSET_ACCESS_DENIED' })
+      }
+    }
+    Object.values(record).forEach(authorizeInput)
+  }
+
+  const directSnapshotTools = new Set([
+    'board_inspect',
+    'board_duplicate',
+    'board_delete_preview',
+    'board_delete_confirm',
+  ])
+  const sourceSnapshotTools = new Set([
+    'board_create_embedded',
+    'reference_create',
+  ])
+  const referenceSnapshotTools = new Set([
+    'reference_update',
+    'reference_delete_preview',
+    'reference_delete_confirm',
+  ])
+  const enforceSnapshotProjectionBoundary = (toolName: string, value: unknown): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    const record = value as Record<string, unknown>
+    if ((toolName.startsWith('shape_') || directSnapshotTools.has(toolName)) && typeof record.boardId === 'string') {
+      requireFullBoardSnapshot(record.boardId)
+    }
+    if (sourceSnapshotTools.has(toolName) && typeof record.sourceBoardId === 'string') {
+      requireFullBoardSnapshot(record.sourceBoardId)
+    }
+    if (referenceSnapshotTools.has(toolName) && typeof record.referenceId === 'string') {
+      const reference = deps.referenceRepository.get(record.referenceId)
+      if (!reference) throw Object.assign(new Error('BOARD_REFERENCE_NOT_FOUND'), { code: 'BOARD_REFERENCE_NOT_FOUND' })
+      requireFullBoardSnapshot(reference.sourceBoardId)
+    }
+  }
 
   const register = <T extends z.ZodTypeAny>(
     name: string,
@@ -170,6 +319,8 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
   }, (async (input: z.output<T>) => {
     try {
       requireScope(caller, scope)
+      enforceSnapshotProjectionBoundary(name, input)
+      authorizeInput(input)
       return jsonResult(await handler(input as z.output<T>))
     } catch (error) {
       return errorResult(error)
@@ -202,10 +353,36 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
     return operation
   })
 
-  register('project_list', 'project:read', z.object({ query: z.string().max(200).optional(), ...pagination }).strict(), '分页查询项目及画板摘要，不返回 snapshot。', { readOnlyHint: true }, (input) => deps.projects.list(compact(input)))
+  register('project_list', 'project:read', z.object({ query: z.string().max(200).optional(), ...pagination }).strict(), '分页查询项目及画板摘要，不返回 snapshot。', { readOnlyHint: true }, (input) => {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100)
+    const query = input.query?.trim().toLocaleLowerCase('zh-CN')
+    const visible = deps.projectRepository.list().filter((project) => canReadProject(project.id)).map((project) => {
+      const projection = projectPrivacyProjection(
+        deps.boardRepository.listByProject(project.id),
+        deps.referenceRepository.listByProject(project.id),
+        'aggregate',
+        caller.user.openId,
+      )
+      const rootBoardTitle = projection.boards.find((board) => board.id === project.rootBoardId)?.title
+      return {
+        ...project,
+        boardCount: projection.boards.length,
+        ...(rootBoardTitle ? { rootBoardTitle } : {}),
+        boardTitles: projection.boards.map((board) => board.title),
+      }
+    }).filter((project) => !query || [project.title, project.rootBoardTitle, ...project.boardTitles]
+      .some((value) => value?.toLocaleLowerCase('zh-CN').includes(query)))
+    const start = input.cursor ? Math.max(visible.findIndex((project) => project.id === input.cursor) + 1, 0) : 0
+    const page = visible.slice(start, start + limit)
+    return {
+      projects: page,
+      ...(visible.length > start + limit && page.at(-1) ? { nextCursor: page.at(-1)!.id } : {}),
+    }
+  })
   register('project_get', 'project:read', z.object({ projectId: identifier }).strict(), '查询单个项目、画板摘要和引用。', { readOnlyHint: true }, ({ projectId }) => {
     const value = deps.projects.get(projectId)
-    return { ...value, boards: value.boards.map(({ tldrawSnapshot: _snapshot, ...board }) => board) }
+    const projection = projectPrivacyProjection(value.boards, value.references, 'aggregate', caller.user.openId)
+    return { ...value, boards: projection.boards.map(publicBoard), references: projection.references }
   })
   register('project_create', 'project:write', z.object({ title, rootBoardTitle: title.optional(), idempotencyKey }).strict(), '创建项目和根画板。可用 idempotencyKey 安全重试。', { readOnlyHint: false, idempotentHint: true }, async (input) => {
     const ctx = context(caller, input.idempotencyKey)
@@ -215,6 +392,7 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
     } }))
   })
   register('project_rename', 'project:write', z.object({ projectId: identifier, title, idempotencyKey }).strict(), '重命名项目。', { readOnlyHint: false, idempotentHint: true }, async (input) => {
+    requireProjectManagement(input.projectId)
     const ctx = context(caller, input.idempotencyKey)
     return receipt(await deps.operations.execute({ context: ctx, toolName: 'project_rename', arguments: input, projectId: input.projectId, initialSummary: '正在重命名项目', work: () => {
       const data = deps.projects.rename(input.projectId, input.title, ctx)
@@ -222,17 +400,22 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
     } }))
   })
   register('project_set_root_board', 'project:write', z.object({ projectId: identifier, boardId: identifier, idempotencyKey }).strict(), '设置项目根画板。', { readOnlyHint: false, idempotentHint: true }, async (input) => {
+    requireProjectManagement(input.projectId)
     const ctx = context(caller, input.idempotencyKey)
     return receipt(await deps.operations.execute({ context: ctx, toolName: 'project_set_root_board', arguments: input, projectId: input.projectId, boardId: input.boardId, initialSummary: '正在设置根画板', work: () => {
       const data = deps.projects.setRootBoard(input.projectId, input.boardId, ctx)
       return { data, summary: '已设置根画板', affectedIds: [input.projectId, input.boardId] }
     } }))
   })
-  register('project_delete_preview', 'project:write', z.object({ projectId: identifier }).strict(), '预览删除项目影响并生成 5 分钟一次性确认令牌；不会删除数据。', { readOnlyHint: false }, ({ projectId }) => ({
-    preview: deps.projects.deletePreview(projectId),
-    ...deps.confirmations.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, toolName: 'project_delete_confirm', targetId: projectId, request: { projectId } }),
-  }))
+  register('project_delete_preview', 'project:write', z.object({ projectId: identifier }).strict(), '预览删除项目影响并生成 5 分钟一次性确认令牌；不会删除数据。', { readOnlyHint: false }, ({ projectId }) => {
+    requireProjectManagement(projectId)
+    return {
+      preview: deps.projects.deletePreview(projectId),
+      ...deps.confirmations.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, toolName: 'project_delete_confirm', targetId: projectId, request: { projectId } }),
+    }
+  })
   register('project_delete_confirm', 'project:write', z.object({ projectId: identifier, confirmationToken: z.string().min(20).max(200), idempotencyKey }).strict(), '使用一次性确认令牌删除项目。此操作不可逆。', { readOnlyHint: false, destructiveHint: true, idempotentHint: true }, async (input) => {
+    requireProjectManagement(input.projectId)
     deps.confirmations.consume({ confirmationToken: input.confirmationToken, actorOpenId: caller.user.openId, clientId: caller.access.id, toolName: 'project_delete_confirm', targetId: input.projectId, request: { projectId: input.projectId } })
     const ctx = context(caller, input.idempotencyKey)
     return receipt(await deps.operations.execute({ context: ctx, toolName: 'project_delete_confirm', arguments: { projectId: input.projectId }, projectId: input.projectId, initialSummary: '正在删除项目', work: async () => {
@@ -241,7 +424,19 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
     } }))
   })
 
-  register('board_list', 'board:read', z.object({ projectId: identifier, query: z.string().max(200).optional(), ...pagination }).strict(), '分页查询项目画板，不返回 snapshot。', { readOnlyHint: true }, ({ projectId, ...input }) => deps.boards.list(projectId, compact(input)))
+  register('board_list', 'board:read', z.object({ projectId: identifier, query: z.string().max(200).optional(), ...pagination }).strict(), '分页查询项目画板，不返回 snapshot。', { readOnlyHint: true }, ({ projectId, ...input }) => {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 100)
+    const query = input.query?.trim().toLocaleLowerCase('zh-CN')
+    const visible = deps.boardRepository.listByProject(projectId)
+      .filter((board) => canReadBoard(board.id))
+      .filter((board) => !query || board.title.toLocaleLowerCase('zh-CN').includes(query))
+    const start = input.cursor ? Math.max(visible.findIndex((board) => board.id === input.cursor) + 1, 0) : 0
+    const page = visible.slice(start, start + limit)
+    return {
+      boards: page.map(publicBoard),
+      ...(visible.length > start + limit && page.at(-1) ? { nextCursor: page.at(-1)!.id } : {}),
+    }
+  })
   register('board_get', 'board:read', z.object({ boardId: identifier }).strict(), '查询画板元数据，不返回 snapshot。', { readOnlyHint: true }, ({ boardId }) => publicBoard(deps.boards.get(boardId)))
   register('board_inspect', 'board:read', z.object({ boardId: identifier }).strict(), '返回元素统计、文本摘要和包围盒，不返回完整 snapshot。', { readOnlyHint: true }, ({ boardId }) => deps.canvas.inspect(boardId))
   register('board_create', 'board:write', z.object({ projectId: identifier, title, idempotencyKey }).strict(), '创建空画板。', { readOnlyHint: false, idempotentHint: true }, async (input) => {
@@ -336,7 +531,9 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
   register('reference_list', 'board:read', z.object({ boardId: identifier, direction: z.enum(['inbound', 'outbound']) }).strict(), '查询画板入站或出站引用。', { readOnlyHint: true }, ({ boardId, direction }) => ({
     references: direction === 'inbound'
       ? deps.referenceRepository.listInbound(boardId)
-      : deps.referenceRepository.listOutbound(boardId),
+          .filter((reference) => canReadBoard(reference.sourceBoardId) && canReadBoard(reference.targetBoardId))
+      : deps.referenceRepository.listOutbound(boardId)
+          .filter((reference) => canReadBoard(reference.sourceBoardId) && canReadBoard(reference.targetBoardId)),
   }))
   register('board_create_embedded', 'board:write', z.object({ sourceBoardId: identifier, title, x: coordinate.optional(), y: coordinate.optional(), expectedRevision: z.number().int().nonnegative(), idempotencyKey }).strict(), '原子创建空白子画板及其嵌入引用，效果与网页“插入子画板”一致。画板 ID、引用 ID 和 Shape ID 均由服务端生成。', { readOnlyHint: false, idempotentHint: true }, async (input) => {
     const source = deps.boards.get(input.sourceBoardId)
@@ -355,6 +552,7 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
           projectId: source.projectId,
           title: input.title,
           tldrawSnapshot: { store: {} },
+          accessLevel: 'project',
           revision: 0,
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -434,11 +632,15 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
       } }))
     })
   }
-  register('comment_delete_preview', 'board:write', z.object({ threadId: identifier }).strict(), '预览删除评论并生成一次性确认令牌。', { readOnlyHint: false }, ({ threadId }) => ({
-    preview: deps.comments.deletePreview(threadId),
-    ...deps.confirmations.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, toolName: 'comment_delete_confirm', targetId: threadId, request: { threadId } }),
-  }))
+  register('comment_delete_preview', 'board:write', z.object({ threadId: identifier }).strict(), '预览删除评论并生成一次性确认令牌。', { readOnlyHint: false }, ({ threadId }) => {
+    requireCommentDeletion(threadId)
+    return {
+      preview: deps.comments.deletePreview(threadId),
+      ...deps.confirmations.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, toolName: 'comment_delete_confirm', targetId: threadId, request: { threadId } }),
+    }
+  })
   register('comment_delete_confirm', 'board:write', z.object({ threadId: identifier, confirmationToken: z.string().min(20).max(200), idempotencyKey }).strict(), '使用确认令牌删除评论。', { readOnlyHint: false, destructiveHint: true, idempotentHint: true }, async (input) => {
+    requireCommentDeletion(input.threadId)
     deps.confirmations.consume({ confirmationToken: input.confirmationToken, actorOpenId: caller.user.openId, clientId: caller.access.id, toolName: 'comment_delete_confirm', targetId: input.threadId, request: { threadId: input.threadId } })
     const ctx = context(caller, input.idempotencyKey)
     return receipt(await deps.operations.execute({ context: ctx, toolName: 'comment_delete_confirm', arguments: { threadId: input.threadId }, initialSummary: '正在删除评论', work: () => {
@@ -447,13 +649,21 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
     } }))
   })
 
-  register('audit_list', 'audit:read', z.object({ projectId: identifier.optional(), boardId: identifier.optional(), actorOpenId: identifier.optional(), action: z.string().max(100).optional(), startAt: z.string().datetime().optional(), endAt: z.string().datetime().optional(), cursor: z.string().max(1000).optional(), limit: z.number().int().min(1).max(100).optional() }).strict(), '分页查询脱敏审计事件。', { readOnlyHint: true }, (input) => sanitizeAudit(deps.audits.listPage(compact(input))))
+  register('audit_list', 'audit:read', z.object({ projectId: identifier.optional(), boardId: identifier.optional(), actorOpenId: identifier.optional(), action: z.string().max(100).optional(), startAt: z.string().datetime().optional(), endAt: z.string().datetime().optional(), cursor: z.string().max(1000).optional(), limit: z.number().int().min(1).max(100).optional() }).strict(), '分页查询脱敏审计事件。', { readOnlyHint: true }, (input) => {
+    const page = deps.audits.listPage(compact(input))
+    return sanitizeAudit({
+      ...page,
+      events: page.events.filter((event) => event.actorOpenId === caller.user.openId || (event.boardId
+        ? canReadBoard(event.boardId)
+        : event.projectId ? canReadProject(event.projectId) : true)),
+    })
+  })
 
   register('export_board', 'export', z.object({ boardId: identifier, format: z.literal('pdf').default('pdf'), idempotencyKey }).strict(), '生成绑定当前用户和客户端、5 分钟有效的画板 PDF 下载链接；不内联二进制。', { readOnlyHint: false, idempotentHint: true }, async (input) => {
     const board = deps.boards.get(input.boardId)
     const ctx = context(caller, input.idempotencyKey)
     return receipt(await deps.operations.execute({ context: ctx, toolName: 'export_board', arguments: input, projectId: board.projectId, boardId: board.id, initialSummary: '正在准备画板导出', work: () => {
-      const download = deps.downloads.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, produce: () => deps.exports.boardPdf(input.boardId) })
+      const download = deps.downloads.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, produce: () => deps.exports.boardPdf(input.boardId, caller.user.openId) })
       const data = { downloadUrl: `${caller.serverBaseUrl}/mcp/download/${download.ticket}`, expiresAt: download.expiresAt, fileName: `${board.title}.pdf`, mimeType: 'application/pdf', authorization: 'Use the same OAuth access token.' }
       return { data, summary: '画板导出链接已生成', affectedIds: [board.id] }
     } }))
@@ -464,7 +674,7 @@ export function createInfiniteBoardMcpServer(deps: McpToolRegistryDependencies, 
     return receipt(await deps.operations.execute({ context: ctx, toolName: 'export_project', arguments: input, projectId: project.id, initialSummary: '正在准备项目导出', work: () => {
       const extension = input.format === 'pdf' ? 'pdf' : 'iboard'
       const mimeType = input.format === 'pdf' ? 'application/pdf' : 'application/vnd.infinite-board+zip'
-      const download = deps.downloads.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, produce: () => input.format === 'pdf' ? deps.exports.projectPdf(project.id) : deps.exports.projectIboard(project.id) })
+      const download = deps.downloads.create({ actorOpenId: caller.user.openId, clientId: caller.access.id, produce: () => input.format === 'pdf' ? deps.exports.projectPdf(project.id, caller.user.openId) : deps.exports.projectIboard(project.id, caller.user.openId) })
       const data = { downloadUrl: `${caller.serverBaseUrl}/mcp/download/${download.ticket}`, expiresAt: download.expiresAt, fileName: `${project.title}.${extension}`, mimeType, authorization: 'Use the same OAuth access token.' }
       return { data, summary: '项目导出链接已生成', affectedIds: [project.id] }
     } }))

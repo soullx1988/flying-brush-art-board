@@ -37,9 +37,11 @@ export class RealtimeRoomManager {
     private readonly boardExists: (boardId: string) => boolean,
     private readonly compactAfter = 500,
     private readonly initialSnapshot: (boardId: string) => unknown | undefined = () => undefined,
-    private readonly onDocumentChange: (boardId: string, roomSnapshot: unknown) => void = () => undefined,
+    private readonly onDocumentChange: (boardId: string, roomSnapshot: unknown) => number | void = () => undefined,
     private readonly validateSnapshot: (boardId: string, roomSnapshot: unknown) => void = () => undefined,
     private readonly operationQueue = new BoardOperationQueue(),
+    private readonly shouldInvalidateRoomBeforeBroadcast: (boardId: string, snapshot: unknown) => boolean = () => false,
+    private readonly currentBoardRevision: (boardId: string) => number | undefined = () => undefined,
   ) {}
 
   connect(input: { boardId: string; socket: unknown; user: { openId: string; name: string }; isReadonly?: boolean }): RealtimeRoomConnection {
@@ -117,12 +119,50 @@ export class RealtimeRoomManager {
 
   private async applyCommittedSnapshotNow(boardId: string, snapshot: unknown): Promise<void> {
     const room = this.rooms.get(boardId)
-    if (room) {
-      await room.loadSnapshot(snapshot)
-      this.repository.compact(boardId, room.getCurrentSnapshot())
+    let boardRevision: number | undefined
+    try {
+      boardRevision = this.currentBoardRevision(boardId)
+    } catch {
+      // Revision lookup is part of the post-commit synchronization boundary.
+      // If it fails, an existing room is no longer safe to project because it
+      // may predate the command that has just committed.
+      if (room) this.invalidateRoom(boardId, room)
       return
     }
-    this.repository.compact(boardId, snapshot)
+    if (room) {
+      try {
+        if (this.shouldInvalidateRoomBeforeBroadcast(boardId, snapshot)) {
+          // A public room may become privacy-projected when a command adds an
+          // owner-only reference. Close existing raw-snapshot sessions before
+          // the new snapshot is loaded, then persist only the authoritative
+          // command result. This prevents even a one-frame private broadcast.
+          this.invalidateRoom(boardId, room)
+          this.repository.compact(boardId, snapshot, 1, boardRevision)
+          return
+        }
+        await room.loadSnapshot(snapshot)
+        this.repository.compact(boardId, room.getCurrentSnapshot(), 1, boardRevision)
+        return
+      } catch {
+        // The Board transaction has already committed. A room/load/compact
+        // failure must not turn that success into an ambiguous HTTP error or
+        // leave a stale live room able to overwrite the committed Board.
+        this.invalidateRoom(boardId, room)
+        try {
+          this.repository.compact(boardId, snapshot, 1, boardRevision)
+        } catch {
+          // A stale persisted room retains its older board revision. The next
+          // connection will reject it and seed from the authoritative Board.
+        }
+        return
+      }
+    }
+    try {
+      this.repository.compact(boardId, snapshot, 1, boardRevision)
+    } catch {
+      // The durable Board remains authoritative. A mismatched or absent room
+      // snapshot will be ignored when the next collaboration room starts.
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -150,15 +190,20 @@ export class RealtimeRoomManager {
     const existing = this.rooms.get(boardId)
     if (existing) return existing
     const persisted = this.repository.loadSnapshot(boardId)
-    const initialSnapshot = persisted?.snapshot ?? this.initialSnapshot(boardId)
+    const boardRevision = this.currentBoardRevision(boardId)
+    const persistedMatchesBoard = persisted
+      && (boardRevision === undefined || persisted.boardRevision === boardRevision)
+    const initialSnapshot = persistedMatchesBoard ? persisted.snapshot : this.initialSnapshot(boardId)
     let room: RealtimeRoom | undefined
     room = this.factory.create({
       boardId,
       ...(initialSnapshot === undefined ? {} : { initialSnapshot }),
       onDataChange: () => {
-        if (!room) return
+        const activeRoom = room
+        if (!activeRoom || this.rooms.get(boardId) !== activeRoom) return
         void this.operationQueue.run(boardId, () => {
-          const snapshot = room!.getCurrentSnapshot()
+          if (this.rooms.get(boardId) !== activeRoom) return
+          const snapshot = activeRoom.getCurrentSnapshot()
           try {
             this.validateSnapshot(boardId, snapshot)
           } catch {
@@ -167,7 +212,7 @@ export class RealtimeRoomManager {
             this.pendingUpdates.delete(boardId)
             const authoritative = this.initialSnapshot(boardId)
             if (authoritative !== undefined) {
-              void room!.loadSnapshot(authoritative).catch(() => undefined)
+              void activeRoom.loadSnapshot(authoritative).catch(() => undefined)
             }
             return
           }
@@ -184,6 +229,7 @@ export class RealtimeRoomManager {
         }).catch(() => undefined)
       },
       onMessage: (payload, actorOpenId) => {
+        if (!room || this.rooms.get(boardId) !== room) return
         const pending = this.pendingUpdates.get(boardId) ?? []
         pending.push({ payload, actorOpenId })
         this.pendingUpdates.set(boardId, pending)
@@ -206,17 +252,21 @@ export class RealtimeRoomManager {
     const updateCount = this.repository.loadSnapshot(boardId)?.updateCount ?? 0
     const pendingCount = this.pendingUpdates.get(boardId)?.length ?? 0
     if (forceCompact || updateCount + pendingCount >= this.compactAfter) {
-      this.repository.compact(boardId, snapshot)
+      this.repository.compact(boardId, snapshot, 1, this.currentBoardRevision(boardId))
       return true
     } else {
-      this.repository.saveSnapshot(boardId, snapshot)
+      this.repository.saveSnapshot(boardId, snapshot, 1, this.currentBoardRevision(boardId))
       return false
     }
   }
 
   private projectSnapshot(boardId: string, snapshot: unknown): boolean {
     try {
-      this.onDocumentChange(boardId, snapshot)
+      const projectedRevision = this.onDocumentChange(boardId, snapshot)
+      const boardRevision = typeof projectedRevision === 'number'
+        ? projectedRevision
+        : this.currentBoardRevision(boardId)
+      if (boardRevision !== undefined) this.repository.markBoardRevision(boardId, boardRevision)
       this.pendingProjections.delete(boardId)
       return true
     } catch {
@@ -234,5 +284,18 @@ export class RealtimeRoomManager {
       pending.shift()
     }
     this.pendingUpdates.delete(boardId)
+  }
+
+  private invalidateRoom(boardId: string, room: RealtimeRoom): void {
+    try {
+      room.close?.()
+    } catch {
+      // Cleanup below is the data-integrity boundary; a transport-specific
+      // close failure must not keep the stale room registered as writable.
+    } finally {
+      if (this.rooms.get(boardId) === room) this.rooms.delete(boardId)
+      this.pendingUpdates.delete(boardId)
+      this.pendingProjections.delete(boardId)
+    }
   }
 }

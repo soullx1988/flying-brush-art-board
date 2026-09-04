@@ -135,10 +135,11 @@ test('imports draw.io into one new board from every structural drop target and e
   await expect(page.getByRole('heading', { name: 'Architecture-1' })).toBeVisible()
   const state = await readProject(request, projectId)
   const actualReference = state.references.find((reference) => reference.sourceBoardId === exportedBoardId)!
-  const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '更多' }).click()
-  await page.getByRole('menuitem', { name: '导出 .drawio' }).click()
-  const download = await downloadPromise
+  await page.getByRole('button', { name: '导出', exact: true }).click()
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('menuitem', { name: '导出 .drawio' }).click(),
+  ])
   expect(download.suggestedFilename()).toBe('Architecture-1.drawio')
   const stream = await download.createReadStream()
   const chunks: Buffer[] = []

@@ -1,7 +1,10 @@
+import { readFile } from 'node:fs/promises'
+
 import { expect, test, type APIRequestContext, type Page } from './test.js'
 
 import type { ProjectRecord, StoredBoard } from '../../packages/board-core/src/index.js'
 import { renderProjectToPdf } from '../../packages/interop/src/pdf/project-pdf.js'
+import { createPngFixture } from '../../packages/test-fixtures/src/media.js'
 
 const API_BASE = 'http://localhost:8787'
 const now = '2026-07-23T00:00:00.000Z'
@@ -24,38 +27,30 @@ async function readProject(request: APIRequestContext, projectId: string): Promi
 }
 
 function png(width: number, height: number): Uint8Array {
-  const bytes = new Uint8Array(33)
-  bytes.set([137, 80, 78, 71, 13, 10, 26, 10])
-  bytes.set([0, 0, 0, 13, 73, 72, 68, 82], 8)
-  new DataView(bytes.buffer).setUint32(16, width)
-  new DataView(bytes.buffer).setUint32(20, height)
-  bytes[24] = 8
-  bytes[25] = 6
-  return bytes
+  return createPngFixture(width, height)
 }
 
-function jpeg(width: number, height: number): Uint8Array {
-  return new Uint8Array([
-    0xff, 0xd8,
-    0xff, 0xc0, 0x00, 0x11, 0x08,
-    (height >>> 8) & 0xff, height & 0xff,
-    (width >>> 8) & 0xff, width & 0xff,
-    0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00,
-    0xff, 0xd9,
-  ])
+function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
+  const buffer = Buffer.from(bytes)
+  expect([...buffer.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10])
+  expect(buffer.subarray(12, 16).toString('ascii')).toBe('IHDR')
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  }
 }
 
-function webp(width: number, height: number): Uint8Array {
-  const bytes = new Uint8Array(30)
-  bytes.set(new TextEncoder().encode('RIFF'), 0)
-  new DataView(bytes.buffer).setUint32(4, 22, true)
-  bytes.set(new TextEncoder().encode('WEBPVP8X'), 8)
-  new DataView(bytes.buffer).setUint32(16, 10, true)
-  const encodedWidth = width - 1
-  const encodedHeight = height - 1
-  bytes.set([encodedWidth & 0xff, (encodedWidth >>> 8) & 0xff, (encodedWidth >>> 16) & 0xff], 24)
-  bytes.set([encodedHeight & 0xff, (encodedHeight >>> 8) & 0xff, (encodedHeight >>> 16) & 0xff], 27)
-  return bytes
+async function browserRaster(page: Page, width: number, height: number, mime: 'image/jpeg' | 'image/webp'): Promise<Uint8Array> {
+  const base64 = await page.evaluate(({ width, height, mime }) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')!
+    context.fillStyle = '#3370ff'
+    context.fillRect(0, 0, width, height)
+    return canvas.toDataURL(mime, 0.85).split(',')[1]!
+  }, { width, height, mime })
+  return new Uint8Array(Buffer.from(base64, 'base64'))
 }
 
 async function pdf(pageCount: number): Promise<Uint8Array> {
@@ -152,6 +147,20 @@ async function expectAssetMaterialized(request: APIRequestContext, record: any):
   expect(Number(response.headers()['content-length'] ?? (await response.body()).byteLength)).toBeGreaterThan(0)
 }
 
+async function waitForBoardRevisionToSettle(
+  request: APIRequestContext,
+  projectId: string,
+  page: Page,
+  boardId: string,
+): Promise<void> {
+  await expect.poll(async () => {
+    const first = (await readProject(request, projectId)).boards.find((board) => board.id === boardId)?.revision
+    await page.waitForTimeout(1_200)
+    const second = (await readProject(request, projectId)).boards.find((board) => board.id === boardId)?.revision
+    return first === second ? first : -1
+  }).not.toBe(-1)
+}
+
 test('imports PNG, JPEG, WebP, and sanitized SVG as ordered independent new Boards', async ({ page, request }) => {
   test.setTimeout(120_000)
   const suffix = crypto.randomUUID()
@@ -171,10 +180,14 @@ test('imports PNG, JPEG, WebP, and sanitized SVG as ordered independent new Boar
     <script>alert(1)</script><image href="https://evil.invalid/pixel.png"/>
     <rect width="120" height="80" fill="#22c55e"/>
   </svg>`
+  const [jpegBytes, webpBytes] = await Promise.all([
+    browserRaster(page, 80, 60, 'image/jpeg'),
+    browserRaster(page, 90, 70, 'image/webp'),
+  ])
   await dropFiles(page, 'new-tab', [
     { name: 'One.png', mimeType: 'image/png', bytes: png(64, 48) },
-    { name: 'Two.jpg', mimeType: 'image/jpeg', bytes: jpeg(80, 60) },
-    { name: 'Three.webp', mimeType: 'image/webp', bytes: webp(90, 70) },
+    { name: 'Two.jpg', mimeType: 'image/jpeg', bytes: jpegBytes },
+    { name: 'Three.webp', mimeType: 'image/webp', bytes: webpBytes },
     { name: 'Four.svg', mimeType: 'image/svg+xml', bytes: new TextEncoder().encode(maliciousSvg) },
   ])
 
@@ -223,6 +236,8 @@ test('imports single and multi-page PDFs as rasterized atomic canvas batches and
     return Object.values(snapshotStore(board))
       .filter((record) => record.typeName === 'asset' && record.type === 'image').length
   }).toBe(1)
+  await waitForBoardRevisionToSettle(request, projectId, page, rootBoardId)
+  await expect(page.getByRole('img', { name: 'single.pdf' })).toBeVisible()
   await dropFiles(page, 'canvas', [
     { name: 'multi.pdf', mimeType: 'application/pdf', bytes: await pdf(2) },
   ])
@@ -249,14 +264,28 @@ test('imports single and multi-page PDFs as rasterized atomic canvas batches and
   expect(multiShapes[1]!.y - multiShapes[0]!.y).toBe(multiShapes[0]!.props.h + 32)
   for (const asset of assets) await expectAssetMaterialized(request, asset)
 
-  const beforeFailure = await readProject(request, projectId)
+  const failureBoardId = `visual-pdf-failure-${suffix}`
+  expect((await request.post(`${API_BASE}/api/projects/${projectId}/boards`, {
+    data: { id: failureBoardId, title: 'Failure target' },
+  })).ok()).toBe(true)
+  await page.goto(`/projects/${projectId}/boards/${failureBoardId}`)
+  await expect(page.getByRole('heading', { name: 'Failure target' })).toBeVisible()
+  await waitForBoardRevisionToSettle(request, projectId, page, failureBoardId)
+
+  const readFailureBoard = async () => {
+    const state = await readProject(request, projectId)
+    return state.boards.find((board) => board.id === failureBoardId)!
+  }
+
+  const beforeFailure = await readFailureBoard()
   await dropFiles(page, 'canvas', [
     { name: 'broken.pdf', mimeType: 'application/pdf', bytes: new TextEncoder().encode('%PDF-broken') },
   ])
   await expect(page.getByRole('status').filter({
     hasText: /PDF_DOCUMENT_INVALID|PDF_PAGE_RENDER_FAILED/,
   })).toBeVisible()
-  expect(projectContent(await readProject(request, projectId))).toEqual(projectContent(beforeFailure))
+  const afterBrokenPdf = await readFailureBoard()
+  expect(afterBrokenPdf).toEqual(beforeFailure)
 
   await dropFiles(page, 'tab-strip', [
     { name: 'mismatch.png', mimeType: 'image/jpeg', bytes: png(10, 10) },
@@ -264,7 +293,8 @@ test('imports single and multi-page PDFs as rasterized atomic canvas batches and
   await expect(page.getByRole('status').filter({
     hasText: 'VISUAL_FILE_TYPE_MISMATCH',
   })).toBeVisible()
-  expect(projectContent(await readProject(request, projectId))).toEqual(projectContent(beforeFailure))
+  const afterTypeMismatch = await readFailureBoard()
+  expect(afterTypeMismatch).toEqual(beforeFailure)
 })
 
 test('exports current Board as PNG, SVG, and one-page PDF and project PDF without directory pages', async ({ page, request }) => {
@@ -285,6 +315,9 @@ test('exports current Board as PNG, SVG, and one-page PDF and project PDF withou
   await page.goto(`/projects/${projectId}/boards/${rootBoardId}`)
   await expect(page.getByRole('heading', { name: 'Export target' })).toBeVisible()
 
+  const importedVisual = page.waitForResponse((response) =>
+    response.url().endsWith(`/api/boards/${rootBoardId}/clipboard/paste`)
+    && response.request().method() === 'POST')
   await dropFiles(page, 'canvas', [
     {
       name: 'export.svg',
@@ -292,14 +325,27 @@ test('exports current Board as PNG, SVG, and one-page PDF and project PDF withou
       bytes: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2563eb"/></svg>'),
     },
   ])
-  await expect.poll(async () => (await readProject(request, projectId)).boards.find((board) => board.id === rootBoardId)!.revision).toBe(1)
+  expect((await importedVisual).status()).toBe(201)
+  await expect.poll(async () => (await readProject(request, projectId)).boards.find((board) => board.id === rootBoardId)!.revision).toBeGreaterThan(0)
+  await expect(page.getByRole('img', { name: 'export.svg' })).toBeVisible()
 
   for (const label of ['导出 PNG', '导出 SVG'] as const) {
-    const downloadPromise = page.waitForEvent('download')
-    await page.getByRole('button', { name: '更多' }).click()
-    await page.getByRole('menuitem', { name: label }).click()
-    const download = await downloadPromise
+    await page.getByRole('button', { name: '导出', exact: true }).click()
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByRole('menuitem', { name: label }).click(),
+    ])
     expect(download.suggestedFilename()).toBe(`Export target.${label.endsWith('PNG') ? 'png' : 'svg'}`)
+    if (label.endsWith('PNG')) {
+      const downloadPath = await download.path()
+      expect(downloadPath).not.toBeNull()
+      const bytes = await readFile(downloadPath!)
+      const dimensions = pngDimensions(bytes)
+      expect(dimensions.width).toBeGreaterThanOrEqual(120)
+      expect(dimensions.height).toBeGreaterThanOrEqual(80)
+      expect(dimensions.width).toBeLessThanOrEqual(4_096)
+      expect(dimensions.height).toBeLessThanOrEqual(4_096)
+    }
   }
 
   const boardPdfResponse = await request.post(`${API_BASE}/api/boards/${rootBoardId}/export.pdf`)

@@ -44,6 +44,105 @@ afterEach(() => {
 })
 
 describe('ProjectCenterPage', () => {
+  it('creates and opens the default trading workspace when the library is empty', async () => {
+    const rootBoard = {
+      id: 'trading-root', projectId: 'trading-project', title: '总览', tldrawSnapshot: { store: {} },
+      revision: 0, createdAt: '2026-08-08T08:00:00.000Z', updatedAt: '2026-08-08T08:00:00.000Z',
+    }
+    const project = {
+      id: 'trading-project', title: '短线主线交易工作台', rootBoardId: rootBoard.id, formatVersion: 1,
+      createdAt: rootBoard.createdAt, updatedAt: rootBoard.updatedAt,
+    }
+    const boards = [rootBoard, ...['数据', '逻辑', '经验', '心态'].map((title, index) => ({
+      ...rootBoard, id: `trading-${index}`, title,
+    }))]
+    const client: ProjectCenterClient = {
+      ...createClient(),
+      listProjects: vi.fn(async () => []),
+      ensureTradingWorkspace: vi.fn(async () => ({ status: 'created' as const, project, rootBoard, boards })),
+    }
+    const onOpenProject = vi.fn()
+
+    render(<ProjectCenterPage client={client} onOpenProject={onOpenProject} />)
+
+    await waitFor(() => expect(client.ensureTradingWorkspace).toHaveBeenCalledTimes(1))
+    expect(onOpenProject).toHaveBeenCalledWith('trading-project', 'trading-root')
+  })
+
+  it('ensures the personal trading workspace even when ordinary projects already exist', async () => {
+    const rootBoard = {
+      id: 'trading-root', projectId: 'trading-project', title: '总览', tldrawSnapshot: { store: {} },
+      revision: 0, createdAt: '2026-08-08T08:00:00.000Z', updatedAt: '2026-08-08T08:00:00.000Z',
+    }
+    const project = {
+      id: 'trading-project', title: '短线主线交易工作台', rootBoardId: rootBoard.id, formatVersion: 1,
+      createdAt: rootBoard.createdAt, updatedAt: rootBoard.updatedAt,
+    }
+    const client: ProjectCenterClient = {
+      ...createClient(),
+      ensureTradingWorkspace: vi.fn(async () => ({
+        status: 'created' as const,
+        project,
+        rootBoard,
+        boards: [rootBoard],
+      })),
+    }
+    const onOpenProject = vi.fn()
+
+    render(<ProjectCenterPage client={client} onOpenProject={onOpenProject} />)
+
+    await screen.findByText('短线主线交易工作台')
+    expect(screen.getByText('Desktop UI Review')).toBeInTheDocument()
+    expect(client.ensureTradingWorkspace).toHaveBeenCalledTimes(1)
+    expect(onOpenProject).not.toHaveBeenCalled()
+  })
+
+  it('shows a first-screen Yishui entry and opens the data board with panel focus', async () => {
+    const rootBoard = {
+      id: 'trading-root', projectId: 'trading-project', title: '总览', tldrawSnapshot: { store: {} },
+      revision: 0, createdAt: '2026-08-08T08:00:00.000Z', updatedAt: '2026-08-08T08:00:00.000Z',
+    }
+    const dataBoard = {
+      ...rootBoard,
+      id: 'trading-data',
+      title: '数据',
+      tldrawSnapshot: {
+        store: {
+          'shape:yishui': {
+            id: 'shape:yishui',
+            type: 'trading-panel',
+            meta: { template: 'shortline-trading-v1' },
+            props: { panelKind: 'yishui-inference', title: '义水北路推演画板' },
+          },
+        },
+      },
+    }
+    const project = {
+      id: 'trading-project', title: '短线主线交易工作台', rootBoardId: rootBoard.id, formatVersion: 1,
+      createdAt: rootBoard.createdAt, updatedAt: rootBoard.updatedAt,
+    }
+    const client: ProjectCenterClient = {
+      ...createClient(),
+      ensureTradingWorkspace: vi.fn(async () => ({
+        status: 'existing' as const,
+        project,
+        rootBoard,
+        boards: [rootBoard, dataBoard],
+      })),
+    }
+    const onOpenProject = vi.fn()
+
+    render(<ProjectCenterPage client={client} onOpenProject={onOpenProject} />)
+    const entry = await screen.findByRole('button', { name: '打开义水推演' })
+    fireEvent.click(entry)
+
+    expect(onOpenProject).toHaveBeenCalledWith(
+      'trading-project',
+      'trading-data',
+      { focusPanelKind: 'yishui-inference' },
+    )
+  })
+
   it('shows one project library ordered by most recently updated first', async () => {
     const client = createClient()
     vi.mocked(client.listProjects).mockResolvedValueOnce(structuredClone(projects).reverse())

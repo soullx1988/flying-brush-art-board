@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FeishuBoardClient, FeishuBoardClientError } from './board-client.js'
 
 const credentials = { read: () => ({ accessToken: 'user-token', refreshToken: 'refresh', scopes: [] }) }
+const authenticated = { credentials, actorOpenId: 'user-a' }
 
 function response(body: BodyInit, init: ResponseInit = {}): Response {
   return new Response(body, init)
@@ -16,7 +17,7 @@ describe('FeishuBoardClient', () => {
       .mockResolvedValueOnce(response(JSON.stringify({ code: 0, data: { nodes: [] } }), { headers: { 'content-type': 'application/json' } }))
       .mockResolvedValueOnce(response(JSON.stringify({ code: 0, data: { theme: {} } }), { headers: { 'content-type': 'application/json' } }))
       .mockResolvedValueOnce(response(new Uint8Array([137, 80, 78, 71]), { headers: { 'content-type': 'image/png', 'content-length': '4' } }))
-    const client = new FeishuBoardClient({ credentials, fetch })
+    const client = new FeishuBoardClient({ ...authenticated, fetch })
 
     await client.listWhiteboardNodes('board-1')
     await client.getWhiteboardTheme('board-1')
@@ -34,7 +35,7 @@ describe('FeishuBoardClient', () => {
     const fetch = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
     }))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 1 })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1 })
     const controller = new AbortController()
     const pending = client.listWhiteboardNodes('board-1', { signal: controller.signal })
     controller.abort()
@@ -46,7 +47,7 @@ describe('FeishuBoardClient', () => {
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
     }))
     const sleep = vi.fn(async (_milliseconds: number) => undefined)
-    const client = new FeishuBoardClient({ credentials, fetch, timeoutMs: 1, maxAttempts: 3, sleep })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, timeoutMs: 1, maxAttempts: 3, sleep })
 
     await expect(client.listWhiteboardNodes('board-1')).rejects.toMatchObject({ code: 'FEISHU_REQUEST_TIMEOUT' })
     expect(fetch).toHaveBeenCalledTimes(3)
@@ -55,7 +56,7 @@ describe('FeishuBoardClient', () => {
 
   it('provides scope repair guidance without expanding scopes', async () => {
     const fetch = vi.fn().mockResolvedValue(response(JSON.stringify({ code: 99991672, msg: 'Access denied' }), { status: 403 }))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 1 })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1 })
 
     await expect(client.listWhiteboardNodes('board-1')).rejects.toMatchObject({
       code: 'FEISHU_SCOPE_DENIED',
@@ -68,7 +69,7 @@ describe('FeishuBoardClient', () => {
     const fetch = vi.fn().mockResolvedValue(response(JSON.stringify({ code: 99991672, msg: 'Access denied' }), {
       headers: { 'content-type': 'application/json' },
     }))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 1 })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1 })
 
     await expect(client.listWhiteboardNodes('board-1')).rejects.toMatchObject({
       code: 'FEISHU_SCOPE_DENIED',
@@ -80,7 +81,7 @@ describe('FeishuBoardClient', () => {
     const fetch = vi.fn().mockResolvedValue(response(JSON.stringify({ code: 99991672, msg: 'Access denied' }), {
       headers: { 'content-type': 'application/json' },
     }))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 1 })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1 })
 
     await expect(client.downloadWhiteboardPreview('board-1')).rejects.toMatchObject({
       code: 'FEISHU_SCOPE_DENIED', requiredScope: 'board:whiteboard:node:read',
@@ -93,7 +94,7 @@ describe('FeishuBoardClient', () => {
   it('reports rate limits with retry guidance after bounded retries', async () => {
     const fetch = vi.fn().mockResolvedValue(response('', { status: 429, headers: { 'retry-after': '2' } }))
     const sleep = vi.fn(async (_milliseconds: number) => undefined)
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 2, sleep })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 2, sleep })
 
     await expect(client.getWhiteboardTheme('board-1')).rejects.toMatchObject({
       code: 'FEISHU_RATE_LIMITED', retryAfterMs: 2000,
@@ -104,14 +105,14 @@ describe('FeishuBoardClient', () => {
   it('bounds malformed attempt counts and oversized retry delays', async () => {
     const fetch = vi.fn().mockResolvedValue(response('', { status: 429, headers: { 'retry-after': 'Infinity' } }))
     const sleep = vi.fn(async (_milliseconds: number) => undefined)
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: Number.POSITIVE_INFINITY, sleep })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: Number.POSITIVE_INFINITY, sleep })
 
     await expect(client.getWhiteboardTheme('board-1')).rejects.toMatchObject({ code: 'FEISHU_RATE_LIMITED' })
     expect(fetch).toHaveBeenCalledTimes(5)
     expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([100, 200, 400, 800])
 
     const malformedFetch = vi.fn().mockResolvedValue(response('', { status: 500 }))
-    const malformedClient = new FeishuBoardClient({ credentials, fetch: malformedFetch, maxAttempts: Number.NaN, sleep })
+    const malformedClient = new FeishuBoardClient({ ...authenticated, fetch: malformedFetch, maxAttempts: Number.NaN, sleep })
     await expect(malformedClient.getWhiteboardTheme('board-1')).rejects.toMatchObject({ code: 'FEISHU_REQUEST_FAILED' })
     expect(malformedFetch).toHaveBeenCalledTimes(3)
   })
@@ -119,7 +120,7 @@ describe('FeishuBoardClient', () => {
   it('caps Retry-After and cancels promptly while waiting to retry', async () => {
     const fetch = vi.fn().mockResolvedValue(response('', { status: 429, headers: { 'retry-after': '999999999' } }))
     const sleep = vi.fn(() => new Promise<void>(() => undefined))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 2, sleep })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 2, sleep })
     const controller = new AbortController()
     const pending = client.getWhiteboardTheme('board-1', { signal: controller.signal })
 
@@ -136,7 +137,7 @@ describe('FeishuBoardClient', () => {
       .mockResolvedValueOnce(response(bytes, { headers: { 'content-type': 'text/html', 'content-length': '4' } }))
       .mockResolvedValueOnce(response(bytes, { headers: { 'content-type': 'image/png', 'content-length': '5' } }))
       .mockResolvedValueOnce(response(bytes, { headers: { 'content-type': 'image/png', 'content-length': '4', 'x-content-sha256': '0'.repeat(64) } }))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 1 })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1 })
 
     await expect(client.downloadMedia('media-1')).resolves.toEqual({ bytes, mime: 'image/png', sha256 })
     await expect(client.downloadMedia('media-2')).rejects.toMatchObject({ code: 'FEISHU_MEDIA_MIME_INVALID' })
@@ -154,9 +155,25 @@ describe('FeishuBoardClient', () => {
       },
     }, { highWaterMark: 0 })
     const fetch = vi.fn().mockResolvedValue(response(body, { headers: { 'content-type': 'image/png' } }))
-    const client = new FeishuBoardClient({ credentials, fetch, maxAttempts: 1, maxMediaBytes: 5 })
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1, maxMediaBytes: 5 })
 
     await expect(client.downloadMedia('media-stream')).rejects.toMatchObject({ code: 'FEISHU_MEDIA_TOO_LARGE' })
+    expect(pulls).toBe(2)
+  })
+
+  it('stops reading an unknown-length preview as soon as its byte limit is exceeded', async () => {
+    let pulls = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1
+        controller.enqueue(new Uint8Array(4))
+        if (pulls === 3) controller.close()
+      },
+    }, { highWaterMark: 0 })
+    const fetch = vi.fn().mockResolvedValue(response(body, { headers: { 'content-type': 'image/png' } }))
+    const client = new FeishuBoardClient({ ...authenticated, fetch, maxAttempts: 1, maxPreviewBytes: 5 })
+
+    await expect(client.downloadWhiteboardPreview('board-stream')).rejects.toMatchObject({ code: 'FEISHU_PREVIEW_TOO_LARGE' })
     expect(pulls).toBe(2)
   })
 })

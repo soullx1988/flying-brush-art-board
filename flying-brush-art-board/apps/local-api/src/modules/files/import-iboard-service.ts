@@ -13,6 +13,10 @@ import {
 import { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import { BoardRepository } from '../boards/board-repository.js'
 import { ProjectRepository } from '../projects/project-repository.js'
+import {
+  assertIboardBoardSnapshotsSupported,
+  normalizeIboardBoardSnapshot,
+} from './iboard-runtime-compatibility.js'
 
 export type IboardMergeFaultPoint =
   | 'asset-materialize'
@@ -56,6 +60,15 @@ export async function commitIboardMerge(
     targetProjectId: request.targetProjectId,
     namespace: request.namespace,
   })
+  // Defense in depth for direct service callers and for any incompatibility
+  // introduced by ID remapping. This must happen before assets or DB rows are
+  // materialized so an unsupported archive fails atomically.
+  assertIboardBoardSnapshotsSupported(plan.boards)
+  const normalizedBoards = plan.boards.map((board) => ({
+    ...board,
+    // 中文注释：导入边界先做一次 runtime 规范化，避免首次打开画板时再发生脏写。
+    tldrawSnapshot: normalizeIboardBoardSnapshot(board.tldrawSnapshot),
+  }))
   injectFault('asset-materialize', request.faultAt)
 
   const timestamp = (request.now ?? (() => new Date().toISOString()))()
@@ -75,7 +88,7 @@ export async function commitIboardMerge(
         materialized.push(put)
       }
 
-      for (const [index, board] of plan.boards.entries()) {
+      for (const [index, board] of normalizedBoards.entries()) {
         boards.create({
           ...board,
           createdAt: timestamp,

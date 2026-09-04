@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@tldraw/editor@5.2.5': 0720571f7e070394ca27b3d47a9afb47f1b8fad32c05a1b354407cb077f8ac1d
+  '@tldraw/editor@5.2.5': 61af072b9e32cfb2911863b7490fc0576ffe9d0699fb6ed800f2206bfde56c5e
   tldraw@5.2.5: 95ce7967f758887b1fcc6bf04cdb48325c578b2aed4f77932c5f68685e7eda74
 
 importers:
@@ -204,6 +204,9 @@ importers:
 
   packages/interop:
     dependencies:
+      '@embedpdf/fonts-sc':
+        specifier: 1.0.0
+        version: 1.0.0
       '@infinite-board/board-core':
         specifier: workspace:*
         version: link:../board-core
@@ -339,6 +342,9 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@embedpdf/fonts-sc@1.0.0':
+    resolution: {integrity: sha512-ETXl7XCwaQLSSvMO3EUDwMNqtL64kX2LlFxarTRi/NsIGGOIxUurGfKtrkmtnKHrWy1jAJSt6oxK2uJhvdvQIw==}
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -3302,6 +3308,8 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
+  '@embedpdf/fonts-sc@1.0.0': {}
+
   '@emnapi/core@1.11.1':
     dependencies:
       '@emnapi/wasi-threads': 1.2.2
@@ -4589,7 +4597,7 @@ snapshots:
 
   '@tldraw/driver@5.2.5(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)':
     dependencies:
-      '@tldraw/editor': 5.2.5(patch_hash=0720571f7e070394ca27b3d47a9afb47f1b8fad32c05a1b354407cb077f8ac1d)(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      '@tldraw/editor': 5.2.5(patch_hash=61af072b9e32cfb2911863b7490fc0576ffe9d0699fb6ed800f2206bfde56c5e)(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
       '@tldraw/utils': 5.2.5
     transitivePeerDependencies:
       - '@floating-ui/dom'
@@ -4598,7 +4606,7 @@ snapshots:
       - react
       - react-dom
 
-  '@tldraw/editor@5.2.5(patch_hash=0720571f7e070394ca27b3d47a9afb47f1b8fad32c05a1b354407cb077f8ac1d)(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)':
+  '@tldraw/editor@5.2.5(patch_hash=61af072b9e32cfb2911863b7490fc0576ffe9d0699fb6ed800f2206bfde56c5e)(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)':
     dependencies:
       '@tiptap/core': 3.28.0(@tiptap/pm@3.28.0)
       '@tiptap/pm': 3.28.0
@@ -5995,7 +6003,7 @@ snapshots:
       '@tiptap/react': 3.28.0(@floating-ui/dom@1.8.0)(@tiptap/core@3.28.0(@tiptap/pm@3.28.0))(@tiptap/pm@3.28.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
       '@tiptap/starter-kit': 3.28.0
       '@tldraw/driver': 5.2.5(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
-      '@tldraw/editor': 5.2.5(patch_hash=0720571f7e070394ca27b3d47a9afb47f1b8fad32c05a1b354407cb077f8ac1d)(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      '@tldraw/editor': 5.2.5(patch_hash=61af072b9e32cfb2911863b7490fc0576ffe9d0699fb6ed800f2206bfde56c5e)(@floating-ui/dom@1.8.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
       '@tldraw/store': 5.2.5(react@19.2.1)
       classnames: 2.5.1
       idb: 7.1.1

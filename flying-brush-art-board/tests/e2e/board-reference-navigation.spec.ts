@@ -86,6 +86,9 @@ async function setView(
 }
 
 async function currentView(page: Page) {
+  await page.waitForFunction(
+    () => Boolean((window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__),
+  )
   return page.evaluate(() => {
     const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__: any }).__INFINITE_BOARD_EDITOR__
     return {

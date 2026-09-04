@@ -148,6 +148,79 @@ describe('BoardSession', () => {
     expect(api.loadBoard).toHaveBeenCalledTimes(1)
   })
 
+  it('refreshes the revision of a clean realtime editor before a structural command', async () => {
+    const snapshot = { store: { 'shape:one': { id: 'shape:one', typeName: 'shape' } } }
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn()
+        .mockResolvedValueOnce({ snapshot, revision: 2 })
+        .mockResolvedValueOnce({ snapshot, revision: 9 }),
+      saveSnapshot: vi.fn(),
+    }
+    const editor = new FakeEditor(snapshot)
+    const session = new BoardSession({ api, mode: 'realtime' })
+    await session.mount('tab-a', 'board-a', editor)
+
+    await expect(session.syncBeforeStructuralCommand()).resolves.toEqual({
+      ok: true,
+      snapshot,
+      revision: 9,
+    })
+
+    expect(api.loadBoard).toHaveBeenCalledTimes(2)
+    expect(session.currentRevision).toBe(9)
+    expect(session.status).toBe('clean')
+    expect(api.saveSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('reuses one local command receipt revision before realtime projection catches up', async () => {
+    const initial = { store: { 'shape:one': { id: 'shape:one', typeName: 'shape' } } }
+    const receipt = {
+      store: {
+        'shape:one': { id: 'shape:one', typeName: 'shape' },
+        'shape:two': { id: 'shape:two', typeName: 'shape' },
+      },
+    }
+    const api: BoardSessionApi = {
+      loadBoard: vi.fn(async () => ({ snapshot: initial, revision: 2 })),
+      saveSnapshot: vi.fn(),
+    }
+    const editor = new FakeEditor(initial)
+    const session = new BoardSession({ api, mode: 'realtime' })
+    await session.mount('tab-a', 'board-a', editor)
+    session.observeServerCommit(receipt, 9, 'full', 'local-command')
+
+    await expect(session.syncBeforeStructuralCommand()).resolves.toEqual({
+      ok: true,
+      snapshot: receipt,
+      revision: 9,
+    })
+
+    expect(api.loadBoard).toHaveBeenCalledTimes(1)
+    expect(editor.getSnapshot()).toEqual(initial)
+    expect(session.currentRevision).toBe(9)
+    expect(session.status).toBe('clean')
+  })
+
+  it('uses the existing CAS flush before a structural command in snapshot mode', async () => {
+    const { api, saves } = createApi()
+    const editor = new FakeEditor({ shapes: [] })
+    const session = new BoardSession({ api })
+    await session.mount('tab-a', 'board-a', editor)
+    editor.edit({ shapes: [{ id: 'structural-source' }] })
+
+    await expect(session.syncBeforeStructuralCommand()).resolves.toMatchObject({
+      ok: true,
+      revision: 4,
+    })
+    expect(saves).toEqual([
+      {
+        boardId: 'board-a',
+        expectedRevision: 3,
+        snapshot: { shapes: [{ id: 'structural-source' }] },
+      },
+    ])
+  })
+
   it('blocks a structural command when the realtime projection never catches up', async () => {
     const initial = { store: { 'shape:one': { id: 'shape:one', typeName: 'shape', x: 10 } } }
     const latest = { store: { 'shape:one': { id: 'shape:one', typeName: 'shape', x: 90 } } }

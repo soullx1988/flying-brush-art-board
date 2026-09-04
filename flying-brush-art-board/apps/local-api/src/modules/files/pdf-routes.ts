@@ -12,6 +12,11 @@ import { AssetRepository } from '../assets/asset-repository.js'
 import { BoardReferenceRepository } from '../board-references/board-reference-repository.js'
 import { BoardRepository } from '../boards/board-repository.js'
 import { ProjectRepository } from '../projects/project-repository.js'
+import {
+  tradingWorkbenchSnapshot,
+  type TradingSource,
+} from '../trading/trading-source.js'
+import { canAccessBoard, canAccessProject, projectPrivacyProjection, projectWithProjectedRoot } from '../../privacy/board-access-policy.js'
 
 const identifierParams = z.object({ boardId: z.string().trim().min(1) }).strict()
 const projectParams = z.object({ projectId: z.string().trim().min(1) }).strict()
@@ -69,6 +74,7 @@ export function registerPdfRoutes(
   boards: BoardRepository,
   references: BoardReferenceRepository,
   assets: AssetRepository,
+  tradingSource?: Pick<TradingSource, 'getSnapshot'>,
 ): void {
   app.post('/api/boards/:boardId/export.pdf', async (request, reply) => {
     const params = identifierParams.safeParse(request.params)
@@ -77,11 +83,26 @@ export function registerPdfRoutes(
     if (!board) return reply.code(404).send({ code: 'BOARD_NOT_FOUND' })
     const project = projects.get(board.projectId)
     if (!project) return reply.code(404).send({ code: 'PROJECT_NOT_FOUND' })
+    if (!canAccessBoard(board, project, request.user?.openId, projects.isMember(project.id, request.user?.openId))) {
+      return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+    }
     try {
+      const projection = projectPrivacyProjection(
+        boards.listByProject(project.id),
+        references.listByProject(project.id),
+        'export',
+        request.user?.openId,
+      )
+      const projectedBoard = projection.boards.find((candidate) => candidate.id === board.id)
+      if (!projectedBoard) return reply.code(403).send({ code: 'BOARD_ACCESS_DENIED' })
+      const frozenTradingSnapshot = tradingSource
+        ? tradingWorkbenchSnapshot(await tradingSource.getSnapshot())
+        : undefined
       const input: ProjectPdfInput = {
         project: { ...project, rootBoardId: board.id },
-        boards: [board],
+        boards: [projectedBoard],
         references: [],
+        ...(frozenTradingSnapshot ? { tradingSnapshot: frozenTradingSnapshot } : {}),
       }
       input.assets = assetSources(input, assets)
       const bytes = await renderProjectToPdf(input)
@@ -97,11 +118,23 @@ export function registerPdfRoutes(
     if (!params.success) return reply.code(400).send({ code: 'VALIDATION_ERROR', issues: params.error.issues })
     const project = projects.get(params.data.projectId)
     if (!project) return reply.code(404).send({ code: 'PROJECT_NOT_FOUND' })
+    if (!canAccessProject(project, request.user?.openId, projects.isMember(project.id, request.user?.openId))) {
+      return reply.code(403).send({ code: 'PROJECT_ACCESS_DENIED' })
+    }
     try {
+      const projection = projectPrivacyProjection(
+        boards.listByProject(project.id),
+        references.listByProject(project.id),
+        'export',
+      )
+      const frozenTradingSnapshot = tradingSource
+        ? tradingWorkbenchSnapshot(await tradingSource.getSnapshot())
+        : undefined
       const input: ProjectPdfInput = {
-        project,
-        boards: boards.listByProject(project.id),
-        references: references.listByProject(project.id),
+        project: projectWithProjectedRoot(project, projection.boards),
+        boards: projection.boards,
+        references: projection.references,
+        ...(frozenTradingSnapshot ? { tradingSnapshot: frozenTradingSnapshot } : {}),
       }
       input.assets = assetSources(input, assets)
       const bytes = await renderProjectToPdf(input)

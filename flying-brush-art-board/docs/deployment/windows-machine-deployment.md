@@ -8,10 +8,10 @@
 
 项目有两种运行方式：
 
-- **内网验收模式**：安装简单，使用固定本地用户，不需要飞书和 PostgreSQL。只适合可信内网或单机验收。
-- **正式协作模式**：使用局域网 HTTP、飞书 OAuth、用户白名单、实时协作和审计。适合可信内网部署。
+- **本机验收模式**：安装简单，使用固定本地用户，不需要飞书，只允许从服务器本机的回环地址访问。
+- **正式协作模式**：使用 Caddy 提供的局域网 HTTPS/WSS 同源入口、飞书 OAuth、用户 `open_id` 白名单、实时协作和审计。
 
-不要把内网验收模式直接暴露到公网。
+需要从其他电脑访问时必须使用正式协作模式。不要把本机验收模式修改为监听局域网，更不要把任一模式直接暴露到公网。
 
 ## 2. 系统要求
 
@@ -21,7 +21,7 @@
 - pnpm `11.9.0`。
 - 至少 4 GB 可用内存。
 - 建议为应用数据预留独立目录，例如 `D:\InfiniteBoardData`。
-- 正式协作模式额外需要 Caddy、可用域名、PostgreSQL 用户表和飞书应用。
+- 正式协作模式额外需要 Caddy、稳定的内部 DNS 名称、受客户端信任的 TLS 证书和飞书应用。登录用户由本地 SQLite 记录，无需 PostgreSQL。
 
 安装 Node.js 后，以管理员身份打开 PowerShell：
 
@@ -43,7 +43,7 @@ pnpm install --frozen-lockfile
 
 必须使用 `--frozen-lockfile`，这样 tldraw 的项目补丁也会自动应用。
 
-## 4. 内网验收模式
+## 4. 本机验收模式
 
 ### 4.1 配置环境
 
@@ -79,17 +79,8 @@ pnpm dev
 
 - Web：`http://127.0.0.1:4173`
 - API 健康检查：`http://127.0.0.1:8787/health`
-- 局域网访问：`http://服务器IP:4173`
 
-Web 服务监听局域网地址，API 只监听回环地址，并由 Vite 代理 `/api`、`/auth` 和 `/realtime`。
-
-如果其他电脑无法访问，使用管理员 PowerShell 开放 Web 端口：
-
-```powershell
-New-NetFirewallRule -DisplayName 'Infinite Board Web 4173' -Direction Inbound -Protocol TCP -LocalPort 4173 -Action Allow
-```
-
-不要对局域网开放 8787 端口。
+Web 和 API 都只监听回环地址，此模式不需要添加 Windows 防火墙入站规则。如果需要局域网访问，请按第 5 节启用正式协作模式，不要通过改监听地址或开放 HTTP 端口绕过安全校验。任何模式都不得对局域网开放 8787 端口。
 
 ## 5. 正式协作模式
 
@@ -98,13 +89,16 @@ New-NetFirewallRule -DisplayName 'Infinite Board Web 4173' -Direction Inbound -P
 1. 为服务器配置稳定的内部域名，例如 `board.example.internal`。
 2. 将域名解析到服务器地址。
 3. 在飞书开放平台创建应用。
-4. 将 OAuth 回调地址设置为：
+4. 在同一个飞书应用中逐一登记以下两个 OAuth 回调地址：
 
 ```text
-http://192.168.65.48:4173/auth/feishu/callback
+https://board.example.internal:4173/auth/feishu/callback
+https://board.example.internal:4173/auth/feishu/import/callback
 ```
 
 5. 配置应用所需的白板、文档、媒体读取权限。
+
+两个回调地址的协议、主机名和端口必须与用户实际打开的 HTTPS 地址逐字一致。Caddy 使用内部 CA 时，还必须让所有使用该站点的桌面电脑信任其根证书。
 
 ### 5.2 登录用户记录
 
@@ -118,23 +112,31 @@ http://192.168.65.48:4173/auth/feishu/callback
 NODE_ENV=production
 PORT=8787
 
-FEISHU_REAL_SMOKE=1
+LAN_EXPOSURE_ENABLED=true
 FEISHU_AUTH_ENABLED=true
-FEISHU_WHITELIST_ENABLED=false
+FEISHU_WHITELIST_ENABLED=true
+FEISHU_ALLOWED_OPEN_IDS=ou_owner,ou_reviewer
 FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=替换为真实密钥
 
 SESSION_SECRET=至少32字节的随机字符串
+
+LAN_HTTPS_PFX=D:\InfiniteBoardSecrets\board.pfx
+LAN_HTTPS_PFX_PASSPHRASE=替换为PFX密码
+LAN_ALLOWED_HOSTS=board.example.internal
+LAN_ALLOWED_ORIGINS=https://board.example.internal:4173
 
 INFINITE_BOARD_DATA_DIR=D:\InfiniteBoardData
 
 AUDIT_RETENTION_DAYS=80
 
 MCP_ENABLED=false
-MCP_PUBLIC_URL=http://192.168.65.48:4173
-MCP_ALLOWED_HOSTS=192.168.65.48
-MCP_ALLOWED_ORIGINS=http://192.168.65.48:4173
+MCP_PUBLIC_URL=https://board.example.internal:4173
+MCP_ALLOWED_HOSTS=board.example.internal
+MCP_ALLOWED_ORIGINS=https://board.example.internal:4173
 ```
+
+`FEISHU_ALLOWED_OPEN_IDS` 必须列出实际获准登录的飞书用户，禁止关闭白名单。`LAN_ALLOWED_HOSTS` 只填写精确主机名或 IP，`LAN_ALLOWED_ORIGINS` 只填写对应的精确 HTTPS Origin；两者均禁止使用 `*`。飞书登录与飞书导入回调都会从这个受信 Origin 动态生成。
 
 生成会话密钥示例：
 
@@ -188,7 +190,7 @@ Invoke-RestMethod http://127.0.0.1:8787/health
 下载 Caddy，将 `deploy\Caddyfile.example` 复制为服务器使用的 `Caddyfile`。启动前设置：
 
 ```powershell
-$env:APP_DOMAIN = 'board.example.internal'
+$env:APP_DOMAIN = 'board.example.internal:4173'
 $env:WEB_ROOT = 'D:\apps\flying-brush-art-board\apps\web\dist'
 caddy run --config .\Caddyfile
 ```
@@ -201,18 +203,18 @@ Caddy 会：
 - 为 `/mcp` 关闭响应缓冲，支持 Streamable HTTP。
 - 为前端路由回退到 `index.html`。
 
-防火墙开放实际 Web HTTP 端口，例如 TCP 4173 或 80；不要开放 8787。
+防火墙只开放 Caddy 实际使用的 HTTPS 端口，例如 TCP 4173 或 443；不要开放 HTTP 端口或 8787。正式服务启动后，浏览器访问地址应始终以 `https://` 开头，实时协作使用同源 WSS。
 
 ### 5.7 启用远程 MCP（可选）
 
-先保持 `MCP_ENABLED=false` 完成普通 Web 验收。启用 v2 前必须备份数据库；将其改为 `true`，并确认 `MCP_PUBLIC_URL`、`MCP_ALLOWED_HOSTS` 和 `MCP_ALLOWED_ORIGINS` 都使用同一个实际 HTTP Origin，然后重启 API。
+先保持 `MCP_ENABLED=false` 完成普通 Web 验收。启用 v2 前必须备份数据库；将其改为 `true`，并确认 `MCP_PUBLIC_URL`、`MCP_ALLOWED_HOSTS` 和 `MCP_ALLOWED_ORIGINS` 都使用同一个实际 HTTPS Origin，然后重启 API。
 
 用户登录 Web 后，在“项目 → 集成 → MCP v2 接入”下载 Windows 配置脚本。脚本使用当前网页 Origin 加 `/mcp`，不携带凭证；客户端首次连接时通过飞书 OAuth 授权。
 
 管理员可在已登录浏览器中访问 `/api/mcp/health` 查看聚合指标。可用仓库内独立 SDK 探针验收：
 
 ```powershell
-$env:MCP_SERVER_URL = 'http://192.168.65.48:4173/mcp'
+$env:MCP_SERVER_URL = 'https://board.example.internal:4173/mcp'
 $env:MCP_OAUTH_ACCESS_TOKEN = '<仅用于验收的短期 OAuth Access Token>'
 pnpm smoke:mcp
 Remove-Item Env:MCP_OAUTH_ACCESS_TOKEN
@@ -223,7 +225,7 @@ Remove-Item Env:MCP_OAUTH_ACCESS_TOKEN
 ### 5.8 验收
 
 ```powershell
-Invoke-RestMethod http://192.168.65.48:4173/health
+Invoke-RestMethod https://board.example.internal:4173/health
 ```
 
 然后在桌面浏览器中检查：
@@ -303,14 +305,14 @@ pnpm build
 
 - 确认服务器已设置 `MCP_ENABLED=true` 并重启。
 - 确认客户端 URL 为 `https://实际域名/mcp`，不是 `127.0.0.1:8787`。
-- 检查 Vite 或 Caddy 是否代理 `/mcp`，Windows 防火墙已开放实际 Web HTTP 端口且未开放 8787。
+- 检查 Caddy 是否代理 `/mcp`，Windows 防火墙已开放实际 HTTPS 端口且未开放 8787。
 - `401` 时在客户端重新 Authenticate，并确认授权没有被暂停或断开、用户仍在飞书白名单。
 - `MCP_HOST_REJECTED` 或 `MCP_ORIGIN_REJECTED` 时检查允许列表，不要配置通配符。
 
 ### 飞书回调失败
 
-- 登录回调地址根据用户打开网页时的协议和 Host 动态生成，路径固定为 `/auth/feishu/callback`。
-- 飞书开发者后台仍需登记所有实际使用的网页来源对应回调地址。
+- 登录与导入回调地址根据用户打开网页时的协议和 Host 动态生成，路径分别固定为 `/auth/feishu/callback` 和 `/auth/feishu/import/callback`。
+- 飞书开发者后台仍需为所有实际使用的 HTTPS Origin 登记这两个回调地址。
 - 飞书后台登记的回调地址必须逐字一致。
 
 ### 图片或数据丢失

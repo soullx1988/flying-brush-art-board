@@ -12,6 +12,7 @@ import {
 import {
   BoardReferenceConsistencyError,
   assertBoardReferenceSnapshotConsistent,
+  getBoardReferenceShape,
   insertBoardReferenceShape,
   removeBoardReferenceShape,
   updateBoardReferenceShape,
@@ -237,6 +238,7 @@ export class BoardReferenceService implements BoardReferenceServicePort {
   async update(command: UpdateBoardReferenceCommand): Promise<BoardReferenceMutationResult> {
     const current = this.requireReference(command.referenceId)
     const source = this.requireBoard(current.sourceBoardId)
+    this.assertReferenceMutable(source, current)
     const target = this.requireBoard(command.targetBoardId ?? current.targetBoardId)
     const reference: BoardReferenceRecord = {
       ...current,
@@ -288,6 +290,7 @@ export class BoardReferenceService implements BoardReferenceServicePort {
   async remove(command: RemoveBoardReferenceCommand): Promise<BoardReferenceMutationResult> {
     const reference = this.requireReference(command.referenceId)
     const source = this.requireBoard(reference.sourceBoardId)
+    this.assertReferenceMutable(source, reference)
     this.assertValidPlan(planRemoveBoardReference({
       references: this.references.listByProject(reference.projectId),
       referenceId: reference.id,
@@ -339,6 +342,17 @@ export class BoardReferenceService implements BoardReferenceServicePort {
       throw new BoardReferenceCommandError('BOARD_REFERENCE_NOT_FOUND', { referenceId })
     }
     return reference
+  }
+
+  private assertReferenceMutable(source: StoredBoard, reference: BoardReferenceRecord): void {
+    const shape = getBoardReferenceShape(source.tldrawSnapshot, reference.shapeId)
+    const meta = shape?.meta as { protectedCore?: unknown } | undefined
+    if (meta?.protectedCore === true) {
+      throw new BoardReferenceCommandError('PROTECTED_CORE_MUTATION_FORBIDDEN', {
+        referenceId: reference.id,
+        shapeId: reference.shapeId,
+      })
+    }
   }
 
   private assertValidPlan(plan: ReturnType<typeof planCreateBoardReference>): void {

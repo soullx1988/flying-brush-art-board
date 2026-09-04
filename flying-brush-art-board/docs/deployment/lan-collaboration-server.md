@@ -1,11 +1,32 @@
 # 局域网协作服务器部署
 
-Fastify 仅监听 `127.0.0.1:8787` 或 `::1:8787`。局域网用户通过 Vite 或 Caddy 提供的同源 HTTP 和 WebSocket 入口访问；防火墙开放实际 Web 端口，绝不开放 8787。
+Fastify 仅监听 `127.0.0.1:8787` 或 `::1:8787`。局域网用户只能通过 Vite 或 Caddy 提供的同源 HTTPS 和 WSS 入口访问；防火墙开放实际 HTTPS 端口，绝不开放 8787。
 
 1. 为服务器分配稳定的内部 DNS 名称，例如 `board.example.internal`，并设置 `APP_DOMAIN`。
-2. 在飞书开发者后台为同一 App ID 登记 `http://<局域网地址>:<端口>/auth/feishu/callback`。
-3. 按 `.env.example` 创建仅本机可读的 `.env`；`SESSION_SECRET` 至少 32 字节。登录用户信息由项目 SQLite 自动记录，无需外部用户数据库。
+2. 在飞书开发者后台为同一 App ID 分别登记 `https://<局域网域名或 IP>:<端口>/auth/feishu/callback` 和 `https://<局域网域名或 IP>:<端口>/auth/feishu/import/callback`。
+3. 按 `.env.example` 创建仅本机可读的 `.env.local`；`SESSION_SECRET` 至少 32 字节。必须显式开启飞书认证和用户白名单，白名单使用飞书 `open_id`，陌生身份在落库和签发会话前即被拒绝。
 4. 用 Caddy 启动 [Caddyfile.example](../../deploy/Caddyfile.example)，再以 Windows 服务方式启动 `pnpm dev:api` 的生产等价命令。
+
+## Vite HTTPS LAN 入口
+
+Vite LAN 入口只用于受控的内网验收。在根目录 `.env.local` 至少配置：
+
+```dotenv
+LAN_EXPOSURE_ENABLED=true
+FEISHU_AUTH_ENABLED=true
+FEISHU_WHITELIST_ENABLED=true
+FEISHU_ALLOWED_OPEN_IDS=ou_owner,ou_reviewer
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=替换为真实密钥
+SESSION_SECRET=至少32字节的随机字符串
+
+LAN_HTTPS_PFX=D:\InfiniteBoardSecrets\board.pfx
+LAN_HTTPS_PFX_PASSPHRASE=替换为PFX密码
+LAN_ALLOWED_HOSTS=board.example.internal,192.168.65.48
+LAN_ALLOWED_ORIGINS=https://board.example.internal:4173,https://192.168.65.48:4173
+```
+
+分别启动 `pnpm dev:api` 和 `pnpm dev:lan:web`。LAN 配置在启动前验证显式暴露开关、证书、真实 OAuth/会话配置、用户 `open_id` 白名单、精确 Host 与 HTTPS Origin 白名单；任一缺失、通配符、HTTP Origin 或空 PFX 都会拒绝启动，不会降级为 HTTP。Fastify 还会再次校验反向代理传入的 `X-Forwarded-Host` / `X-Forwarded-Proto`；即使 Vite 或 Caddy 被误配为转发请求，未开启 LAN 模式、非 HTTPS 或白名单外入口仍会被 API 拒绝。普通 `pnpm dev` 和 `scripts\start-local.ps1` 仍只监听回环地址，不受此 LAN 配置影响。
 
 ## 远程 MCP
 
@@ -13,19 +34,19 @@ MCP 默认关闭。启用 v2 时至少设置：
 
 ```dotenv
 MCP_ENABLED=true
-MCP_PUBLIC_URL=http://192.168.65.48:4173
-MCP_ALLOWED_HOSTS=192.168.65.48
-MCP_ALLOWED_ORIGINS=http://192.168.65.48:4173
+MCP_PUBLIC_URL=https://board.example.internal:4173
+MCP_ALLOWED_HOSTS=board.example.internal
+MCP_ALLOWED_ORIGINS=https://board.example.internal:4173
 ```
 
 `MCP_ALLOWED_HOSTS` 是逗号分隔的外部 Host 白名单；Caddy 会把原始 Host 通过 `X-Forwarded-Host` 传给 Fastify。`Origin` 允许缺省（多数桌面 MCP 客户端不会发送），一旦客户端发送 Origin，则必须命中 `MCP_ALLOWED_ORIGINS`。不要配置 `*`。
 
-Caddy 在配置的 HTTP 端口提供 `/mcp`、`/oauth/*` 和 `/.well-known/*`，并为 `/mcp` 关闭响应缓冲。Fastify 仍只监听回环地址，Windows 防火墙不得开放 8787。用户从“项目 → 集成 → MCP v2 接入”下载同源 ZIP 配置包，客户端首次连接时完成飞书 OAuth 授权，不创建个人令牌。
+Caddy 在配置的 HTTPS 入口提供 `/mcp`、`/oauth/*` 和 `/.well-known/*`，并为 `/mcp` 关闭响应缓冲。Fastify 仍只监听回环地址，Windows 防火墙不得开放 8787。用户从“项目 → 集成 → MCP v2 接入”下载同源 ZIP 配置包，客户端首次连接时完成飞书 OAuth 授权，不创建个人令牌。
 
 部署后可用独立官方 SDK 客户端探针验证：
 
 ```powershell
-$env:MCP_SERVER_URL = 'http://192.168.65.48:4173/mcp'
+$env:MCP_SERVER_URL = 'https://board.example.internal:4173/mcp'
 $env:MCP_OAUTH_ACCESS_TOKEN = '<仅当前 PowerShell 会话使用的短期 OAuth Access Token>'
 pnpm smoke:mcp
 Remove-Item Env:MCP_OAUTH_ACCESS_TOKEN

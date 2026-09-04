@@ -53,11 +53,12 @@ export class ProjectApplicationService {
     const boardId = `board-${randomUUID()}`
     const project: ProjectRecord = {
       id: projectId, title: input.title.trim(), rootBoardId: boardId, formatVersion: 1,
+      ownerOpenId: context.actorOpenId,
       createdAt: timestamp, updatedAt: timestamp,
     }
     const rootBoard: StoredBoard = {
       id: boardId, projectId, title: input.rootBoardTitle?.trim() || '概览',
-      tldrawSnapshot: { store: {} }, revision: 0, createdAt: timestamp, updatedAt: timestamp,
+      tldrawSnapshot: { store: {} }, accessLevel: 'project', revision: 0, createdAt: timestamp, updatedAt: timestamp,
     }
     if (!project.title) throw Object.assign(new Error('VALIDATION_ERROR'), { code: 'VALIDATION_ERROR' })
     this.database.transaction(() => {
@@ -86,19 +87,35 @@ export class ProjectApplicationService {
   deletePreview(projectId: string): Record<string, unknown> {
     const project = this.projects.get(projectId)
     if (!project) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
+    const marker = this.database.prepare(`SELECT template_key, template_version
+      FROM workspace_bootstrap_markers WHERE project_id = ? ORDER BY template_key LIMIT 1`)
+      .get(projectId) as { template_key: string; template_version: number } | undefined
     const counts = this.database.prepare(`SELECT
       (SELECT COUNT(*) FROM boards WHERE project_id=@id) AS board_count,
       (SELECT COUNT(*) FROM board_references WHERE project_id=@id) AS reference_count,
       (SELECT COUNT(*) FROM comment_threads WHERE project_id=@id) AS comment_count,
       (SELECT COUNT(*) FROM asset_usages WHERE project_id=@id) AS asset_usage_count`).get({ id: projectId }) as Record<string, number>
-    return { project: { id: project.id, title: project.title }, ...counts }
+    return {
+      project: { id: project.id, title: project.title },
+      ...(marker ? {
+        managedWorkspace: {
+          protected: true,
+          templateKey: marker.template_key,
+          templateVersion: marker.template_version,
+          consequence: '删除后会在下次进入时创建一套全新的个人交易工作台',
+        },
+      } : {}),
+      ...counts,
+    }
   }
 
   async remove(projectId: string, context: McpCommandContext): Promise<void> {
     const project = this.projects.get(projectId)
     if (!project) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
     const boardIds = this.boards.listByProject(projectId).map((board) => board.id)
-    const remove = () => this.projects.remove(projectId)
+    // This application path is invoked only after the MCP one-time destructive
+    // confirmation token has been consumed. Ordinary HTTP deletion remains blocked.
+    const remove = () => this.projects.remove(projectId, { confirmedProtectedWorkspaceDelete: true })
     const removed = this.deletions ? await this.deletions.deleteProject(boardIds, remove) : remove()
     if (!removed) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { code: 'PROJECT_NOT_FOUND' })
     this.publish('project.deleted', context, projectId, undefined, `已删除项目“${project.title}”`)

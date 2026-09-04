@@ -6,5 +6,11 @@ test('starts the web page and local API together', async ({ page, request }) => 
 
   const health = await request.get('http://localhost:8787/health')
   expect(health.ok()).toBe(true)
-  expect(await health.json()).toEqual({ status: 'ok', database: 'ok', userDirectory: 'ok', realtime: 'ok' })
+  expect(await health.json()).toEqual({
+    status: 'ok',
+    database: 'ok',
+    userDirectory: 'ok',
+    realtime: 'ok',
+    tradingBridge: 'disabled',
+  })
 })

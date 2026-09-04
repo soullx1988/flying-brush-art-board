@@ -26,6 +26,7 @@ export interface UseWorkspaceTabsResult {
   leaveWorkspace(): Promise<void>
   reorderTab(sourceTabId: string, targetTabId: string): void
   acquireEditingLease(tabId: string): EditableInputResult
+  syncBeforeStructuralCommand(tabId: string): Promise<BoardSessionFlushResult>
   adoptCommandCommit(tabId: string, snapshot: unknown, revision: number): void
   retryTabSave(tabId: string): Promise<BoardSessionFlushResult>
   reloadTabFromServer(tabId: string): Promise<void>
@@ -59,6 +60,7 @@ export function useWorkspaceTabs(workspace: WorkspaceTabs): UseWorkspaceTabsResu
     leaveWorkspace: () => workspace.leaveWorkspace(),
     reorderTab: (sourceTabId, targetTabId) => workspace.reorderTab(sourceTabId, targetTabId),
     acquireEditingLease: (tabId) => workspace.acquireEditingLease(tabId),
+    syncBeforeStructuralCommand: (tabId) => workspace.syncBeforeStructuralCommand(tabId),
     adoptCommandCommit: (tabId, snapshot, revision) =>
       workspace.adoptCommandCommit(tabId, snapshot, revision),
     retryTabSave: (tabId) => workspace.retryTabSave(tabId),
