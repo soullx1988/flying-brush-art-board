@@ -7,7 +7,7 @@ describe('CommentRepository', () => {
   it('creates anchored threads, replies, resolves, and deletes a whole thread with its messages', () => {
     const db = createDatabase(':memory:')
     try {
-      db.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
+      db.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
       const comments = new CommentRepository(db, () => new Date('2026-07-24T00:00:00.000Z'))
       const created = comments.createThread({ projectId: 'p', boardId: 'b', shapeId: 'shape:1', x: 10, y: 20, shapeOffsetX: 3, shapeOffsetY: 4, authorOpenId: 'ou_1', body: 'Review this' })
       expect(created.thread).toMatchObject({ status: 'open', shapeId: 'shape:1', x: 10, y: 20, shapeOffsetX: 3, shapeOffsetY: 4 })

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import {
   assertBoardReferenceGraphValid,
+  assertProjectNavigationValid,
   BoardReferenceGraphError,
   type BoardReferenceRecord,
   type ProjectRecord,
@@ -315,6 +316,7 @@ function assertProjectValid(input: ExportProjectToIboardInput): void {
 }
 
 export function exportProjectToIboard(input: ExportProjectToIboardInput): Uint8Array {
+  if (input.project.navigation) assertProjectNavigationValid(input.project.navigation, input.boards.map((board) => board.id))
   assertProjectValid(input)
   const assets = validateAssets(input.assets)
   assertIboardAssetUsagesValid(assets, input.boards)
@@ -328,6 +330,7 @@ export function exportProjectToIboard(input: ExportProjectToIboardInput): Uint8A
     usages: [...asset.usages],
   }))
   const manifest: IboardManifestV1 = {
+    ...(input.project.navigation ? { navigation: input.project.navigation } : {}),
     format: IBOARD_FORMAT,
     formatVersion: IBOARD_FORMAT_VERSION,
     projectId: input.project.id,

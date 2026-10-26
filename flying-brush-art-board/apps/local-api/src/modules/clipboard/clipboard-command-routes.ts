@@ -73,6 +73,25 @@ class ClipboardAssetNotFoundError extends Error {
   readonly code = 'CLIPBOARD_ASSET_NOT_FOUND'
 }
 
+function resolveStoredClipboardAssets(payload: BoardClipboardPayload, assets: AssetRepository): {
+  payload: BoardClipboardPayload
+  assetBlobs: Array<{ sha256: string; mime: string; size: number; bytes: Uint8Array }>
+} {
+  const resolved = payload.assets.map((asset) => {
+    const stored = assets.get(asset.sha256)
+    const bytes = assets.readBytes(asset.sha256)
+    if (!stored || !bytes) throw new ClipboardAssetNotFoundError()
+    return {
+      asset: { ...asset, mime: stored.mime, size: stored.size },
+      blob: { sha256: stored.sha256, mime: stored.mime, size: stored.size, bytes },
+    }
+  })
+  return {
+    payload: { ...payload, assets: resolved.map(({ asset }) => asset) },
+    assetBlobs: resolved.map(({ blob }) => blob),
+  }
+}
+
 function placedPayload(
   payload: BoardClipboardPayload,
   placement: { x: number; y: number } | { viewportCenter: true },
@@ -165,16 +184,15 @@ export function registerClipboardCommandRoutes(
 
     try {
       const receipt = await runBoardMutation(input.data.board.id, async () => {
-        const payload = input.data.payload as unknown as BoardClipboardPayload
-        const assetBlobs = payload.assets.map((asset) => {
-          const bytes = assets.readBytes(asset.sha256)
-          if (!bytes) throw new ClipboardAssetNotFoundError()
-          return { sha256: asset.sha256, mime: asset.mime, size: asset.size, bytes }
-        })
+        const resolved = resolveStoredClipboardAssets(
+          input.data.payload as unknown as BoardClipboardPayload,
+          assets,
+        )
+        const payload = resolved.payload
         const patch = materializeClipboardPayload(payload, {
           createId: createRecordIdQueue(payload),
           targetSnapshot: input.data.board.tldrawSnapshot,
-          assetBlobs,
+          assetBlobs: resolved.assetBlobs,
         })
         const timestamp = new Date().toISOString()
         const result = commands.createBoardAndApplyMaterializedClipboardCommand({
@@ -220,22 +238,18 @@ export function registerClipboardCommandRoutes(
           payload.data as unknown as BoardClipboardPayload,
           input.data.placement,
         )
-        const assetBlobs = positionedPayload.assets.map((asset) => {
-          const bytes = assets.readBytes(asset.sha256)
-          if (!bytes) throw new ClipboardAssetNotFoundError()
-          return { sha256: asset.sha256, mime: asset.mime, size: asset.size, bytes }
-        })
-        const patch = materializeClipboardPayload(positionedPayload, {
-          createId: createRecordIdQueue(positionedPayload),
+        const resolved = resolveStoredClipboardAssets(positionedPayload, assets)
+        const patch = materializeClipboardPayload(resolved.payload, {
+          createId: createRecordIdQueue(resolved.payload),
           targetSnapshot: board.tldrawSnapshot,
-          assetBlobs,
+          assetBlobs: resolved.assetBlobs,
         })
         const result = commands.applyMaterializedClipboardCommand(
           board.id, input.data.expectedRevision, patch, input.data.sessionId,
           {
-            sourceProjectId: positionedPayload.sourceProjectId,
-            sourceBoardId: positionedPayload.sourceBoardId,
-            copiedAt: positionedPayload.copiedAt,
+            sourceProjectId: resolved.payload.sourceProjectId,
+            sourceBoardId: resolved.payload.sourceBoardId,
+            copiedAt: resolved.payload.copiedAt,
           },
         )
         await onSnapshotCommitted?.(result.boardId, result.snapshot)

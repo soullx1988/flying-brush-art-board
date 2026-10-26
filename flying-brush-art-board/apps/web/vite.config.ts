@@ -26,6 +26,9 @@ export default defineConfig({
     host: '0.0.0.0',
     port: developmentPort,
     strictPort: true,
+    headers: {
+      'Cache-Control': 'no-store',
+    },
     proxy: {
       '/api': forwardedHttpProxy(),
       '/auth': forwardedHttpProxy(),

@@ -103,6 +103,14 @@ export async function commitIboardMerge(
       }
 
       injectFault('database-commit', request.faultAt)
+      if (plan.navigation) {
+        const current = projects.get(request.targetProjectId)!.navigation
+        projects.saveNavigation(request.targetProjectId, {
+          version: 1, revision: current?.revision ?? 0,
+          topics: [...(current?.topics ?? []), ...plan.navigation.topics],
+          parents: { ...current?.parents, ...plan.navigation.parents },
+        })
+      }
       return {
         targetProjectId: request.targetProjectId,
         importedRootBoardId: plan.importedRootBoardId,

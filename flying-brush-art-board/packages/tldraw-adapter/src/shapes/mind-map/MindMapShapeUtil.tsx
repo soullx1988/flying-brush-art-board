@@ -81,6 +81,7 @@ import {
 } from './schema.js'
 
 const MIND_MAP_DROP_TARGET_SLOP = 24
+const MIND_MAP_SHAPE_DRAG_DISTANCE = 5
 
 function sameMindMapDropCandidate(
   left: MindMapDropCandidate | undefined,
@@ -435,6 +436,7 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
     nodeId: string
     candidate?: MindMapDropCandidate
   }>()
+  const [shapeDragActive, setShapeDragActive] = useState(false)
   const [canPasteStyle, setCanPasteStyle] = useState(() => Boolean(getMindMapStyleClipboard(editor)))
   const [toolbarPlacement, setToolbarPlacement] = useState<'top' | 'left'>('top')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -454,6 +456,15 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
     candidate: MindMapDropCandidate | undefined
     draggedBranchIds: Set<string>
     targetRects: Map<string, { left: number; right: number; top: number; bottom: number; width: number; height: number }>
+  } | undefined>(undefined)
+  const shapeDragSessionRef = useRef<{
+    pointerId: number
+    startClientX: number
+    startClientY: number
+    origin: { x: number; y: number }
+    initial: { x: number; y: number }
+    active: boolean
+    markId?: string
   } | undefined>(undefined)
   const layout = useMemo(() => layoutMindMap(shape.props), [shape.props])
   const positions = useMemo(() => new Map(layout.nodes.map((node) => [node.id, node])), [layout.nodes])
@@ -497,11 +508,20 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
       setEditingNodeId(undefined)
       setDragState(undefined)
       dragSessionRef.current = undefined
+      const shapeDragSession = shapeDragSessionRef.current
+      if (shapeDragSession?.active && shapeDragSession.markId) editor.bailToMark(shapeDragSession.markId)
+      shapeDragSessionRef.current = undefined
+      setShapeDragActive(false)
       clearCanvasShapeInteractionTarget(editor, shape.id)
     }
   }, [editor, isSelected, root?.id, shape.id])
 
-  useEffect(() => () => clearCanvasShapeInteractionTarget(editor, shape.id), [editor, shape.id])
+  useEffect(() => () => {
+    const shapeDragSession = shapeDragSessionRef.current
+    if (shapeDragSession?.active && shapeDragSession.markId) editor.bailToMark(shapeDragSession.markId)
+    shapeDragSessionRef.current = undefined
+    clearCanvasShapeInteractionTarget(editor, shape.id)
+  }, [editor, shape.id])
 
   useEffect(() => () => {
     const view = editor.getContainer().ownerDocument.defaultView
@@ -838,8 +858,24 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
   const handleNodePointerDown = (event: ReactPointerEvent<HTMLButtonElement>, node: MindMapNode) => {
     event.stopPropagation()
     activate(node.id)
-    if (event.button !== 0 || isReadonly || !node.parentId || editingNodeId === node.id) return
+    if (event.button !== 0 || isReadonly || editingNodeId === node.id) return
     event.currentTarget.setPointerCapture(event.pointerId)
+    if (!node.parentId) {
+      const current = editor.getShape(shape.id) as MindMapShape | undefined
+      if (!current) return
+      shapeDragSessionRef.current = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        origin: editor.getPointInParentSpace(
+          current,
+          editor.screenToPage({ x: event.clientX, y: event.clientY }),
+        ),
+        initial: { x: current.x, y: current.y },
+        active: false,
+      }
+      return
+    }
     const branch = copyMindMapBranch(shape.props, node.id)
     dragSessionRef.current = {
       nodeId: node.id,
@@ -856,6 +892,34 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
   }
 
   const handleNodePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const shapeDragSession = shapeDragSessionRef.current
+    if (shapeDragSession?.pointerId === event.pointerId) {
+      const distance = Math.hypot(
+        event.clientX - shapeDragSession.startClientX,
+        event.clientY - shapeDragSession.startClientY,
+      )
+      if (!shapeDragSession.active && distance < MIND_MAP_SHAPE_DRAG_DISTANCE) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!shapeDragSession.active) {
+        shapeDragSession.active = true
+        shapeDragSession.markId = editor.markHistoryStoppingPoint(`move_mind_map:${shape.id}`)
+        setShapeDragActive(true)
+      }
+      const current = editor.getShape(shape.id) as MindMapShape | undefined
+      if (!current) return
+      const point = editor.getPointInParentSpace(
+        current,
+        editor.screenToPage({ x: event.clientX, y: event.clientY }),
+      )
+      editor.updateShape<MindMapShape>({
+        id: current.id,
+        type: current.type,
+        x: shapeDragSession.initial.x + point.x - shapeDragSession.origin.x,
+        y: shapeDragSession.initial.y + point.y - shapeDragSession.origin.y,
+      })
+      return
+    }
     const session = dragSessionRef.current
     if (!session || session.pointerId !== event.pointerId) return
     const distance = Math.hypot(event.clientX - session.startClientX, event.clientY - session.startClientY)
@@ -897,6 +961,17 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
   }
 
   const endNodePointerDrag = (event: ReactPointerEvent<HTMLButtonElement>, canceled = false) => {
+    const shapeDragSession = shapeDragSessionRef.current
+    if (shapeDragSession?.pointerId === event.pointerId) {
+      event.stopPropagation()
+      try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
+      shapeDragSessionRef.current = undefined
+      setShapeDragActive(false)
+      if (canceled && shapeDragSession.active && shapeDragSession.markId) {
+        editor.bailToMark(shapeDragSession.markId)
+      }
+      return
+    }
     const session = dragSessionRef.current
     if (!session || session.pointerId !== event.pointerId) return
     event.stopPropagation()
@@ -953,6 +1028,7 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
         className="canvas-mind-map-shape"
         data-theme={shape.props.theme ?? 'classic'}
         data-drag-active={dragState ? 'true' : 'false'}
+        data-shape-drag-active={shapeDragActive ? 'true' : 'false'}
         style={{ width: shape.props.w, height: shape.props.h }}
       >
         <svg className="canvas-mind-map-shape__edges" width={shape.props.w} height={shape.props.h} aria-hidden="true">
@@ -1021,6 +1097,7 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
                 data-active={active ? 'true' : 'false'}
                 data-color={node.color ?? (node.parentId === null ? 'blue' : 'gray')}
                 data-shape={node.shape ?? 'rounded'}
+                data-movable={node.parentId === null && !isReadonly ? 'true' : 'false'}
                 tabIndex={active ? 0 : -1}
                 style={nodeCssStyle(shape.props, node)}
                 onPointerDown={(event) => handleNodePointerDown(event, node)}
@@ -1055,7 +1132,7 @@ function MindMapShapeComponent({ shape }: { shape: MindMapShape }) {
             ) : null}
           </div>
         })}
-        {activeNode && activePosition && isSelected && !isReadonly && !dragState ? <MindMapNodeToolbar
+        {activeNode && activePosition && isSelected && !isReadonly && !dragState && !shapeDragActive ? <MindMapNodeToolbar
           shape={shape}
           node={activeNode}
           position={activePosition}

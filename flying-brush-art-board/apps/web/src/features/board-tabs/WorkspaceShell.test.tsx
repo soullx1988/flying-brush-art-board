@@ -66,8 +66,11 @@ vi.mock('../canvas/CanvasEditor', () => {
   const editor = {
     getCamera: vi.fn(() => ({ x: 0, y: 0, z: 1 })),
     getCurrentPageId: vi.fn(() => 'page:page'),
+    getCurrentPageBounds: vi.fn(() => undefined),
+    getViewportScreenBounds: vi.fn(() => ({ w: 1280, h: 800 })),
     getCurrentToolId: vi.fn(() => 'select'),
     getSelectedShapeIds: vi.fn(() => []),
+    getShape: vi.fn(() => undefined),
     getShapePageBounds: vi.fn((shapeId: string) => shapeId ? { center: { x: 320, y: 240 } } : undefined),
     centerOnPoint: vi.fn(),
     screenToPage: vi.fn(({ x, y }: { x: number; y: number }) => ({

@@ -7,7 +7,7 @@ describe('AuditRepository', () => {
   it('stores only supplied redacted summaries and filters by project', () => {
     const db = createDatabase(':memory:')
     try {
-      db.exec("INSERT INTO projects VALUES ('p1','P1','b1',1,'t','t'); INSERT INTO projects VALUES ('p2','P2','b2',1,'t','t'); INSERT INTO boards VALUES ('b1','p1','B1','{}',NULL,0,'t','t'); INSERT INTO boards VALUES ('b2','p2','B2','{}',NULL,0,'t','t')")
+      db.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p1','P1','b1',1,'t','t'); INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p2','P2','b2',1,'t','t'); INSERT INTO boards VALUES ('b1','p1','B1','{}',NULL,0,'t','t'); INSERT INTO boards VALUES ('b2','p2','B2','{}',NULL,0,'t','t')")
       const audits = new AuditRepository(db, () => new Date('2026-07-24T00:00:00.000Z'))
       audits.record({ actorOpenId: 'ou_1', projectId: 'p1', boardId: 'b1', action: 'board.edit', summary: { route: '/api/boards/:boardId', statusCode: 200 } })
       audits.record({ actorOpenId: 'ou_2', projectId: 'p2', action: 'project.create', summary: { route: '/api/projects', statusCode: 201 } })
@@ -18,7 +18,7 @@ describe('AuditRepository', () => {
   it('filters audit events and returns a stable opaque cursor page', () => {
     const db = createDatabase(':memory:')
     try {
-      db.exec("INSERT INTO projects VALUES ('p1','P1','b1',1,'t','t'); INSERT INTO boards VALUES ('b1','p1','B1','{}',NULL,0,'t','t')")
+      db.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p1','P1','b1',1,'t','t'); INSERT INTO boards VALUES ('b1','p1','B1','{}',NULL,0,'t','t')")
       let tick = 0
       const audits = new AuditRepository(db, () => new Date(`2026-07-24T00:00:0${++tick}.000Z`))
       audits.record({ actorOpenId: 'ou_1', projectId: 'p1', boardId: 'b1', action: 'board.edit', summary: {} })
@@ -67,7 +67,7 @@ describe('AuditRepository', () => {
   it('retains the logical Board id for events recorded after that Board was deleted', () => {
     const db = createDatabase(':memory:')
     try {
-      db.exec("INSERT INTO projects VALUES ('p','P','root',1,'t','t'); INSERT INTO boards VALUES ('root','p','Root','{}',NULL,0,'t','t'); INSERT INTO boards VALUES ('deleted','p','Deleted','{}',NULL,0,'t','t'); DELETE FROM boards WHERE id='deleted'")
+      db.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','root',1,'t','t'); INSERT INTO boards VALUES ('root','p','Root','{}',NULL,0,'t','t'); INSERT INTO boards VALUES ('deleted','p','Deleted','{}',NULL,0,'t','t'); DELETE FROM boards WHERE id='deleted'")
       const audits = new AuditRepository(db)
       audits.record({ actorOpenId: 'ou_1', projectId: 'p', boardId: 'deleted', action: 'board.delete', summary: {} })
       expect(audits.list('p')).toEqual([

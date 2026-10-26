@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 
 import {
   assertBoardReferenceGraphValid,
+  assertProjectNavigationValid,
+  type ProjectNavigation,
   type BoardReferenceRecord,
   type StoredBoard,
 } from '@infinite-board/board-core'
@@ -18,6 +20,7 @@ export interface IboardMergeIdMap {
 }
 
 export interface IboardMergePlan {
+  navigation?: ProjectNavigation
   targetProjectId: string
   importedRootBoardId: string
   boards: IboardPreflightBoard[]
@@ -202,11 +205,23 @@ export function createIboardMergePlan(
   }))
 
   const remappedStoredBoards = storedBoards(boards)
+  const sourceNavigation = preflight.manifest.navigation
+  let navigation: ProjectNavigation | undefined
+  if (sourceNavigation) {
+    assertProjectNavigationValid(sourceNavigation, preflight.boards.map((board) => board.id))
+    const topicMap = Object.fromEntries(sourceNavigation.topics.map((topic) => [topic.id, digestId(options.namespace, 'topic', topic.id)]))
+    navigation = {
+      version: 1, revision: 0,
+      topics: sourceNavigation.topics.map((topic) => ({ ...topic, id: topicMap[topic.id]! })),
+      parents: Object.fromEntries(Object.entries(sourceNavigation.parents).map(([boardId, parentId]) => [boardMap[boardId]!, topicMap[parentId] ?? boardMap[parentId]!])),
+    }
+  }
   assertBoardReferenceGraphValid(remappedStoredBoards, references)
   assertIboardReferenceShapesConsistent(remappedStoredBoards, references)
 
   return {
     targetProjectId: options.targetProjectId,
+    ...(navigation ? { navigation } : {}),
     importedRootBoardId: boardMap[preflight.manifest.rootBoardId]!,
     boards,
     references,

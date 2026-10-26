@@ -1,12 +1,13 @@
 import { Drawer } from '@ttqtt/liquid-glass-react'
 
-import type { StoredBoard } from '@infinite-board/board-core'
+import type { ProjectNavigation, StoredBoard } from '@infinite-board/board-core'
+import { ProjectTopicMap } from '../boards/ProjectTopicMap'
 
 import { AuditPanel, type AuditClient } from '../audit/AuditPanel'
 import { AllBoardsPanel } from '../boards/AllBoardsPanel'
 import type { ProjectHomeData } from '../boards/ProjectHomePage'
 
-export type WorkspaceLibraryPanel = 'boards' | 'activity'
+export type WorkspaceLibraryPanel = 'boards' | 'activity' | 'map'
 
 export function WorkspaceLibraryDrawers({
   panel,
@@ -20,6 +21,8 @@ export function WorkspaceLibraryDrawers({
   onRenameBoard,
   onDuplicateBoard,
   onDeleteBoard,
+  activeBoardId,
+  onSaveNavigation,
 }: {
   panel: WorkspaceLibraryPanel | undefined
   onPanelChange(panel: WorkspaceLibraryPanel | undefined): void
@@ -32,9 +35,14 @@ export function WorkspaceLibraryDrawers({
   onRenameBoard(boardId: string, title: string): void | Promise<void>
   onDuplicateBoard(board: StoredBoard): void | Promise<void>
   onDeleteBoard(board: StoredBoard): void | Promise<void>
+  activeBoardId?: string
+  onSaveNavigation?(navigation: ProjectNavigation): Promise<void>
 }) {
   return (
     <>
+      <Drawer open={panel === 'map'} onOpenChange={(open) => { if (!open) onPanelChange(undefined) }} placement="right" size="94vw" title="主题地图与局部关系图">
+        {data && panel === 'map' ? <ProjectTopicMap project={data.project} boards={data.boards} references={data.references} {...(activeBoardId ? { initialFocus: activeBoardId } : {})} {...(onSaveNavigation ? { onSaveNavigation } : {})} onOpenBoard={(boardId, mode) => { onOpenBoard(boardId, mode); onPanelChange(undefined) }} /> : null}
+      </Drawer>
       <Drawer
         open={panel === 'boards'}
         onOpenChange={(open) => { if (!open) onPanelChange(undefined) }}

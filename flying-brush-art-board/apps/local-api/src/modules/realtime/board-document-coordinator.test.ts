@@ -6,7 +6,7 @@ import { BoardDocumentCoordinator } from './board-document-coordinator.js'
 
 function setup() {
   const database = createDatabase(':memory:')
-  database.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{\"version\":0}',NULL,0,'t','t')")
+  database.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{\"version\":0}',NULL,0,'t','t')")
   const realtime = { applyCommittedSnapshot: vi.fn() }
   return { database, realtime, coordinator: new BoardDocumentCoordinator(database, new BoardRepository(database), realtime) }
 }

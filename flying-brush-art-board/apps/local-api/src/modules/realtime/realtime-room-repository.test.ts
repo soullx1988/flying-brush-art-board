@@ -7,7 +7,7 @@ describe('RealtimeRoomRepository', () => {
   it('persists ordered updates and atomically compacts them into a restart snapshot', () => {
     const db = createDatabase(':memory:')
     try {
-      db.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
+      db.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
       const rooms = new RealtimeRoomRepository(db, () => new Date('2026-07-23T00:00:00.000Z'))
       rooms.saveSnapshot('b', { documents: [] })
       expect(rooms.appendUpdate('b', '{"op":1}', 'ou_1')).toMatchObject({ sequence: 1, actorOpenId: 'ou_1' })

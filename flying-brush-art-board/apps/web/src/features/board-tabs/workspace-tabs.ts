@@ -19,6 +19,8 @@ export interface WorkspaceViewState {
   camera: unknown
   selectedShapeIds: string[]
   currentToolId: string
+  /** Only false for a newly opened history entry; saved views must not be reframed. */
+  hasBeenViewed?: boolean
 }
 
 export interface WorkspaceReferenceSource {
@@ -116,6 +118,7 @@ const DEFAULT_VIEW_STATE: WorkspaceViewState = {
   camera: { x: 0, y: 0, z: 1 },
   selectedShapeIds: [],
   currentToolId: 'select',
+  hasBeenViewed: false,
 }
 
 function cloneViewState(viewState: WorkspaceViewState): WorkspaceViewState {
@@ -126,6 +129,7 @@ function cloneViewState(viewState: WorkspaceViewState): WorkspaceViewState {
         : viewState.camera,
     selectedShapeIds: [...viewState.selectedShapeIds],
     currentToolId: viewState.currentToolId,
+    ...(viewState.hasBeenViewed === undefined ? {} : { hasBeenViewed: viewState.hasBeenViewed }),
   }
 }
 

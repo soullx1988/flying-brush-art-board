@@ -23,6 +23,39 @@ const shape = (id: string, overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('board clipboard adapter', () => {
+  it('collects every selected shape type without an allowlist', () => {
+    const shapeTypes = [
+      'text',
+      'note',
+      'geo',
+      'draw',
+      'line',
+      'highlight',
+      'arrow',
+      'frame',
+      'group',
+      'table',
+      'mind-map',
+      'board-reference',
+    ]
+    const records = shapeTypes.map((type, index) => shape(`shape:${type}`, {
+      type,
+      index: `a${index + 1}`,
+    }))
+    const selectedIds = records.map((record) => record.id)
+    const editor: ClipboardEditor = {
+      getShapeAndDescendantIds: (shapeId) => new Set([shapeId]),
+      store: { allRecords: () => records },
+    }
+
+    const payload = collectClipboardPayload(editor, selectedIds, {
+      sourceProjectId: 'project:source',
+      sourceBoardId: 'board:source',
+    })
+
+    expect(payload.shapes.map((record) => (record as { type: string }).type)).toEqual(shapeTypes)
+  })
+
   it('keeps bindings fully inside the copied closure and reports external bindings as broken', () => {
     const records = [
       shape('shape:one'),
@@ -43,6 +76,27 @@ describe('board clipboard adapter', () => {
 
     expect(payload.bindings).toHaveLength(1)
     expect(payload.brokenBindingIds).toEqual(['binding:outside'])
+  })
+
+  it('uses tldraw isolated content so selected children are lifted to page coordinates', () => {
+    const editor: ClipboardEditor = {
+      getShapeAndDescendantIds: () => new Set(['shape:child']),
+      getContentFromCurrentPage: () => ({
+        shapes: [shape('shape:child', { parentId: 'page:page', x: 120, y: 160, rotation: Math.PI / 2 })],
+        bindings: [],
+        assets: [],
+      }),
+      store: { allRecords: () => [shape('shape:child', { parentId: 'group:source', x: 10, y: 20 })] },
+    }
+
+    const payload = collectClipboardPayload(editor, ['shape:child'], {
+      sourceProjectId: 'project:source',
+      sourceBoardId: 'board:source',
+    })
+
+    expect(payload.shapes).toEqual([
+      expect.objectContaining({ id: 'shape:child', parentId: 'page:page', x: 120, y: 160, rotation: Math.PI / 2 }),
+    ])
   })
 
   it('materializes a Task 6 clipboard patch with remapped records and reference candidates', () => {

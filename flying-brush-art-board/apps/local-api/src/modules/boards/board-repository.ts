@@ -1,5 +1,7 @@
 import {
   BoardReferenceGraphError,
+  removeNavigationBoard,
+  type ProjectNavigation,
   type ImportSource,
   type StoredBoard,
 } from '@infinite-board/board-core'
@@ -189,8 +191,14 @@ export class BoardRepository {
       })
     }
 
-    return (
-      this.database.prepare('DELETE FROM boards WHERE id = ? AND project_id = ?').run(boardId, projectId).changes > 0
-    )
+    return this.database.transaction(() => {
+      const removed = this.database.prepare('DELETE FROM boards WHERE id = ? AND project_id = ?').run(boardId, projectId).changes > 0
+      if (removed) {
+        const row = this.database.prepare('SELECT navigation_json FROM projects WHERE id = ?').get(projectId) as { navigation_json: string | null }
+        if (row.navigation_json) this.database.prepare('UPDATE projects SET navigation_json = ?, updated_at = ? WHERE id = ?')
+          .run(JSON.stringify(removeNavigationBoard(JSON.parse(row.navigation_json) as ProjectNavigation, boardId)), new Date().toISOString(), projectId)
+      }
+      return removed
+    })()
   }
 }

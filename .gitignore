@@ -26,3 +26,7 @@ runtime-logs/
 # 系统文件
 .DS_Store
 Thumbs.db
+# Local authoring evidence and transfer bundles
+.tools/
+InfiniteBoardTransfers/
+flying-brush-art-board/deployment-sync/

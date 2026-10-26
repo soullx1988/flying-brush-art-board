@@ -32,7 +32,7 @@ describe('audit routes', () => {
   it('records semantic comment status and delete actions without storing content', async () => {
     const testApp = await buildTestApp()
     apps.push(testApp)
-    testApp.database.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
+    testApp.database.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
     const cookie = testApp.sessionCookie()
     const created = await testApp.app.inject({ method: 'POST', url: '/api/boards/b/comments', headers: { cookie }, payload: { body: 'Sensitive comment' } })
     const threadId = (created.json() as { thread: { id: string } }).thread.id

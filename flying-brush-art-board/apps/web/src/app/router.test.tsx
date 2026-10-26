@@ -55,11 +55,17 @@ describe('AppRouter', () => {
     await new LocalApiClient().pasteClipboard('board-1', {
       version: 1, sourceProjectId: 'project-1', sourceBoardId: 'board-1',
       shapes: [], bindings: [], references: [], assets: [], copiedAt: '2026-08-02T00:00:00.000Z',
-    }, 3)
+    }, 3, { x: 120, y: 240 })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ expectedRevision: 3 })
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ expectedRevision: 7 })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      expectedRevision: 3,
+      placement: { x: 120, y: 240 },
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      expectedRevision: 7,
+      placement: { x: 120, y: 240 },
+    })
   })
 
   it('uses the offline editor when the authenticated runtime disables realtime collaboration', async () => {

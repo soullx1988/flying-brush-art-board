@@ -10,6 +10,7 @@ const ACTIONS: Record<string, string> = {
   'PATCH /api/projects/:projectId': 'project.rename',
   'DELETE /api/projects/:projectId': 'project.delete',
   'PUT /api/projects/:projectId/root-board': 'project.root-board',
+  'PUT /api/projects/:projectId/navigation': 'project.navigation',
   'POST /api/projects/:projectId/boards': 'board.create',
   'POST /api/boards/:boardId/duplicate': 'board.create',
   'PATCH /api/boards/:boardId': 'board.rename',

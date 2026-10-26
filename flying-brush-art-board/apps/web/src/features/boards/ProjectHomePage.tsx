@@ -14,10 +14,12 @@ import { Button, Card, Dropdown, Empty, Input, Modal, Select, Tabs, toast, type 
 import type {
   BoardReferenceRecord,
   ProjectRecord,
+  ProjectNavigation,
   StoredBoard,
 } from '@infinite-board/board-core'
 
 import { AllBoardsPanel } from './AllBoardsPanel'
+import { ProjectTopicMap } from './ProjectTopicMap'
 import { CreateBoardDialog } from './CreateBoardDialog'
 import { IboardExportButton } from '../import-export/IboardExportButton'
 import { AuditPanel, type AuditClient } from '../audit/AuditPanel'
@@ -41,6 +43,7 @@ export interface CreateBoardInput {
 
 export interface ProjectHomeClient {
   getProject(projectId: string): Promise<ProjectHomeData>
+  saveProjectNavigation?(projectId: string, navigation: ProjectNavigation): Promise<ProjectRecord>
   createBoard(projectId: string, input: CreateBoardInput): Promise<StoredBoard>
   duplicateBoard(boardId: string, input: { id: string; title: string }): Promise<StoredBoard>
   setDefaultBoard(projectId: string, boardId: string): Promise<ProjectRecord>
@@ -61,7 +64,7 @@ export interface ProjectHomePageProps {
   onProjectDeleted?(): void
 }
 
-type ProjectSection = 'boards' | 'activity' | 'integrations' | 'settings'
+type ProjectSection = 'map' | 'boards' | 'activity' | 'integrations' | 'settings'
 
 function createBoardId(): string {
   return `board-${createBrowserUuid()}`
@@ -81,7 +84,7 @@ export function ProjectHomePage({
   const [error, setError] = useState<string>()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [section, setSection] = useState<ProjectSection>('boards')
+  const [section, setSection] = useState<ProjectSection>('map')
   const [projectTitle, setProjectTitle] = useState('')
   const [defaultBoardId, setDefaultBoardId] = useState('')
   const [savingSettings, setSavingSettings] = useState(false)
@@ -107,7 +110,7 @@ export function ProjectHomePage({
     setError(undefined)
     setDialogOpen(false)
     setCreating(false)
-    setSection('boards')
+    setSection('map')
     setProjectTitle('')
     setDefaultBoardId('')
     setSavingSettings(false)
@@ -179,6 +182,7 @@ export function ProjectHomePage({
       boards: current.boards.filter((candidate) => candidate.id !== board.id),
       references: current.references.filter((reference) => reference.sourceBoardId !== board.id && reference.targetBoardId !== board.id),
     } : current)
+    refresh()
   }
 
   const saveProjectName = async () => {
@@ -343,9 +347,10 @@ export function ProjectHomePage({
       <div className="project-home__tabs">
         <Tabs
           aria-label="项目内容"
-          value={section}
+          value={section === 'map' && !data.project.navigation && !client.saveProjectNavigation ? 'boards' : section}
           onChange={(value) => setSection(value as ProjectSection)}
           items={[
+            ...(data.project.navigation || client.saveProjectNavigation ? [{ key: 'map', label: '主题地图', content: <ProjectTopicMap project={data.project} boards={data.boards} references={data.references} onOpenBoard={onOpenBoard} initialFocus={new URLSearchParams(window.location.search).get('map') ?? ''} onFocusChange={(id) => { const url = new URL(window.location.href); if (id) url.searchParams.set('map', id); else url.searchParams.delete('map'); window.history.replaceState(window.history.state, '', url) }} {...(client.saveProjectNavigation ? { onSaveNavigation: async (navigation: ProjectNavigation) => { const project = await client.saveProjectNavigation!(projectId, navigation); setData((current) => current ? { ...current, project } : current) } } : {})} /> }] : []),
             { key: 'boards', label: '画板', content: boardContent },
             { key: 'activity', label: <span className="project-tab-label"><ShieldCheck aria-hidden="true" />活动</span>, content: activityContent },
             { key: 'integrations', label: <span className="project-tab-label"><UploadSimple aria-hidden="true" />集成</span>, content: integrationsContent },

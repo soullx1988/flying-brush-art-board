@@ -15,6 +15,7 @@ export const projectsTable = sqliteTable('projects', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
   rootBoardId: text('root_board_id').notNull(),
+  navigationJson: text('navigation_json'),
   formatVersion: integer('format_version').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -479,6 +480,7 @@ CREATE TABLE mcp_oauth_refresh_tokens (
   revoked_at TEXT
 );
 CREATE INDEX idx_mcp_oauth_refresh_grant ON mcp_oauth_refresh_tokens(grant_id, expires_at);` },
+  { id: '0011_project_navigation', sql: 'ALTER TABLE projects ADD COLUMN navigation_json TEXT;' },
 ] as const
 
 export function listAppliedDatabaseMigrations(database: LocalDatabase): string[] {

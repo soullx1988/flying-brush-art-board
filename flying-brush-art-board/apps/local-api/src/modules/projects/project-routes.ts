@@ -30,6 +30,12 @@ const createProjectSchema = z
 
 const setRootBoardSchema = z.object({ boardId: z.string().trim().min(1) }).strict()
 const renameProjectSchema = z.object({ title: z.string().trim().min(1).max(200) }).strict()
+const navigationSchema = z.object({
+  version: z.literal(1),
+  revision: z.number().int().nonnegative(),
+  topics: z.array(z.object({ id: z.string().startsWith('topic:').max(200), title: z.string().trim().min(1).max(100), description: z.string().max(300) }).strict()).max(100),
+  parents: z.record(z.string().min(1), z.string().min(1)),
+}).strict()
 
 const projectPathParamsSchema = z.object({ projectId: z.string().trim().min(1) }).strict()
 
@@ -109,6 +115,18 @@ export function registerProjectRoutes(
     }
     if (!projects.get(params.data.projectId)) return reply.code(404).send({ code: 'PROJECT_NOT_FOUND' })
     return projects.rename(params.data.projectId, input.data.title)
+  })
+
+  app.put('/api/projects/:projectId/navigation', async (request, reply) => {
+    const params = projectPathParamsSchema.safeParse(request.params)
+    const input = navigationSchema.safeParse(request.body)
+    if (!params.success || !input.success) return reply.code(400).send({ code: 'VALIDATION_ERROR' })
+    try {
+      return projects.saveNavigation(params.data.projectId, input.data)
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'NAVIGATION_INVALID'
+      return reply.code(code === 'PROJECT_NOT_FOUND' ? 404 : code === 'NAVIGATION_REVISION_CONFLICT' ? 409 : 400).send({ code })
+    }
   })
 
   app.delete('/api/projects/:projectId', async (request, reply) => {

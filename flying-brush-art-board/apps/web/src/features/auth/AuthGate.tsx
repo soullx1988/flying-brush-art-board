@@ -46,7 +46,7 @@ function LoginScreen({ auth, errorCode, onRetry }: { auth: AuthClient; errorCode
     <main className="auth-login-page">
       <Card as="section" className="auth-login-card" padding="lg" radius="30px">
         <div className="auth-brand-mark" aria-hidden="true"><UserCircle weight="duotone" /></div>
-        <p className="eyebrow">无限画板工作区</p>
+        <p className="eyebrow">魔灵画板工作区</p>
         <h1>{errorCode ? '身份验证失败' : '欢迎回来'}</h1>
         <p className="auth-login-card__description">使用飞书账号登录，继续访问项目、画板与协作记录。</p>
         {message ? <p role="alert">{message}</p> : null}

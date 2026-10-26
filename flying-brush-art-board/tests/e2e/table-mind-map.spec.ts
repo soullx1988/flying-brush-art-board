@@ -201,6 +201,48 @@ test('creates, edits, syncs, exports, copies, and reloads table and mind-map sha
     expect(Math.abs((rootAfterDrag?.x ?? 0) - rootBeforeDrag.x)).toBeLessThan(3)
     expect(Math.abs((rootAfterDrag?.y ?? 0) - rootBeforeDrag.y)).toBeLessThan(3)
 
+    const mindMapPositionBeforeMove = await page.evaluate(() => {
+      const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const mindMap = editor?.getCurrentPageShapes().find((shape: { type: string }) => shape.type === 'mind-map')
+      if (!mindMap) throw new Error('Expected a mind-map shape')
+      return { x: mindMap.x as number, y: mindMap.y as number, nodeCount: mindMap.props.nodes.length as number }
+    })
+    const movableRootBox = await rootNode.boundingBox()
+    if (!movableRootBox) throw new Error('Mind-map root has no bounds')
+    await page.mouse.move(
+      movableRootBox.x + movableRootBox.width / 2,
+      movableRootBox.y + movableRootBox.height / 2,
+    )
+    await page.mouse.down()
+    await page.mouse.move(
+      movableRootBox.x + movableRootBox.width / 2 + 80,
+      movableRootBox.y + movableRootBox.height / 2 + 50,
+      { steps: 8 },
+    )
+    await expect(page.locator('.canvas-mind-map-shape')).toHaveAttribute('data-shape-drag-active', 'true')
+    await page.mouse.up()
+    await expect.poll(() => page.evaluate(() => {
+      const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const mindMap = editor?.getCurrentPageShapes().find((shape: { type: string }) => shape.type === 'mind-map')
+      return mindMap ? { x: mindMap.x, y: mindMap.y, nodeCount: mindMap.props.nodes.length } : null
+    })).toEqual({
+      x: mindMapPositionBeforeMove.x + 80,
+      y: mindMapPositionBeforeMove.y + 50,
+      nodeCount: mindMapPositionBeforeMove.nodeCount,
+    })
+    await page.evaluate(() => { (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.undo() })
+    await expect.poll(() => page.evaluate(() => {
+      const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const mindMap = editor?.getCurrentPageShapes().find((shape: { type: string }) => shape.type === 'mind-map')
+      return mindMap ? { x: mindMap.x, y: mindMap.y } : null
+    })).toEqual({ x: mindMapPositionBeforeMove.x, y: mindMapPositionBeforeMove.y })
+    await page.evaluate(() => { (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.redo() })
+    await expect.poll(() => page.evaluate(() => {
+      const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const mindMap = editor?.getCurrentPageShapes().find((shape: { type: string }) => shape.type === 'mind-map')
+      return mindMap ? { x: mindMap.x, y: mindMap.y } : null
+    })).toEqual({ x: mindMapPositionBeforeMove.x + 80, y: mindMapPositionBeforeMove.y + 50 })
+
     await rootNode.click({ button: 'right' })
     await page.getByRole('menuitem', { name: '切换为双向布局' }).click()
     const bilateralRootBox = await rootNode.boundingBox()
@@ -306,6 +348,21 @@ test('creates, edits, syncs, exports, copies, and reloads table and mind-map sha
         editor.setCamera({ ...camera, z: zoomLevel })
       }, { camera: originalCamera, zoomLevel: zoom })
       await expect(page.locator('.canvas-table-shape')).toBeVisible()
+      const overflowingCells = await page.locator('.canvas-table-cell').evaluateAll((cells) => cells.flatMap((cell) => {
+        const content = cell.querySelector('span, textarea') as HTMLElement | null
+        if (!content) return []
+        const cellRect = cell.getBoundingClientRect()
+        const contentRect = content.getBoundingClientRect()
+        const overflow = {
+          text: content.textContent,
+          top: cellRect.top - contentRect.top,
+          right: contentRect.right - cellRect.right,
+          bottom: contentRect.bottom - cellRect.bottom,
+          left: cellRect.left - contentRect.left,
+        }
+        return Math.max(overflow.top, overflow.right, overflow.bottom, overflow.left) > 2 ? [overflow] : []
+      }))
+      expect(overflowingCells).toEqual([])
       await test.info().attach(`table-mind-map-${zoom * 100}-percent.png`, {
         body: await page.screenshot(), contentType: 'image/png',
       })

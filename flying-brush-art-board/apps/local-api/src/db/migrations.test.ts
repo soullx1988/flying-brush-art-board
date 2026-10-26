@@ -30,6 +30,7 @@ describe('SQLite schema migrations', () => {
         '0008_remote_mcp',
         '0009_mcp_client_enabled',
         '0010_mcp_v2_oauth',
+        '0011_project_navigation',
       ])
       expect(listAppliedDatabaseMigrations(database)).toEqual([
         '0001_initial',
@@ -42,6 +43,7 @@ describe('SQLite schema migrations', () => {
         '0008_remote_mcp',
         '0009_mcp_client_enabled',
         '0010_mcp_v2_oauth',
+        '0011_project_navigation',
       ])
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'board_references'").get()).toEqual({
         name: 'board_references',

@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Editor, TLShapeId } from 'tldraw'
+import {
+  defaultHandleExternalTextContent,
+  type Editor,
+  type TLShapeId,
+} from 'tldraw'
 import { Button, Empty, toast } from '@ttqtt/liquid-glass-react'
 
 import type {
   BoardClipboardPayload,
+  ClipboardPasteRequest,
   BoardReferenceKind,
   BoardReferenceRecord,
   StoredBoard,
@@ -18,6 +23,7 @@ import {
 
 import type { BoardSessionApi } from '../boards/board-session'
 import { BoardPage } from '../boards/BoardPage'
+import { BoardTopicLocation } from '../boards/BoardTopicLocation'
 import { RealtimeBoardPage } from '../realtime/RealtimeBoardPage'
 import type { CommentClient } from '../comments/comment-client'
 import type { AuditClient } from '../audit/AuditPanel'
@@ -29,9 +35,17 @@ import {
   type ProjectHomeData,
 } from '../boards/ProjectHomePage'
 import { BrowserClipboardService } from '../clipboard/clipboard-service'
+import {
+  clipboardRootShapeIds,
+  clipboardHasTldrawContent,
+  structuredClipboardAssets,
+  structuredClipboardPlainText,
+  writeTldrawClipboardData,
+} from '../clipboard/clipboard-routing'
 import { createBrowserUuid } from '../../app/browser-uuid'
 import { HistoryBreadcrumbs } from '../board-references/HistoryBreadcrumbs'
 import { InboundReferenceList } from '../board-references/InboundReferenceList'
+import { repairImportedReferenceParent } from '../board-references/repair-imported-reference'
 import {
   CreateBoardReferenceDialog,
   type CreateBoardReferenceInput,
@@ -86,6 +100,7 @@ import {
   type WorkspaceTab,
 } from './workspace-tabs'
 import { TldrawWorkspaceEditor } from './TldrawWorkspaceEditor'
+import type { TldrawUserIdentity } from '../auth/tldraw-user'
 
 export interface ClipboardCommandReceipt {
   commandId: string
@@ -94,6 +109,32 @@ export interface ClipboardCommandReceipt {
   snapshot: unknown
   idMap: Record<string, string>
   createdReferenceIds: string[]
+}
+
+type ClipboardHistoryCommand = {
+  commandId: string
+  state: 'applied' | 'undone'
+  appliedFingerprint: string
+  undoneFingerprint?: string
+}
+
+function canonicalizeSnapshot(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeSnapshot)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalizeSnapshot(child)]),
+  )
+}
+
+function documentSnapshotFingerprint(snapshot: unknown): string {
+  if (!snapshot || typeof snapshot !== 'object') return JSON.stringify(snapshot)
+  const value = snapshot as {
+    document?: { store?: Record<string, unknown> }
+    store?: Record<string, unknown>
+  }
+  return JSON.stringify(canonicalizeSnapshot(value.document?.store ?? value.store ?? value))
 }
 
 function downloadRecoverySnapshot(snapshot: unknown, title: string): void {
@@ -125,6 +166,7 @@ export interface WorkspaceClient extends ProjectHomeClient, BoardSessionApi, Ibo
     boardId: string,
     payload: BoardClipboardPayload,
     expectedRevision: number,
+    placement?: ClipboardPasteRequest['placement'],
   ): Promise<ClipboardCommandReceipt>
   undoClipboard(commandId: string, expectedRevision: number): Promise<ClipboardCommandReceipt>
   redoClipboard(commandId: string, expectedRevision: number): Promise<ClipboardCommandReceipt>
@@ -168,10 +210,47 @@ export interface WorkspaceShellProps {
   client: WorkspaceClient
   navigate: BoardNavigationNavigate
   enableRealtime?: boolean
+  tldrawUser?: TldrawUserIdentity
 }
 
 function boardTitle(data: ProjectHomeData | undefined, boardId: string): string {
   return data?.boards.find((board) => board.id === boardId)?.title ?? boardId
+}
+
+function isEditableClipboardTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest('input, textarea, [contenteditable="true"]'))
+}
+
+function clipboardContainsFiles(data: DataTransfer): boolean {
+  if (data.files.length > 0) return true
+  if (Array.from(data.items).some((item) => item.kind === 'file')) return true
+  return Array.from(data.types).some((type) => type.startsWith('image/'))
+}
+
+function readClipboardText(data: DataTransfer, type: string): string {
+  try {
+    return data.getData(type)
+  } catch {
+    return ''
+  }
+}
+
+function htmlTextContent(html: string): string {
+  if (!html) return ''
+  return new DOMParser().parseFromString(html, 'text/html').body.textContent ?? ''
+}
+
+function isPointerOverCanvas(editor: Editor): boolean {
+  return editor.getContainer().matches(':hover')
+}
+
+function getPastePoint(editor: Editor): { x: number; y: number } {
+  if (isPointerOverCanvas(editor)) {
+    const point = editor.inputs.getCurrentPagePoint()
+    return { x: point.x, y: point.y }
+  }
+  const center = editor.getViewportPageBounds().center
+  return { x: center.x, y: center.y }
 }
 
 export function WorkspaceShell({
@@ -182,6 +261,7 @@ export function WorkspaceShell({
   client,
   navigate,
   enableRealtime = true,
+  tldrawUser,
 }: WorkspaceShellProps) {
   const projectDataRef = useRef<ProjectHomeData | undefined>(undefined)
   const sharedEditor = useMemo(() => new TldrawWorkspaceEditor(undefined), [projectId])
@@ -221,7 +301,9 @@ export function WorkspaceShell({
   const [drawioImport, setDrawioImport] = useState<{ key: string; file?: File }>()
   const [navigationBlocked, setNavigationBlocked] = useState<WorkspaceNavigationBlockedError>()
   const [pendingInboundLocation, setPendingInboundLocation] = useState<{ boardId: string; shapeId: string }>()
-  const clipboardCommands = useRef(new Map<string, Array<{ commandId: string; state: 'applied' | 'undone' }>>())
+  const clipboardCommands = useRef(new Map<string, ClipboardHistoryCommand[]>())
+  const pasteAsPlainTextShortcut = useRef(false)
+  const windowPasteHandler = useRef<(event: ClipboardEvent) => void>(() => undefined)
   const mountedWorkspace = useRef<WorkspaceTabs | undefined>(undefined)
   const handledRouteKey = useRef<string | undefined>(undefined)
   const lastBoardRouteId = useRef(routeBoardId)
@@ -232,6 +314,33 @@ export function WorkspaceShell({
   useEffect(() => {
     projectDataRef.current = projectData
   }, [projectData])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+        pasteAsPlainTextShortcut.current = event.shiftKey
+        if (!isEditableClipboardTarget(event.target)) {
+          const editor = (workspaceState.activeEditor as TldrawWorkspaceEditor | undefined)?.getTldrawEditor()
+          if (editor && isPointerOverCanvas(editor)) editor.getContainer().focus({ preventScroll: true })
+        }
+      }
+    }
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'v') pasteAsPlainTextShortcut.current = false
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+    }
+  }, [workspaceState.activeEditor])
+
+  useEffect(() => {
+    const onWindowPaste = (event: ClipboardEvent) => windowPasteHandler.current(event)
+    window.addEventListener('paste', onWindowPaste, true)
+    return () => window.removeEventListener('paste', onWindowPaste, true)
+  }, [])
 
   const guardWorkspaceExit = useCallback(async () => {
     setNavigationBlocked(undefined)
@@ -440,6 +549,69 @@ export function WorkspaceShell({
   ])
 
   useEffect(() => {
+    const handleClipboardCopy = (event: ClipboardEvent) => {
+      if (event.defaultPrevented || isEditableClipboardTarget(event.target)) return
+      const activeTab = workspaceState.tabs.find((tab) => tab.tabId === workspaceState.activeTabId)
+      const bridge = workspaceState.activeEditor as TldrawWorkspaceEditor | undefined
+      const editor = bridge?.getTldrawEditor()
+      if (!activeTab || !editor) return
+
+      const selectedShapeIds = editor.getSelectedShapeIds()
+      if (selectedShapeIds.length === 0) return
+      const data = event.clipboardData
+      if (!data) return
+
+      const assets = structuredClipboardAssets(editor, selectedShapeIds)
+      if (!assets) {
+        if (!writeTldrawClipboardData(editor, selectedShapeIds, data)) return
+        clipboard.clear()
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        return
+      }
+
+      const collected = collectClipboardPayload({
+        getShapeAndDescendantIds: (shapeId) =>
+          editor.getShapeAndDescendantIds([shapeId as TLShapeId]),
+        getContentFromCurrentPage: (shapeIds) => {
+          const content = editor.getContentFromCurrentPage(shapeIds as TLShapeId[])
+          return content
+            ? {
+                shapes: content.shapes as unknown as Record<string, unknown>[],
+                bindings: content.bindings as unknown as Record<string, unknown>[],
+                assets: content.assets as unknown as Record<string, unknown>[],
+              }
+            : undefined
+        },
+        store: {
+          allRecords: () =>
+            editor.store.allRecords() as unknown as readonly Record<string, unknown>[],
+        },
+      }, selectedShapeIds, {
+        sourceProjectId: projectId,
+        sourceBoardId: activeTab.boardId,
+        references: (projectData?.references ?? [])
+          .filter((reference) => reference.sourceBoardId === activeTab.boardId)
+          .map((reference) => ({
+            shapeId: reference.shapeId,
+            referenceId: reference.id,
+            targetBoardId: reference.targetBoardId,
+            kind: reference.kind,
+          })),
+        assets,
+      })
+      const { brokenBindingIds: _brokenBindingIds, ...payload } = collected
+      if (!clipboard.writeToClipboardData(data, payload)) return
+
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+
+    window.addEventListener('copy', handleClipboardCopy, { capture: true })
+    return () => window.removeEventListener('copy', handleClipboardCopy, { capture: true })
+  }, [clipboard, projectData, projectId, workspaceState])
+
+  useEffect(() => {
     const handleClipboardShortcut = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.metaKey || event.altKey) return
       const target = event.target as HTMLElement | null
@@ -449,77 +621,53 @@ export function WorkspaceShell({
       const editor = bridge?.getTldrawEditor()
       if (!activeTab || !bridge || !editor) return
 
-      if (event.key.toLowerCase() === 'c') {
-        const selectedShapeIds = editor.getSelectedShapeIds()
-        if (selectedShapeIds.length === 0) return
-          const collected = collectClipboardPayload({
-            getShapeAndDescendantIds: (shapeId) =>
-              editor.getShapeAndDescendantIds([shapeId as TLShapeId]),
-          store: {
-            allRecords: () =>
-              editor.store.allRecords() as unknown as readonly Record<string, unknown>[],
-          },
-        }, selectedShapeIds, {
-          sourceProjectId: projectId,
-          sourceBoardId: activeTab.boardId,
-          references: (projectData?.references ?? [])
-            .filter((reference) => reference.sourceBoardId === activeTab.boardId)
-            .map((reference) => ({
-              shapeId: reference.shapeId,
-              referenceId: reference.id,
-              targetBoardId: reference.targetBoardId,
-              kind: reference.kind,
-            })),
-          assets: [],
-        })
-        const { brokenBindingIds: _brokenBindingIds, ...payload } = collected
-        event.preventDefault()
-        void clipboard.copy(payload)
-      }
-
-      if (event.key.toLowerCase() === 'v') {
-        event.preventDefault()
-        void clipboard.read()
-          .then(async (payload) => {
-            if (!payload) return
-            const receipt = await client.pasteClipboard(
-              activeTab.boardId,
-              payload,
-              activeTab.session.lastKnownRevision,
-            )
-            workspaceState.adoptCommandCommit(activeTab.tabId, receipt.snapshot, receipt.revision)
-            const commands = clipboardCommands.current.get(activeTab.tabId) ?? []
-            commands.push({ commandId: receipt.commandId, state: 'applied' })
-            clipboardCommands.current.set(activeTab.tabId, commands)
-          })
-          .catch((error: unknown) => {
-            toast.error(chineseErrorMessage(error, '粘贴失败，请稍后重试。'))
-          })
-      }
-
       const redoShortcut = event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey)
       const undoShortcut = event.key.toLowerCase() === 'z' && !event.shiftKey
       if (undoShortcut || redoShortcut) {
         const commands = clipboardCommands.current.get(activeTab.tabId) ?? []
-        const command = [...commands].reverse().find((candidate) =>
-          undoShortcut ? candidate.state === 'applied' : candidate.state === 'undone',
-        )
+        const command = undoShortcut
+          ? [...commands].reverse().find((candidate) => candidate.state === 'applied')
+          : commands.find((candidate) => candidate.state === 'undone')
         if (!command) return
+        const expectedFingerprint = undoShortcut
+          ? command.appliedFingerprint
+          : command.undoneFingerprint
+        const currentFingerprint = documentSnapshotFingerprint(bridge.getSnapshot())
+        if (currentFingerprint !== expectedFingerprint) {
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          const canReplay = () => undoShortcut ? editor.getCanUndo() : editor.getCanRedo()
+          let attempts = 0
+          while (canReplay() && documentSnapshotFingerprint(bridge.getSnapshot()) === currentFingerprint) {
+            if (undoShortcut) editor.undo()
+            else editor.redo()
+            attempts += 1
+            if (attempts >= 100) break
+          }
+          return
+        }
         event.preventDefault()
+        event.stopImmediatePropagation()
         const replay = undoShortcut
           ? client.undoClipboard(command.commandId, activeTab.session.lastKnownRevision)
           : client.redoClipboard(command.commandId, activeTab.session.lastKnownRevision)
         void replay.then((receipt) => {
           command.state = undoShortcut ? 'undone' : 'applied'
           workspaceState.adoptCommandCommit(activeTab.tabId, receipt.snapshot, receipt.revision)
+          if (undoShortcut) {
+            command.undoneFingerprint = documentSnapshotFingerprint(bridge.getSnapshot())
+          } else {
+            command.appliedFingerprint = documentSnapshotFingerprint(bridge.getSnapshot())
+            delete command.undoneFingerprint
+          }
         }).catch((error: unknown) => {
           toast.error(chineseErrorMessage(error, '撤销或重做失败，请稍后重试。'))
         })
       }
     }
-    window.addEventListener('keydown', handleClipboardShortcut)
-    return () => window.removeEventListener('keydown', handleClipboardShortcut)
-  }, [client, clipboard, projectData, projectId, workspaceState])
+    window.addEventListener('keydown', handleClipboardShortcut, { capture: true })
+    return () => window.removeEventListener('keydown', handleClipboardShortcut, { capture: true })
+  }, [client, workspaceState])
 
   const openBoard = async (boardId: string, mode: 'current' | 'new') => {
     await refreshProject()
@@ -876,6 +1024,7 @@ export function WorkspaceShell({
     ? findInboundReferences(activeTab.boardId, projectData.references)
     : []
   const navigationElement = activeTab ? (
+    <div className="board-topic-navigation">
     <HistoryBreadcrumbs
       entries={activeHistoryEntries}
       getBoardTitle={(boardId) => boardTitle(projectData, boardId)}
@@ -887,6 +1036,8 @@ export function WorkspaceShell({
       onProjectHome={() => void leaveForProjectHome()}
       onGoToEntry={(index) => void boardNavigation.goToHistoryEntry(activeTab.tabId, index)}
     />
+    {projectData ? <BoardTopicLocation data={projectData} boardId={activeTab.boardId} onShowMap={() => setWorkspacePanel('map')} /> : null}
+    </div>
   ) : undefined
   const requestEditIntent = () => {
     const tabId = workspace.activeTabId
@@ -894,10 +1045,131 @@ export function WorkspaceShell({
     return workspace.acquireEditingLease(tabId).applied
   }
 
+  const handleClipboardPaste = ({
+    editor,
+    event,
+    pasteAsPlainText,
+  }: {
+    editor: Editor
+    event: ClipboardEvent
+    pasteAsPlainText: boolean
+  }): boolean => {
+    if (!activeTab || !activeEditor || editor.getEditingShapeId() || isEditableClipboardTarget(event.target)) {
+      return false
+    }
+
+    const forcePlainText = pasteAsPlainText || pasteAsPlainTextShortcut.current
+    const data = event.clipboardData
+    const payload = clipboard.readFromClipboardData(data)
+    const point = getPastePoint(editor)
+
+    if (payload && forcePlainText) {
+      const text = structuredClipboardPlainText(editor, payload)
+      if (text) {
+        const previousShapeIds = new Set(editor.getCurrentPageShapeIds())
+        editor.markHistoryStoppingPoint('paste_text')
+        void defaultHandleExternalTextContent(editor, { point, text }).then(() => {
+          const pastedTextIds = editor.getCurrentPageShapes()
+            .filter((shape) => shape.type === 'text' && !previousShapeIds.has(shape.id))
+            .map((shape) => shape.id)
+          if (pastedTextIds.length > 0) editor.setSelectedShapes(pastedTextIds)
+        }).catch((error: unknown) => {
+          toast.error(chineseErrorMessage(error, '无法粘贴文本，请稍后重试。'))
+        })
+      }
+      // An application payload has no meaningful plain-text representation for
+      // non-text shapes. Do not fall through and paste the structured JSON.
+      return true
+    }
+
+    // 应用结构化数据优先，确保分组、绑定和父子关系走服务端原子命令。
+    if (payload) {
+      const pastedRootIds = clipboardRootShapeIds(payload)
+      void client.pasteClipboard(
+        activeTab.boardId,
+        payload,
+        activeTab.session.lastKnownRevision,
+        isPointerOverCanvas(editor) ? point : { viewportCenter: true },
+      ).then((receipt) => {
+        workspaceState.adoptCommandCommit(activeTab.tabId, receipt.snapshot, receipt.revision)
+        const selectedShapeIds = pastedRootIds.flatMap((shapeId) => {
+          const pastedShapeId = receipt.idMap[shapeId]
+          return pastedShapeId ? [pastedShapeId as TLShapeId] : []
+        })
+        if (selectedShapeIds.length > 0) editor.setSelectedShapes(selectedShapeIds)
+        const commands = (clipboardCommands.current.get(activeTab.tabId) ?? [])
+          .filter((command) => command.state === 'applied')
+        commands.push({
+          commandId: receipt.commandId,
+          state: 'applied',
+          appliedFingerprint: documentSnapshotFingerprint(activeEditor.getSnapshot()),
+        })
+        clipboardCommands.current.set(activeTab.tabId, commands)
+      }).catch((error: unknown) => {
+        toast.error(chineseErrorMessage(error, '粘贴失败，请稍后重试。'))
+      })
+      return true
+    }
+
+    if (!data || clipboardContainsFiles(data)) return false
+
+    // tldraw's native clipboard resolves embedded asset records and mixed selections.
+    // Let its document-level paste handler restore that content at the cursor. For
+    // plain-text paste, only let the native handler proceed when there is no text;
+    // otherwise the browser's text/plain value should become one text shape.
+    if (clipboardHasTldrawContent(data)) {
+      const nativePlainText = readClipboardText(data, 'text/plain').trim()
+      if (!forcePlainText || nativePlainText.length === 0) return false
+    }
+
+    const types = Array.from(data.types)
+    const plainText = readClipboardText(data, 'text/plain').replace(/\r\n?/g, '\n')
+    const html = forcePlainText ? '' : readClipboardText(data, 'text/html')
+    const hasTextContent = types.includes('text/plain') || types.includes('text/html')
+      || plainText.length > 0 || html.length > 0
+    if (!hasTextContent) return false
+
+    const text = plainText.trim().length > 0 ? plainText : htmlTextContent(html)
+    if (text.trim().length === 0) return true
+
+    const previousShapeIds = new Set(editor.getCurrentPageShapeIds())
+    editor.markHistoryStoppingPoint('paste_text')
+    void defaultHandleExternalTextContent(editor, {
+      point,
+      text,
+      ...(html ? { html } : {}),
+    }).then(() => {
+      const pastedTextIds = editor.getCurrentPageShapes()
+        .filter((shape) => shape.type === 'text' && !previousShapeIds.has(shape.id))
+        .map((shape) => shape.id)
+      if (pastedTextIds.length > 0) editor.setSelectedShapes(pastedTextIds)
+    }).catch((error: unknown) => {
+      toast.error(chineseErrorMessage(error, '无法粘贴文本，请稍后重试。'))
+    })
+    return true
+  }
+
+  windowPasteHandler.current = (event) => {
+    if (event.defaultPrevented || isEditableClipboardTarget(event.target)) return
+    const editor = activeEditor?.getTldrawEditor()
+    if (!editor || !isPointerOverCanvas(editor)) return
+    const target = event.target
+    if (target instanceof Node && editor.getContainer().contains(target)) return
+    if (!requestEditIntent()) return
+    if (!handleClipboardPaste({
+      editor,
+      event,
+      pasteAsPlainText: pasteAsPlainTextShortcut.current,
+    })) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+
   const mountActiveEditor = (editor: Editor) => {
     activeEditor?.mountEditor(editor)
     if (!pendingInboundLocation || pendingInboundLocation.boardId !== activeTab?.boardId) return
     window.requestAnimationFrame(() => {
+      repairImportedReferenceParent(editor, pendingInboundLocation.shapeId as TLShapeId)
       const bounds = editor.getShapePageBounds(pendingInboundLocation.shapeId as TLShapeId)
       if (!bounds) {
         setTemporaryProgress('来源画板已打开，但引用卡片不存在或已被删除。')
@@ -1070,10 +1342,12 @@ export function WorkspaceShell({
           onReloadFromServer={() => { void workspaceState.reloadTabFromServer(activeTab.tabId).catch(() => toast.error('无法重新加载服务器版本。')) }}
           onDownloadRecovery={() => { void workspaceState.copyTabRecovery(activeTab.tabId).then((copied) => { if (copied) toast.success('恢复副本已下载') }).catch(() => toast.error('无法下载恢复副本。')) }}
           inputSessionKey={`${activeTab.tabId}:${activeTab.boardId}`}
+          {...(tldrawUser ? { tldrawUser } : {})}
           onEditorMount={mountActiveEditor}
           {...(isCommentClient(client) ? { commentClient: client } : {})}
           onBeforePdfExport={flushForPdfExport}
           onEditIntent={requestEditIntent}
+          onClipboardPaste={handleClipboardPaste}
           onCreateReference={(center) => {
             setCreateReferencePlacement({
               x: center.x - BOARD_REFERENCE_DEFAULT_WIDTH / 2,
@@ -1101,10 +1375,12 @@ export function WorkspaceShell({
           onDownloadRecovery={() => { void workspaceState.copyTabRecovery(activeTab.tabId).then((copied) => { if (copied) toast.success('恢复副本已下载') }).catch(() => toast.error('无法下载恢复副本。')) }}
           store={activeEditor.store}
           inputSessionKey={`${activeTab.tabId}:${activeTab.boardId}`}
+          {...(tldrawUser ? { tldrawUser } : {})}
           onEditorMount={mountActiveEditor}
           {...(isCommentClient(client) ? { commentClient: client } : {})}
           onBeforePdfExport={flushForPdfExport}
           onEditIntent={requestEditIntent}
+          onClipboardPaste={handleClipboardPaste}
           onCreateReference={(center) => {
             setCreateReferencePlacement({
               x: center.x - BOARD_REFERENCE_DEFAULT_WIDTH / 2,
@@ -1135,6 +1411,8 @@ export function WorkspaceShell({
         onRenameBoard={renameBoardFromLibrary}
         onDuplicateBoard={duplicateBoardFromLibrary}
         onDeleteBoard={deleteBoardFromLibrary}
+        {...(activeTab ? { activeBoardId: activeTab.boardId } : {})}
+        {...(client.saveProjectNavigation ? { onSaveNavigation: async (navigation) => { await client.saveProjectNavigation!(projectId, navigation); await refreshProject() } } : {})}
       />
       <CreateBoardDialog
         open={createDialogOpen}

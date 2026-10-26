@@ -3,9 +3,11 @@ import { Button } from '@ttqtt/liquid-glass-react'
 
 import type {
   BoardClipboardPayload,
+  ClipboardPasteRequest,
   BoardReferenceKind,
   BoardReferenceRecord,
   ProjectRecord,
+  ProjectNavigation,
   StoredBoard,
 } from '@infinite-board/board-core'
 import type { CommentBoardState, CommentClient, CommentMessageView, CommentThreadView } from '../features/comments/comment-client'
@@ -22,6 +24,7 @@ import type {
 } from '../features/board-tabs/WorkspaceShell'
 import type { BoardNavigationOptions } from '../features/board-references/use-board-navigation'
 import { useCurrentUser } from '../features/auth/current-user-context'
+import { createTldrawUserIdentity } from '../features/auth/tldraw-user'
 import type {
   IboardImportCommitRequest,
   IboardImportCommitResult,
@@ -65,6 +68,10 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
 
   async getProject(projectId: string): Promise<ProjectHomeData> {
     return responseJson(await fetch(`/api/projects/${encodeURIComponent(projectId)}`))
+  }
+
+  async saveProjectNavigation(projectId: string, navigation: ProjectNavigation): Promise<ProjectRecord> {
+    return responseJson(await fetch(`/api/projects/${encodeURIComponent(projectId)}/navigation`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(navigation) }))
   }
 
   async listProjects(): Promise<ProjectSummary[]> {
@@ -219,6 +226,7 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
     boardId: string,
     payload: BoardClipboardPayload,
     expectedRevision: number,
+    placement?: ClipboardPasteRequest['placement'],
   ): Promise<ClipboardCommandReceipt> {
     return retryRevisionMutation(expectedRevision, async (revision) => responseJson(
       await fetch(`/api/boards/${encodeURIComponent(boardId)}/clipboard/paste`, {
@@ -228,7 +236,7 @@ export class LocalApiClient implements WorkspaceClient, CommentClient, AuditClie
           payload,
           expectedRevision: revision,
           sessionId: this.clipboardSessionId,
-          placement: { viewportCenter: true },
+          placement: placement ?? { viewportCenter: true },
         }),
       }),
     ))
@@ -369,6 +377,10 @@ function routeProjectId(pathname: string): string | undefined {
 export function AppRouter() {
   const client = useMemo(() => new LocalApiClient(), [])
   const currentUser = useCurrentUser()
+  const tldrawUser = useMemo(
+    () => createTldrawUserIdentity(currentUser),
+    [currentUser.name, currentUser.openId],
+  )
   const [location, setLocation] = useState<RouterLocation>(readRouterLocation)
   const locationRef = useRef(location)
 
@@ -436,6 +448,7 @@ export function AppRouter() {
           routeHistoryState={location.historyState}
           client={client}
           navigate={navigate}
+          tldrawUser={tldrawUser}
           enableRealtime={
             currentUser.realtimeEnabled === true
             && new URLSearchParams(location.search).get('realtime') !== '0'

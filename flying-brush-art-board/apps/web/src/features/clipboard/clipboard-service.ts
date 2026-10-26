@@ -7,6 +7,17 @@ export interface BrowserTextClipboard {
   readText(): Promise<string>
 }
 
+export interface ClipboardDataReader {
+  readonly types?: readonly string[]
+  readonly files?: ArrayLike<unknown>
+  readonly items?: ArrayLike<unknown>
+  getData(type: string): string
+}
+
+export interface ClipboardDataWriter {
+  setData(type: string, value: string): void
+}
+
 function defaultClipboard(): BrowserTextClipboard | undefined {
   return typeof navigator === 'undefined' ? undefined : navigator.clipboard
 }
@@ -30,6 +41,31 @@ function clonePayload(payload: BoardClipboardPayload): BoardClipboardPayload {
   return structuredClone(payload)
 }
 
+function parseClipboardEnvelope(text: string): BoardClipboardPayload | undefined {
+  if (text.trim().length === 0) return undefined
+  try {
+    const parsed = JSON.parse(text) as { type?: unknown; payload?: unknown }
+    if (parsed.type !== BOARD_CLIPBOARD_MIME || !isBoardClipboardPayload(parsed.payload)) {
+      return undefined
+    }
+    return parsed.payload
+  } catch {
+    return undefined
+  }
+}
+
+function serializeClipboardEnvelope(payload: BoardClipboardPayload): string {
+  return JSON.stringify({ type: BOARD_CLIPBOARD_MIME, payload })
+}
+
+function readClipboardData(data: ClipboardDataReader, type: string): string {
+  try {
+    return data.getData(type)
+  } catch {
+    return ''
+  }
+}
+
 export class BrowserClipboardService {
   private payload: BoardClipboardPayload | undefined
 
@@ -39,12 +75,30 @@ export class BrowserClipboardService {
     this.payload = clonePayload(payload)
     if (!this.systemClipboard) return
     try {
-      await this.systemClipboard.writeText(
-        JSON.stringify({ type: BOARD_CLIPBOARD_MIME, payload: this.payload }),
-      )
+      await this.systemClipboard.writeText(serializeClipboardEnvelope(this.payload))
     } catch {
       // The in-memory payload remains authoritative when clipboard permission is denied.
     }
+  }
+
+  writeToClipboardData(data: ClipboardDataWriter, payload: BoardClipboardPayload): boolean {
+    this.payload = clonePayload(payload)
+    const envelope = serializeClipboardEnvelope(this.payload)
+    try {
+      data.setData('text/plain', envelope)
+      try {
+        data.setData(BOARD_CLIPBOARD_MIME, envelope)
+      } catch {
+        // text/plain remains sufficient for browsers that reject custom formats.
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  clear(): void {
+    this.payload = undefined
   }
 
   onBoardActivated(_boardId: string): void {
@@ -55,21 +109,39 @@ export class BrowserClipboardService {
     return this.payload ? clonePayload(this.payload) : undefined
   }
 
-  async read(): Promise<BoardClipboardPayload | undefined> {
-    if (this.payload) return clonePayload(this.payload)
-    if (!this.systemClipboard) return undefined
-    try {
-      const parsed = JSON.parse(await this.systemClipboard.readText()) as {
-        type?: unknown
-        payload?: unknown
-      }
-      if (parsed.type !== BOARD_CLIPBOARD_MIME || !isBoardClipboardPayload(parsed.payload)) {
-        return undefined
-      }
-      this.payload = clonePayload(parsed.payload)
-      return clonePayload(parsed.payload)
-    } catch {
+  readFromClipboardData(data: ClipboardDataReader | null): BoardClipboardPayload | undefined {
+    if (!data) return this.peek()
+
+    const customText = readClipboardData(data, BOARD_CLIPBOARD_MIME)
+    const plainText = readClipboardData(data, 'text/plain')
+    const parsed = parseClipboardEnvelope(customText) ?? parseClipboardEnvelope(plainText)
+    if (parsed) {
+      this.payload = clonePayload(parsed)
+      return clonePayload(parsed)
+    }
+
+    const hasCurrentClipboardContent =
+      (data.types?.length ?? 0) > 0 ||
+      (data.files?.length ?? 0) > 0 ||
+      (data.items?.length ?? 0) > 0 ||
+      customText.length > 0 ||
+      plainText.length > 0
+    if (hasCurrentClipboardContent) {
+      this.payload = undefined
       return undefined
+    }
+
+    return this.peek()
+  }
+
+  async read(): Promise<BoardClipboardPayload | undefined> {
+    if (!this.systemClipboard) return this.peek()
+    try {
+      const parsed = parseClipboardEnvelope(await this.systemClipboard.readText())
+      this.payload = parsed ? clonePayload(parsed) : undefined
+      return parsed ? clonePayload(parsed) : undefined
+    } catch {
+      return this.peek()
     }
   }
 }

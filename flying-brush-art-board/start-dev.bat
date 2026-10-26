@@ -34,7 +34,7 @@ if errorlevel 1 (
 call :wait_port 4173 "Web app"
 if errorlevel 1 goto :startup_failed
 
-start "" http://127.0.0.1:4173/
+if /I not "%INFINITE_BOARD_NO_BROWSER%"=="1" start "" http://127.0.0.1:4173/
 exit /b 0
 
 :is_listening

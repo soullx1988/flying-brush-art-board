@@ -35,6 +35,7 @@ const ACTION_OPTIONS = [
   { value: 'project.rename', label: '重命名项目' },
   { value: 'project.delete', label: '删除项目' },
   { value: 'project.root-board', label: '更改默认画板' },
+    { value: 'project.navigation', label: '调整主题结构' },
   { value: 'board.create', label: '创建画板' },
   { value: 'board.edit', label: '编辑画板' },
   { value: 'board.rename', label: '重命名画板' },

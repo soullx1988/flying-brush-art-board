@@ -114,6 +114,18 @@ describe('commitIboardMerge', () => {
     expect(readdirSync(assetDirectory)).toHaveLength(1)
   })
 
+  it('merges navigation with existing topics and preserves it when exporting again', async () => {
+    projects.saveNavigation('project-target', {version:1,revision:0,topics:[{id:'topic:existing',title:'Existing',description:''}],parents:{'target-root':'topic:existing'}})
+    const fixture=createReferenceGraphProjectFixture()
+    fixture.project.navigation={version:1,revision:4,topics:[{id:'topic:source',title:'Imported',description:''}],parents:Object.fromEntries(fixture.boards.map(board=>[board.id,board.id===fixture.project.rootBoardId?'topic:source':fixture.project.rootBoardId]))}
+    const result=await commitIboardMerge(decodeIboard(exportProjectToIboard(fixture)),{targetProjectId:'project-target',database,assets,namespace:'with-navigation'})
+    const navigation=projects.get('project-target')!.navigation!
+    expect(navigation.topics).toHaveLength(2)
+    expect(navigation.parents['target-root']).toBe('topic:existing')
+    expect(navigation.parents[result.importedRootBoardId]).toBe(navigation.topics[1]!.id)
+    expect(navigation.revision).toBe(2)
+  })
+
   it.each([
     'asset-materialize',
     'id-remap',

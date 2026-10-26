@@ -219,7 +219,7 @@ export function ProjectCenterPage({ client, onOpenProject }: {
         <div className="project-center__brand" aria-hidden="true"><SquaresFour weight="duotone" /></div>
         <div className="project-center__intro">
           <p className="eyebrow">桌面创作工作区</p>
-          <h1>无限画板</h1>
+          <h1>魔灵画板</h1>
           <p>继续最近的项目，或建立一个新的画板工作区。</p>
         </div>
         <Button variant="accent" size="lg" icon={<Plus aria-hidden="true" />} onClick={() => openDialog({ kind: 'create' })}>

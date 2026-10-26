@@ -77,7 +77,7 @@ test('creates an auto-routed elbow connector between shape midpoint anchors', as
     return {
       sourceId,
       targetId,
-      targetPoint: editor.pageToScreen(targetBounds.center),
+      targetPoint: editor.pageToScreen({ x: targetBounds.x + 4, y: targetBounds.center.y }),
     }
   })
 
@@ -105,11 +105,23 @@ test('creates an auto-routed elbow connector between shape midpoint anchors', as
       && start.props.normalizedAnchor.x === 1
       && start.props.normalizedAnchor.y === 0.5
       && end?.toId === targetId
-      && end.props.snap === 'center'
-      && end.props.isPrecise === false
-      && end.props.normalizedAnchor.x === 0.5
+      && end.props.snap === 'edge-point'
+      && end.props.isPrecise === true
+      && end.props.normalizedAnchor.x === 0
       && end.props.normalizedAnchor.y === 0.5
   }, connection)).toBe(true)
+
+  const terminalLegLength = await page.evaluate(() => {
+    const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+    const arrow = editor?.getCurrentPageShapes().find((shape: { type: string }) => shape.type === 'arrow')
+    if (!arrow) throw new Error('Expected an elbow connector')
+    const info = editor.getShapeUtil(arrow).getGeometry(arrow)
+    const body = info.children?.[0] ?? info
+    const vertices = body.vertices ?? body.points
+    if (!Array.isArray(vertices) || vertices.length < 2) throw new Error('Expected routed elbow vertices')
+    return Math.hypot(vertices[1].x - vertices[0].x, vertices[1].y - vertices[0].y)
+  })
+  expect(terminalLegLength).toBeGreaterThanOrEqual(25)
 
   const routeBeforeMove = await page.evaluate(() => {
     const editor = (window as unknown as { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
@@ -135,6 +147,120 @@ test('creates an auto-routed elbow connector between shape midpoint anchors', as
     targetId: connection.targetId,
     previousMaxY: routeBeforeMove.maxY,
   })).toBe(true)
+})
+
+test('undoes child-board copy, connection, and repeated drags one step at a time', async ({ page, request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const { projectId, rootBoardId } = await createProject(request, suffix)
+  const targetBoardId = `board-undo-target-${suffix}`
+  expect((await request.post(`${API_BASE}/api/projects/${projectId}/boards`, {
+    data: { id: targetBoardId, title: 'Undo target' },
+  })).ok()).toBe(true)
+  const originalShapeId = `shape:undo-reference-${crypto.randomUUID()}`
+  expect((await request.post(`${API_BASE}/api/boards/${rootBoardId}/references`, {
+    data: {
+      targetBoardId,
+      shapeId: originalShapeId,
+      kind: 'embed',
+      expectedRevision: 0,
+      placement: { x: 120, y: 180 },
+    },
+  })).ok()).toBe(true)
+
+  await page.goto(`/projects/${projectId}/boards/${rootBoardId}`)
+  await page.waitForFunction((id) => Boolean(
+    (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.getShape(id),
+  ), originalShapeId)
+  await page.evaluate((id) => {
+    (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.select(id)
+  }, originalShapeId)
+
+  await page.keyboard.press('Control+c')
+  const pasteResponse = page.waitForResponse((response) =>
+    response.url().endsWith(`/api/boards/${rootBoardId}/clipboard/paste`)
+      && response.request().method() === 'POST'
+      && response.status() === 201,
+  )
+  await page.keyboard.press('Control+v')
+  expect((await pasteResponse).status()).toBe(201)
+  const copiedShapeId = await page.waitForFunction((originalId) => {
+    const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+    return editor?.getCurrentPageShapes().find((shape: { id: string; type: string }) => (
+      shape.type === 'board-reference' && shape.id !== originalId
+    ))?.id
+  }, originalShapeId).then((handle) => handle.jsonValue() as Promise<string>)
+
+  const shapeState = (id: string) => page.evaluate((shapeId) => {
+    const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+    const shape = editor?.getShape(shapeId)
+    return shape ? { x: shape.x, y: shape.y } : undefined
+  }, id)
+  const documentState = () => page.evaluate(() => {
+    const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+    const shapes = editor?.getCurrentPageShapes() ?? []
+    return {
+      references: shapes.filter((shape: { type: string }) => shape.type === 'board-reference').length,
+      arrows: shapes.filter((shape: { type: string }) => shape.type === 'arrow').length,
+    }
+  })
+  const dragShapeBy = async (id: string, dx: number, dy: number) => {
+    const center = await page.evaluate((shapeId) => {
+      const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+      const bounds = editor?.getShapePageBounds(shapeId)
+      if (!bounds) throw new Error(`Shape ${shapeId} has no bounds`)
+      return editor.pageToScreen(bounds.center)
+    }, id)
+    await page.mouse.move(center.x, center.y)
+    await page.mouse.down()
+    await page.mouse.move(center.x + dx, center.y + dy, { steps: 12 })
+    await page.mouse.up()
+  }
+
+  await dragShapeBy(copiedShapeId, 360, 20)
+  const afterInitialMove = await shapeState(copiedShapeId)
+  expect(afterInitialMove).toBeTruthy()
+
+  await page.evaluate((id) => {
+    (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__?.select(id)
+  }, originalShapeId)
+  const rightHandle = page.locator('.shape-connection-handle').nth(1)
+  await expect(rightHandle).toBeVisible()
+  const handleBounds = await rightHandle.boundingBox()
+  const copiedCenter = await page.evaluate((shapeId) => {
+    const editor = (window as Window & { __INFINITE_BOARD_EDITOR__?: any }).__INFINITE_BOARD_EDITOR__
+    return editor.pageToScreen(editor.getShapePageBounds(shapeId).center)
+  }, copiedShapeId)
+  if (!handleBounds) throw new Error('Connection handle has no bounds')
+  await page.mouse.move(handleBounds.x + handleBounds.width / 2, handleBounds.y + handleBounds.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(copiedCenter.x, copiedCenter.y, { steps: 12 })
+  await page.mouse.up()
+  await expect.poll(documentState).toEqual({ references: 2, arrows: 1 })
+
+  await dragShapeBy(copiedShapeId, 90, 50)
+  const afterFirstDrag = await shapeState(copiedShapeId)
+  await dragShapeBy(copiedShapeId, 70, -80)
+  const afterSecondDrag = await shapeState(copiedShapeId)
+  expect(afterFirstDrag).not.toEqual(afterInitialMove)
+  expect(afterSecondDrag).not.toEqual(afterFirstDrag)
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => shapeState(copiedShapeId)).toEqual(afterFirstDrag)
+  await expect.poll(documentState).toEqual({ references: 2, arrows: 1 })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => shapeState(copiedShapeId)).toEqual(afterInitialMove)
+  await expect.poll(documentState).toEqual({ references: 2, arrows: 1 })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(documentState).toEqual({ references: 2, arrows: 0 })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(() => shapeState(copiedShapeId)).not.toEqual(afterInitialMove)
+  await expect.poll(documentState).toEqual({ references: 2, arrows: 0 })
+
+  await page.keyboard.press('Control+z')
+  await expect.poll(documentState).toEqual({ references: 1, arrows: 0 })
 })
 
 test('shows and drags a midpoint handle for every elbow-arrow segment', async ({ page, request }) => {

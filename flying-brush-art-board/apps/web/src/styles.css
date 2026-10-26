@@ -58,6 +58,12 @@
   box-sizing: border-box;
 }
 
+/* CJK glyphs use a fallback font without an italic face; let the canvas
+   synthesize the oblique style while keeping the app shell's font policy. */
+.tl-container {
+  font-synthesis: style;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -490,7 +496,10 @@ input {
   flex-wrap: wrap;
   gap: 8px;
   margin: 0;
-  padding: 0;
+  padding: 3px;
+  max-height: 84px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
 }
 
@@ -1141,7 +1150,15 @@ input {
   cursor: grab;
 }
 
+.canvas-mind-map-node[data-root='true'][data-movable='true'] {
+  cursor: grab;
+}
+
 .canvas-mind-map-shape[data-drag-active='true'] .canvas-mind-map-node {
+  cursor: grabbing;
+}
+
+.canvas-mind-map-shape[data-shape-drag-active='true'] .canvas-mind-map-node[data-root='true'] {
   cursor: grabbing;
 }
 

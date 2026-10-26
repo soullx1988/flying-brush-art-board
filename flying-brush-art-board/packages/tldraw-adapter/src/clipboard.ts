@@ -18,6 +18,11 @@ export interface ClipboardStore {
 
 export interface ClipboardEditor {
   getShapeAndDescendantIds(shapeId: string): ReadonlySet<string>
+  getContentFromCurrentPage?(shapeIds: readonly string[]): {
+    shapes: readonly Record<string, unknown>[]
+    bindings: readonly Record<string, unknown>[]
+    assets: readonly Record<string, unknown>[]
+  } | undefined
   store: ClipboardStore
 }
 
@@ -61,19 +66,24 @@ export function collectClipboardPayload(
   }
 
   const records = editor.store.allRecords()
-  const shapes = records.filter((record) => isShape(record) && copiedIds.has(String(record.id))).map(clone)
+  const isolatedContent = editor.getContentFromCurrentPage?.(selectedShapeIds)
+  const shapes = isolatedContent
+    ? isolatedContent.shapes.map(clone)
+    : records.filter((record) => isShape(record) && copiedIds.has(String(record.id))).map(clone)
+  const isolatedCopiedIds = new Set(shapes.map((shape) => String(shape.id)))
   const bindings: Record<string, unknown>[] = []
   const brokenBindingIds: string[] = []
 
   for (const binding of records.filter(isBinding)) {
     const fromId = String(binding.fromId)
     const toId = String(binding.toId)
-    if (copiedIds.has(fromId) && copiedIds.has(toId)) {
-      bindings.push(clone(binding))
-    } else if (copiedIds.has(fromId) || copiedIds.has(toId)) {
+    if (isolatedCopiedIds.has(fromId) && isolatedCopiedIds.has(toId)) {
+      if (!isolatedContent) bindings.push(clone(binding))
+    } else if (isolatedCopiedIds.has(fromId) || isolatedCopiedIds.has(toId)) {
       brokenBindingIds.push(String(binding.id))
     }
   }
+  if (isolatedContent) bindings.push(...isolatedContent.bindings.map(clone))
 
   const assetIds = new Set(
     shapes.flatMap((shape) => {
@@ -85,7 +95,7 @@ export function collectClipboardPayload(
     (sourceContext.assets ?? []).map((asset) => [asset.assetRecordId, asset]),
   )
   const assetRecordsById = new Map(
-    records
+    [...records, ...(isolatedContent?.assets ?? [])]
       .filter((record) => record.typeName === 'asset' && assetIds.has(String(record.id)))
       .map((record) => [String(record.id), record]),
   )

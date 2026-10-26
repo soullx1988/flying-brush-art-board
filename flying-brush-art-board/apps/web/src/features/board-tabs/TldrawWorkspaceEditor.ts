@@ -21,6 +21,7 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
     camera: { x: 0, y: 0, z: 1 },
     selectedShapeIds: [],
     currentToolId: 'select',
+    hasBeenViewed: false,
   }
   private readOnly = false
   private leaseHolderTabId: string | undefined
@@ -77,6 +78,7 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
       camera: this.editor.getCamera(),
       selectedShapeIds: [...this.editor.getSelectedShapeIds()],
       currentToolId: this.editor.getCurrentToolId(),
+      hasBeenViewed: true,
     }
   }
 
@@ -86,6 +88,21 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
     this.editor.setCamera(viewState.camera as { x: number; y: number; z?: number })
     this.editor.setSelectedShapes(viewState.selectedShapeIds as TLShapeId[])
     this.editor.setCurrentTool(viewState.currentToolId)
+    if (viewState.hasBeenViewed === false) this.frameFirstView()
+  }
+
+  private frameFirstView(): void {
+    const editor = this.editor
+    if (!editor) return
+    const bounds = editor.getCurrentPageBounds()
+    const viewport = editor.getViewportScreenBounds()
+    if (!bounds || bounds.w <= 0 || viewport.w <= 0 || viewport.h <= 0) return
+    // Read long boards from their top, rather than fitting their entire height
+    // into an unreadably small overview. Leave room for the native top toolbar.
+    const inset = 48
+    const zoom = Math.min(1, (viewport.w - inset * 2) / bounds.w)
+    if (zoom <= 0) return
+    editor.setCamera({ x: inset / zoom - bounds.x, y: 80 / zoom - bounds.y, z: zoom })
   }
 
   setReadOnly(readOnly: boolean, holderTabId?: string): void {

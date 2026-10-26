@@ -853,7 +853,11 @@ function TableShapeComponent({ shape }: { shape: TableShape }) {
                 onKeyDown={(event) => handleEditingKeyDown(event, rowIndex, columnIndex)}
                 onPaste={(event) => handlePaste(event, rowIndex, columnIndex)}
               />
-            ) : <span>{cell.text}</span>}
+            ) : <span style={{
+              WebkitLineClamp: Math.max(1, Math.min(3, Math.floor(
+                (row.height * shape.props.h - 12) / ((cell.fontSize ?? 14) * 1.35),
+              ))),
+            }}>{cell.text}</span>}
           </div>
         )))}
         {isSelected && selectedColumnIndex !== undefined && selectedRowIndex === undefined && selectionBounds ? <>

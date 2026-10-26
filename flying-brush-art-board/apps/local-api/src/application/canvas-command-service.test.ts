@@ -17,7 +17,7 @@ afterEach(() => {
 
 function setup() {
   const database = createDatabase(':memory:')
-  database.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{\"store\":{}}',NULL,0,'t','t')")
+  database.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{\"store\":{}}',NULL,0,'t','t')")
   const boards = new BoardRepository(database)
   const realtime = { applyCommittedSnapshot: vi.fn(async () => undefined) }
   const directory = mkdtempSync(join(tmpdir(), 'canvas-command-'))

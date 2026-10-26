@@ -4,10 +4,11 @@ import { ChatCircleDots, ClockCounterClockwise, SquaresFour } from '@phosphor-ic
 import { Badge, Button, Drawer, Modal, Tag, toast } from '@ttqtt/liquid-glass-react'
 import type { BoardReferenceShape } from '@infinite-board/tldraw-adapter'
 import { getStoreSnapshot, snapshotToInteropScene } from '@infinite-board/tldraw-adapter'
+import type { TldrawUserIdentity } from '../auth/tldraw-user'
 
 import type { BoardSessionStatus } from './board-session'
 import { SaveStatus } from './SaveStatus'
-import { CanvasEditor, type BoardReferenceActions } from '../canvas/CanvasEditor'
+import { CanvasEditor, type BoardReferenceActions, type CanvasEditorProps } from '../canvas/CanvasEditor'
 import { exportDrawioBoard } from '../import-export/DrawioExportButton'
 import { BoardExportMenu } from '../import-export/BoardExportMenu'
 import { exportBoardAsPng, exportBoardAsSvg } from '../import-export/visual-import'
@@ -56,12 +57,14 @@ export interface BoardPageProps {
   onEditorMount(editor: Editor): void
   onBeforePdfExport?(): Promise<void>
   onEditIntent(): boolean
+  onClipboardPaste?: CanvasEditorProps['onClipboardPaste']
   onShowAllBoards(): void
   onShowActivity?(): void
   onCreateReference?: (placement: { x: number; y: number }) => void
   onBoardReferenceOpen?(shape: BoardReferenceShape): void
   boardReferenceActions?: BoardReferenceActions
   onBoardReferenceDrop?(event: { boardId: string; x: number; y: number }): void
+  tldrawUser?: TldrawUserIdentity
   commentClient?: CommentClient
   collaborationStatus?: ReactNode
 }
@@ -82,12 +85,14 @@ export function BoardPage({
   onEditorMount,
   onBeforePdfExport,
   onEditIntent,
+  onClipboardPaste,
   onShowAllBoards,
   onShowActivity,
   onCreateReference,
   onBoardReferenceOpen,
   boardReferenceActions,
   onBoardReferenceDrop,
+  tldrawUser,
   commentClient,
   collaborationStatus,
 }: BoardPageProps) {
@@ -275,12 +280,14 @@ export function BoardPage({
       {automationEvent ? <div className={`automation-operation automation-operation--${automationEvent.type.split('.').at(-1)}`} role="status"><strong>{automationEvent.type === 'operation.started' ? 'AI 正在操作' : automationEvent.type === 'operation.committed' ? 'AI 操作完成' : 'AI 操作失败'}</strong><span>{automationEvent.summary}</span></div> : null}
       <CanvasEditor
         store={store}
+        {...(tldrawUser ? { tldrawUser } : {})}
         inputSessionKey={inputSessionKey}
         onMount={(editor) => {
           editorRef.current = editor
           onEditorMount(editor)
         }}
         onEditIntent={onEditIntent}
+        {...(onClipboardPaste ? { onClipboardPaste } : {})}
         {...(onCreateReference ? {
           referenceToolActive,
           onReferenceToolToggle: () => {

@@ -14,6 +14,7 @@ import {
   getDisplayValues,
   useValue,
   type Box,
+  type Editor,
   type JsonObject,
   type SvgExportContext,
   type TLArrowShape,
@@ -27,6 +28,7 @@ import {
   MANUAL_ELBOW_ROUTE_META_KEY,
   createManualElbowRoute,
   dragManualElbowSegment,
+  ensureMinimumTerminalLegs,
   manualSegmentHandleId,
   normalizeManualElbowRoute,
   readManualElbowRoute,
@@ -38,6 +40,7 @@ import {
   type ManualElbowRouteV1,
   type ResolvedManualElbowRoute,
 } from './manual-elbow-route.js'
+import { getNearestConnectionAnchor, sameConnectionAnchor } from './connection-anchors.js'
 
 interface ArrowDisplayValues {
   strokeColor: string
@@ -53,6 +56,54 @@ interface ArrowDisplayValues {
 }
 
 const EPSILON = 0.01
+
+function snapTerminalBindingToNearestConnectionAnchor(
+  editor: Editor,
+  arrow: TLArrowShape,
+  terminal: 'start' | 'end',
+  draggedHandle: VecLike,
+  pointerPagePoint?: VecLike,
+): void {
+  const arrowTransform = editor.getShapePageTransform(arrow.id)
+  if (!arrowTransform) return
+
+  const binding = editor
+    .getBindingsFromShape(arrow.id, 'arrow')
+    .find((candidate) => candidate.props.terminal === terminal)
+  if (!binding) return
+
+  const targetShape = editor.getShape(binding.toId)
+  if (!targetShape) return
+  const targetTransform = editor.getShapePageTransform(targetShape)
+  if (!targetTransform) return
+
+  const targetBounds = editor.getShapeGeometry(targetShape).bounds
+  const draggedPagePoint = pointerPagePoint ?? arrowTransform.applyToPoint(draggedHandle)
+  const draggedTargetPoint = editor.getPointInShapeSpace(targetShape, draggedPagePoint)
+  const normalizedAnchor = getNearestConnectionAnchor(
+    targetBounds,
+    draggedTargetPoint,
+    binding.props.normalizedAnchor,
+  )
+
+  if (
+    sameConnectionAnchor(normalizedAnchor, binding.props.normalizedAnchor)
+    && binding.props.isPrecise === true
+    && binding.props.isExact === false
+    && binding.props.snap === 'edge-point'
+  ) return
+
+  editor.updateBinding({
+    ...binding,
+    props: {
+      ...binding.props,
+      normalizedAnchor,
+      isPrecise: true,
+      isExact: false,
+      snap: 'edge-point',
+    },
+  })
+}
 
 function isNonEmptyRichText(shape: TLArrowShape): boolean {
   const visit = (value: unknown): boolean => {
@@ -200,12 +251,33 @@ function ManualArrowSvg({
 }
 
 export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
+  constructor(editor: Editor) {
+    super(editor)
+    this.options = {
+      ...this.options,
+      expandElbowLegLength: {
+        s: 19.6,
+        m: 25.2,
+        l: 30.8,
+        xl: 46.2,
+      },
+      minElbowLegLength: {
+        s: 19.6,
+        m: 25.2,
+        l: 30.8,
+        xl: 46.2,
+      },
+    }
+  }
+
   private getAutomaticRoute(shape: TLArrowShape): ResolvedManualElbowRoute | undefined {
     const info = getArrowInfo(this.editor, shape)
     if (shape.props.kind !== 'elbow' || info?.type !== 'elbow' || !info.isValid) return undefined
     const points = simplifyOrthogonalPoints(info.route.points)
     const route = createManualElbowRoute(points, (index) => `auto-${index}`)
-    return route ? resolveManualElbowRoute(route, info.start.point, info.end.point, (index) => `auto-${index}`) : undefined
+    if (!route) return undefined
+    const constrained = ensureMinimumTerminalLegs(route, info.start.point, info.end.point)
+    return resolveManualElbowRoute(constrained, info.start.point, info.end.point, (index) => `auto-${index}`)
   }
 
   private getManualRoute(shape: TLArrowShape): ResolvedManualElbowRoute | undefined {
@@ -213,7 +285,8 @@ export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
     if (!route || shape.props.kind !== 'elbow') return undefined
     const info = getArrowInfo(this.editor, shape)
     if (info?.type !== 'elbow' || !info.isValid) return undefined
-    return resolveManualElbowRoute(route, info.start.point, info.end.point)
+    const constrained = ensureMinimumTerminalLegs(route, info.start.point, info.end.point)
+    return resolveManualElbowRoute(constrained, info.start.point, info.end.point)
   }
 
   private getLabelBox(shape: TLArrowShape, route: ResolvedManualElbowRoute): Box | undefined {
@@ -225,7 +298,7 @@ export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
   }
 
   override getGeometry(shape: TLArrowShape) {
-    const route = this.getManualRoute(shape)
+    const route = this.getManualRoute(shape) ?? this.getAutomaticRoute(shape)
     if (!route) return super.getGeometry(shape)
     const body = new Polyline2d({ points: route.points.map((point) => Vec.From(point)) })
     const shouldShowLabel = this.editor.getEditingShapeId() === shape.id || isNonEmptyRichText(shape)
@@ -259,7 +332,20 @@ export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
 
   override onHandleDrag(shape: TLArrowShape, info: TLHandleDragInfo<TLArrowShape>) {
     const segmentId = segmentIdFromHandleId(info.handle.id)
-    if (!segmentId) return super.onHandleDrag(shape, info)
+    if (!segmentId) {
+      const change = super.onHandleDrag(shape, info)
+      if (info.handle.id === 'start' || info.handle.id === 'end') {
+        const currentArrow = this.editor.getShape<TLArrowShape>(shape.id) ?? shape
+        snapTerminalBindingToNearestConnectionAnchor(
+          this.editor,
+          currentArrow,
+          info.handle.id,
+          info.handle,
+          info.isCreatingShape ? undefined : this.editor.inputs.currentPagePoint,
+        )
+      }
+      return change
+    }
     if (shape.props.kind !== 'elbow' || shape.isLocked || this.editor.getIsReadonly()) return
     const current = this.getManualRoute(shape) ?? this.getAutomaticRoute(shape)
     if (!current) return
@@ -274,6 +360,17 @@ export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
   }
 
   override onHandleDragEnd(shape: TLArrowShape, info: TLHandleDragInfo<TLArrowShape>): TLShapePartial<TLArrowShape> | void {
+    if (info.handle.id === 'start' || info.handle.id === 'end') {
+      const currentArrow = this.editor.getShape<TLArrowShape>(shape.id) ?? shape
+      snapTerminalBindingToNearestConnectionAnchor(
+        this.editor,
+        currentArrow,
+        info.handle.id,
+        info.handle,
+        this.editor.inputs.currentPagePoint,
+      )
+      return
+    }
     if (!segmentIdFromHandleId(info.handle.id)) return
     const current = this.getManualRoute(shape)
     if (!current) return
@@ -300,7 +397,7 @@ export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
   }
 
   override component(shape: TLArrowShape): ReactElement | null {
-    const route = this.getManualRoute(shape)
+    const route = this.getManualRoute(shape) ?? this.getAutomaticRoute(shape)
     if (!route) return super.component(shape)
     const displayValues = getDisplayValues(this, shape) as ArrowDisplayValues
     const geometry = this.editor.getShapeGeometry(shape)
@@ -338,13 +435,13 @@ export class EnhancedArrowShapeUtil extends ArrowShapeUtil {
   }
 
   override getIndicatorPath(shape: TLArrowShape) {
-    const route = this.getManualRoute(shape)
+    const route = this.getManualRoute(shape) ?? this.getAutomaticRoute(shape)
     if (!route) return super.getIndicatorPath(shape)
     return routePath(route.points).toPath2D({ style: 'solid', strokeWidth: 1 })
   }
 
   override toSvg(shape: TLArrowShape, context: SvgExportContext): ReactElement {
-    const route = this.getManualRoute(shape)
+    const route = this.getManualRoute(shape) ?? this.getAutomaticRoute(shape)
     if (!route) return super.toSvg(shape, context)
     const displayValues = getDisplayValues(this, shape, context.colorMode) as ArrowDisplayValues
     const labelBox = this.getLabelBox(shape, route)

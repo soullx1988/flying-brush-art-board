@@ -50,7 +50,7 @@ function RealtimeBoardConnection({
   onManualReconnect(): void
   onConnected(): void
 }) {
-  const remote = useRealtimeBoardStore(boardId)
+  const remote = useRealtimeBoardStore(boardId, props.tldrawUser)
   const remoteStore = remote.status === 'synced-remote' ? remote.store : undefined
   const onlineCount = useValue(
     'online collaborators',

@@ -26,6 +26,8 @@ describe('TldrawWorkspaceEditor', () => {
       setSelectedShapes: vi.fn(),
       setCurrentTool: vi.fn(),
       updateInstanceState: vi.fn(),
+      getCurrentPageBounds: vi.fn(() => undefined),
+      getViewportScreenBounds: vi.fn(() => ({ w: 1280, h: 800 })),
     } as unknown as Editor
 
     bridge.mountEditor(mountedEditor)
@@ -43,6 +45,8 @@ describe('TldrawWorkspaceEditor', () => {
       setSelectedShapes: vi.fn(),
       setCurrentTool: vi.fn(),
       updateInstanceState: vi.fn(),
+      getCurrentPageBounds: vi.fn(() => undefined),
+      getViewportScreenBounds: vi.fn(() => ({ w: 1280, h: 800 })),
     } as unknown as Editor
 
     bridge.mountEditor(mountedEditor)
@@ -51,5 +55,34 @@ describe('TldrawWorkspaceEditor', () => {
 
     expect(pageName(getStoreSnapshot(sourceStore))).toBe('Source')
     expect(pageName(bridge.getSnapshot() as ReturnType<typeof getStoreSnapshot>)).toBe('Target')
+  })
+
+  it('opens a long board at a readable top view without clipping its title under the toolbar', () => {
+    const bridge = new TldrawWorkspaceEditor(snapshotWithPageName('Long board'))
+    const setCamera = vi.fn()
+    const mountedEditor = {
+      store: createBoardStore(), setCamera, setSelectedShapes: vi.fn(), setCurrentTool: vi.fn(),
+      updateInstanceState: vi.fn(),
+      getCurrentPageBounds: () => ({ x: -100, y: -200, w: 1480, h: 8000 }),
+      getViewportScreenBounds: () => ({ w: 1280, h: 800 }),
+    } as unknown as Editor
+    bridge.mountEditor(mountedEditor)
+    const camera = setCamera.mock.calls.at(-1)![0]
+    expect(camera.z).toBeCloseTo(0.8)
+    expect((-100 + camera.x) * camera.z).toBeCloseTo(48)
+    expect((-200 + camera.y) * camera.z).toBeCloseTo(80)
+  })
+
+  it('restores explicitly saved cameras including a deliberate origin at 100 percent', () => {
+    const bridge = new TldrawWorkspaceEditor(snapshotWithPageName('Saved view'))
+    const getCurrentPageBounds = vi.fn()
+    const setCamera = vi.fn()
+    bridge.setViewState({ camera: { x: 0, y: 0, z: 1 }, selectedShapeIds: [], currentToolId: 'select', hasBeenViewed: true })
+    bridge.mountEditor({
+      store: createBoardStore(), setCamera, setSelectedShapes: vi.fn(), setCurrentTool: vi.fn(),
+      updateInstanceState: vi.fn(), getCurrentPageBounds,
+    } as unknown as Editor)
+    expect(setCamera).toHaveBeenLastCalledWith({ x: 0, y: 0, z: 1 })
+    expect(getCurrentPageBounds).not.toHaveBeenCalled()
   })
 })

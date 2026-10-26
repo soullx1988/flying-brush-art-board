@@ -1,4 +1,5 @@
 export interface ProjectRecord {
+  navigation?: import('./project-navigation.js').ProjectNavigation
   id: string
   title: string
   rootBoardId: string

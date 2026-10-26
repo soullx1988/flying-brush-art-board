@@ -13,6 +13,7 @@
     "@infinite-board/interop": "workspace:*",
     "@infinite-board/tldraw-adapter": "workspace:*",
     "@phosphor-icons/react": "2.1.10",
+    "@tiptap/extension-underline": "3.28.0",
     "@tldraw/assets": "5.2.5",
     "@tldraw/sync": "5.2.5",
     "@ttqtt/liquid-glass-react": "0.2.0",

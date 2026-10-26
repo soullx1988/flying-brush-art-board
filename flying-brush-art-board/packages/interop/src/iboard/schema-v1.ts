@@ -1,4 +1,4 @@
-import type { BoardReferenceRecord, ImportSource } from '@infinite-board/board-core'
+import type { BoardReferenceRecord, ImportSource, ProjectNavigation } from '@infinite-board/board-core'
 import { z } from 'zod'
 
 export const IBOARD_FORMAT = 'infinite-board' as const
@@ -25,6 +25,7 @@ export interface IboardAssetDescriptorV1 {
 }
 
 export interface IboardManifestV1 {
+  navigation?: ProjectNavigation
   format: typeof IBOARD_FORMAT
   formatVersion: typeof IBOARD_FORMAT_VERSION
   projectId: string
@@ -76,6 +77,11 @@ export const iboardAssetDescriptorV1Schema = z.object({
 }).strict()
 
 export const iboardManifestV1Schema = z.object({
+  navigation: z.object({
+    version: z.literal(1), revision: z.number().int().nonnegative(),
+    topics: z.array(z.object({ id: z.string().startsWith('topic:'), title: z.string().min(1).max(100), description: z.string().max(300) }).strict()).max(100),
+    parents: z.record(z.string().min(1), z.string().min(1)),
+  }).strict().optional(),
   format: z.literal(IBOARD_FORMAT),
   formatVersion: z.literal(IBOARD_FORMAT_VERSION),
   projectId: identifierSchema,
@@ -115,7 +121,7 @@ export const iboardReferencesV1Schema = z.array(iboardReferenceV1Schema)
 export function parseIboardManifestV1(value: unknown): IboardManifestV1 {
   const parsed = iboardManifestV1Schema.safeParse(value)
   if (!parsed.success) throw new Error('IBOARD_MANIFEST_INVALID')
-  return parsed.data
+  return parsed.data as IboardManifestV1
 }
 
 export function parseIboardBoardV1(value: unknown): IboardBoardV1 {

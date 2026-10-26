@@ -31,6 +31,9 @@ export interface ResolvedManualElbowRoute {
 export type ManualElbowSegmentIdFactory = (index: number) => string
 
 const EPSILON = 0.01
+// Keep the first/last elbow leg visibly clear of its connection point.
+// This is the same 25px floor used by the desktop connection-point workflow.
+export const MIN_MANUAL_ELBOW_LEG_LENGTH = 25
 let nextRouteId = 0
 
 export function createManualElbowSegmentId(): string {
@@ -58,6 +61,51 @@ function segmentPosition(orientation: ManualElbowSegmentOrientation, start: VecL
 
 function endpointPosition(orientation: ManualElbowSegmentOrientation, point: VecLike): number {
   return orientation === 'horizontal' ? point.y : point.x
+}
+
+function clampTerminalPosition(
+  position: number,
+  endpoint: number,
+  directionHint: number,
+  minimum = MIN_MANUAL_ELBOW_LEG_LENGTH,
+): number {
+  if (Math.abs(position - endpoint) >= minimum) return position
+  const direction = Math.sign(position - endpoint) || Math.sign(directionHint) || 1
+  return endpoint + direction * minimum
+}
+
+function enforceMinimumTerminalLegs(
+  segments: ManualElbowSegment[],
+  start: VecLike,
+  end: VecLike,
+): void {
+  if (segments.length < 2) return
+
+  const first = segments[0]!
+  const firstTurn = segments[1]!
+  firstTurn.position = clampTerminalPosition(
+    firstTurn.position,
+    endpointPosition(firstTurn.orientation, start),
+    endpointPosition(firstTurn.orientation, end) - endpointPosition(firstTurn.orientation, start),
+  )
+
+  const last = segments[segments.length - 1]!
+  const lastTurn = segments[segments.length - 2]!
+  lastTurn.position = clampTerminalPosition(
+    lastTurn.position,
+    endpointPosition(lastTurn.orientation, end),
+    endpointPosition(lastTurn.orientation, start) - endpointPosition(lastTurn.orientation, end),
+  )
+}
+
+export function ensureMinimumTerminalLegs(
+  route: ManualElbowRouteV1,
+  start: VecLike,
+  end: VecLike,
+): ManualElbowRouteV1 {
+  const segments = route.segments.map((segment) => ({ ...segment }))
+  enforceMinimumTerminalLegs(segments, start, end)
+  return { version: MANUAL_ELBOW_ROUTE_VERSION, segments }
 }
 
 function opposite(orientation: ManualElbowSegmentOrientation): ManualElbowSegmentOrientation {
@@ -220,30 +268,46 @@ export function dragManualElbowSegment(
 
   if (segments.length === 1) {
     const perpendicular = opposite(segment.orientation)
+    const startPosition = endpointPosition(segment.orientation, start)
+    const terminalPosition = clampTerminalPosition(
+      position,
+      startPosition,
+      endpointPosition(segment.orientation, end) - startPosition,
+    )
     return {
       version: MANUAL_ELBOW_ROUTE_VERSION,
       segments: [
         { id: id(0), orientation: perpendicular, position: endpointPosition(perpendicular, start) },
-        { ...segment, position },
+        { ...segment, position: terminalPosition },
         { id: id(2), orientation: perpendicular, position: endpointPosition(perpendicular, end) },
       ],
     }
   }
   segment.position = position
   if (index === 0) {
+    segment.position = clampTerminalPosition(
+      segment.position,
+      endpointPosition(segment.orientation, start),
+      endpointPosition(segment.orientation, end) - endpointPosition(segment.orientation, start),
+    )
     segments.unshift({
       id: id(-1),
       orientation: opposite(segment.orientation),
       position: endpointPosition(opposite(segment.orientation), start),
     })
   } else if (index === segments.length - 1) {
+    segment.position = clampTerminalPosition(
+      segment.position,
+      endpointPosition(segment.orientation, end),
+      endpointPosition(segment.orientation, start) - endpointPosition(segment.orientation, end),
+    )
     segments.push({
       id: id(segments.length),
       orientation: opposite(segment.orientation),
       position: endpointPosition(opposite(segment.orientation), end),
     })
   }
-  return { version: MANUAL_ELBOW_ROUTE_VERSION, segments }
+  return ensureMinimumTerminalLegs({ version: MANUAL_ELBOW_ROUTE_VERSION, segments }, start, end)
 }
 
 export function normalizeManualElbowRoute(

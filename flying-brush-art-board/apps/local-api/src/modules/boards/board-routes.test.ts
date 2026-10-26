@@ -15,7 +15,7 @@ describe('board routes', () => {
     const app = Fastify()
     try {
       database.exec(
-        "INSERT INTO projects VALUES ('p','P','b-root',1,'t','t');"
+        "INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b-root',1,'t','t');"
         + " INSERT INTO boards VALUES ('b-root','p','Root','{}',NULL,0,'t','t');"
         + " INSERT INTO boards VALUES ('b-delete','p','Delete me','{}',NULL,0,'t','t')",
       )

@@ -408,8 +408,8 @@ describe('clipboard command routes', () => {
         {
           assetRecordId: 'asset:image',
           sha256: asset.sha256,
-          mime: 'image/png',
-          size: bytes.byteLength,
+          mime: 'application/octet-stream',
+          size: 0,
           record: {
             id: 'asset:image',
             typeName: 'asset',

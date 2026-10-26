@@ -12,7 +12,7 @@ describe('comment routes', () => {
   it('uses the authenticated user as author and exposes thread lifecycle routes', async () => {
     const testApp = await buildTestApp()
     apps.push(testApp)
-    testApp.database.exec("INSERT INTO projects VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
+    testApp.database.exec("INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','P','b',1,'t','t'); INSERT INTO boards VALUES ('b','p','B','{}',NULL,0,'t','t')")
     const cookie = testApp.sessionCookie()
     expect((await testApp.app.inject({ method: 'POST', url: '/api/boards/b/comments', payload: { body: 'Review', shapeId: 'shape:1', x: 2, y: 3 } })).statusCode).toBe(401)
     const created = await testApp.app.inject({ method: 'POST', url: '/api/boards/b/comments', headers: { cookie }, payload: { body: 'Review', shapeId: 'shape:1', x: 2, y: 3 } })

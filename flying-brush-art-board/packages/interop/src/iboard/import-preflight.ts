@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import {
   assertBoardReferenceGraphValid,
+  assertProjectNavigationValid,
   type BoardReferenceRecord,
   type StoredBoard,
 } from '@infinite-board/board-core'
@@ -89,6 +90,7 @@ export function preflightIboardEntries(
     parseIboardJson(requireIboardArchiveEntry(entries, 'manifest.json'), 'IBOARD_MANIFEST_JSON_INVALID'),
   )
   assertUniqueManifestEntries(manifest)
+  if (manifest.navigation) assertProjectNavigationValid(manifest.navigation, manifest.boards.map((board) => board.id))
   const declaredPaths = new Set([
     'manifest.json',
     manifest.referencesPath,

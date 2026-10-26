@@ -1,4 +1,5 @@
 import type { BoardReferenceRecord } from '@infinite-board/board-core'
+import { getIndexAbove, type IndexKey } from 'tldraw'
 
 import { degradeBoardReferenceToVisualCard } from './migrations.js'
 import {
@@ -95,7 +96,24 @@ export function insertBoardReferenceShape(
 ): unknown {
   const next = mutableSnapshot(snapshot)
   if (next.store[reference.shapeId]) throw new Error(`Shape ${reference.shapeId} already exists`)
-  next.store[reference.shapeId] = createBoardReferenceShape(reference, titleFallback, placement)
+  const records = Object.values(next.store).filter(
+    (record): record is Record<string, unknown> => !!record && typeof record === 'object',
+  )
+  // Imported boards remap page IDs. A reference attached to the literal
+  // page:page would be saved but would never render on that board's page.
+  const pages = records.filter((record) => record.typeName === 'page')
+    .sort((a, b) => String(a.index ?? '').localeCompare(String(b.index ?? '')))
+  const parentId = placement?.parentId ?? String(pages[0]?.id ?? 'page:page')
+  const siblingIndices = records
+    .filter((record) => record.typeName === 'shape' && record.parentId === parentId && typeof record.index === 'string')
+    .map((record) => record.index as IndexKey)
+    .sort()
+  const index = placement?.index ?? getIndexAbove(siblingIndices.at(-1))
+  next.store[reference.shapeId] = createBoardReferenceShape(reference, titleFallback, {
+    ...placement,
+    parentId,
+    index,
+  })
   return next.snapshot
 }
 

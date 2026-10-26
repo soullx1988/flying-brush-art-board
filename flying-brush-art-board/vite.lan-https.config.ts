@@ -16,7 +16,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 4173,
     strictPort: true,
-    https: pfxPath ? { pfx: readFileSync(pfxPath), passphrase } : undefined,
+    ...(pfxPath ? { https: { pfx: readFileSync(pfxPath), ...(passphrase ? { passphrase } : {}) } } : {}),
     proxy: {
       '/api': 'http://127.0.0.1:8787',
       '/auth': 'http://127.0.0.1:8787',

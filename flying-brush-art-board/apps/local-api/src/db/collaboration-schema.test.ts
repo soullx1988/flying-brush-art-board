@@ -16,7 +16,7 @@ describe('collaboration schema', () => {
   it('enforces room/comment constraints and keeps audits when a board is deleted', () => {
     const db = createDatabase(':memory:')
     try {
-      db.exec(`INSERT INTO projects VALUES ('p','Project','b',1,'t','t');
+      db.exec(`INSERT INTO projects (id,title,root_board_id,format_version,created_at,updated_at) VALUES ('p','Project','b',1,'t','t');
         INSERT INTO boards VALUES ('b','p','Board','{}',NULL,0,'t','t');
         INSERT INTO realtime_room_updates VALUES ('b',1,'{}','u','t');
         INSERT INTO comment_threads(id,project_id,board_id,shape_id,x,y,status,created_by,created_at,updated_at) VALUES ('c','p','b',NULL,1,2,'open','u','t','t');
