@@ -100,6 +100,8 @@ import {
   type WorkspaceTab,
 } from './workspace-tabs'
 import { TldrawWorkspaceEditor } from './TldrawWorkspaceEditor'
+import { createPayRhythmSnapshot, designMapFromSnapshot } from '../commerce/commerce-design-map'
+import type { CommerceDataset } from '../commerce/commerce-data'
 import type { TldrawUserIdentity } from '../auth/tldraw-user'
 
 export interface ClipboardCommandReceipt {
@@ -762,6 +764,29 @@ export function WorkspaceShell({
     await openBoard(board.id, openInNewTab ? 'new' : 'current')
   }
 
+  const loadCommerceSource = useCallback((id: string) => client.loadBoard(id), [client])
+  const openPayRhythm = async (sourceBoardId: string, data: CommerceDataset) => {
+    const fresh = await client.getProject(projectId)
+    let board = fresh.boards.find(b => designMapFromSnapshot(b.tldrawSnapshot)?.sourceBoardId === sourceBoardId)
+    if (!board) {
+      const id = `board:pay-rhythm-${sourceBoardId.replace(/^board[:-]/, '')}`
+      try { board = await client.createBoard(projectId, { id, title: '15.01 调优付费节奏｜首充与月卡', tldrawSnapshot: createPayRhythmSnapshot(sourceBoardId, data) }) }
+      catch (error) {
+        // A second click/client may have created the same source-linked board.
+        board = (await client.getProject(projectId)).boards.find(b => b.id === id && designMapFromSnapshot(b.tldrawSnapshot)?.sourceBoardId === sourceBoardId)
+        if (!board) throw error
+      }
+      if (client.saveProjectNavigation) {
+        const latest = await client.getProject(projectId), navigation = latest.project.navigation
+        if (navigation) await client.saveProjectNavigation(projectId, { ...navigation, parents: { ...navigation.parents, [board.id]: sourceBoardId } })
+      }
+    }
+    await refreshProject()
+    const opened = workspaceState.tabs.find(tab => tab.boardId === board.id)
+    if (opened) { setWorkspacePanel(undefined); await activateTab(opened.tabId) }
+    else await openBoard(board.id, 'new')
+  }
+
   const setDefault = async (boardId: string) => {
     const project = await client.setDefaultBoard(projectId, boardId)
     setProjectData((current) => (current ? { ...current, project } : current))
@@ -1362,6 +1387,8 @@ export function WorkspaceShell({
           onBoardReferenceOpen={openReference}
           onLinkedBoardOpen={(id) => { if (projectData?.boards.some(board => board.id === id)) void openBoard(id, 'new'); else toast.error('关联画板不在当前项目中，请核对来源。') }}
           commerceResources={projectData?.boards.filter(board => projectData.project.navigation?.parents[board.id] === activeTab.boardId) ?? []}
+          onPayRhythmOpen={openPayRhythm}
+          loadCommerceSource={loadCommerceSource}
           {...(boardReferenceActions ? { boardReferenceActions } : {})}
           onBoardReferenceDrop={({ boardId, x, y }) => void createReference({
             mode: 'existing', targetBoardId: boardId, kind: 'embed',
@@ -1397,6 +1424,8 @@ export function WorkspaceShell({
           onBoardReferenceOpen={openReference}
           onLinkedBoardOpen={(id) => { if (projectData?.boards.some(board => board.id === id)) void openBoard(id, 'new'); else toast.error('关联画板不在当前项目中，请核对来源。') }}
           commerceResources={projectData?.boards.filter(board => projectData.project.navigation?.parents[board.id] === activeTab.boardId) ?? []}
+          onPayRhythmOpen={openPayRhythm}
+          loadCommerceSource={loadCommerceSource}
           {...(boardReferenceActions ? { boardReferenceActions } : {})}
           onBoardReferenceDrop={({ boardId, x, y }) => void createReference({
             mode: 'existing', targetBoardId: boardId, kind: 'embed',

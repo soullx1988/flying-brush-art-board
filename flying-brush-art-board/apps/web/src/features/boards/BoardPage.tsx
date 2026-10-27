@@ -18,7 +18,9 @@ import { resolveCommentAnchorPagePoint } from '../comments/CommentPins'
 import { chineseErrorMessage } from '../../ui-text'
 import { subscribeApplicationEvents, type ApplicationEvent } from '../automation-presence/application-events'
 import { CommerceBoardView } from '../commerce/CommerceBoardView'
-import { readCommerceDataset } from '../commerce/commerce-data'
+import { readCommerceDataset, type CommerceDataset } from '../commerce/commerce-data'
+import { readDesignMap } from '../commerce/commerce-design-map'
+import { CommerceDesignCanvas, type CommerceSourceLoader } from '../commerce/CommerceDesignCanvas'
 import { CommerceEvidenceImport } from '../commerce/CommerceEvidenceImport'
 import { importCommerceEvidence } from '../commerce/import-commerce-evidence'
 
@@ -68,6 +70,8 @@ export interface BoardPageProps {
   onBoardReferenceOpen?(shape: BoardReferenceShape): void
   onLinkedBoardOpen?(boardId: string): void
   commerceResources?: readonly { id: string; title: string }[]
+  onPayRhythmOpen?(sourceBoardId: string, data: CommerceDataset): Promise<void>
+  loadCommerceSource?: CommerceSourceLoader
   boardReferenceActions?: BoardReferenceActions
   onBoardReferenceDrop?(event: { boardId: string; x: number; y: number }): void
   tldrawUser?: TldrawUserIdentity
@@ -98,6 +102,8 @@ export function BoardPage({
   onBoardReferenceOpen,
   onLinkedBoardOpen,
   commerceResources,
+  onPayRhythmOpen,
+  loadCommerceSource,
   boardReferenceActions,
   onBoardReferenceDrop,
   tldrawUser,
@@ -118,6 +124,8 @@ export function BoardPage({
   const [automationEvent, setAutomationEvent] = useState<ApplicationEvent>()
   const documentMeta = useValue('commerce document metadata', () => store.query.records('document').get()[0]?.meta, [store])
   const commerceData = useMemo(() => readCommerceDataset(documentMeta), [documentMeta])
+  const designMap = readDesignMap(documentMeta)
+  const [openingDesign, setOpeningDesign] = useState(false)
   const [canvasOnly, setCanvasOnly] = useState(false)
   const showCommerce = Boolean(commerceData && !canvasOnly)
   const commerceSession = useRef(inputSessionKey)
@@ -260,6 +268,12 @@ export function BoardPage({
           </div>
         </div>
         <div className="board-page__status">
+          {commerceData && boardId && onPayRhythmOpen ? <Button variant="glass" size="sm" disabled={openingDesign} onClick={async () => {
+            setOpeningDesign(true)
+            try { await onPayRhythmOpen(boardId, commerceData) }
+            catch (error) { toast.error(chineseErrorMessage(error, '无法打开设计画板')) }
+            finally { setOpeningDesign(false) }
+          }}>{openingDesign ? '正在打开…' : '调优付费节奏 ↗'}</Button> : null}
           {commerceData ? <Button variant="accent" size="sm" onClick={() => setCanvasOnly(!canvasOnly)}>{showCommerce ? '查看原生画布' : '打开付费点总览'}</Button> : null}
           {commerceData ? <CommerceEvidenceImport disabled={readOnly} onImport={async bundle => {
             await importCommerceEvidence(store, bundle, () => commerceSession.current === inputSessionKey && !readOnly && onEditIntent())
@@ -299,6 +313,7 @@ export function BoardPage({
         </div>
       </header>
       {automationEvent ? <div className={`automation-operation automation-operation--${automationEvent.type.split('.').at(-1)}`} role="status"><strong>{automationEvent.type === 'operation.started' ? 'AI 正在操作' : automationEvent.type === 'operation.committed' ? 'AI 操作完成' : 'AI 操作失败'}</strong><span>{automationEvent.summary}</span></div> : null}
+      <CommerceDesignCanvas sourceBoardId={designMap?.sourceBoardId} loadSource={loadCommerceSource} store={store} editorRef={editorRef} canEdit={() => !readOnly && onEditIntent()} onOpenSource={onLinkedBoardOpen}>
       <div className="commerce-stage">
       <div className="commerce-canvas" inert={showCommerce} aria-hidden={showCommerce || undefined}>
       <CanvasEditor
@@ -381,6 +396,7 @@ export function BoardPage({
       </div>
       {showCommerce && commerceData ? <div className="commerce-overlay"><CommerceBoardView key={boardId ?? inputSessionKey} data={commerceData} onOpenBoard={onLinkedBoardOpen} {...(commerceResources ? { resources: commerceResources } : {})} /></div> : null}
       </div>
+      </CommerceDesignCanvas>
       <Drawer open={Boolean(commentClient && boardId && commentsOpen)} onOpenChange={(open) => { if (!open) closeComments() }} placement="right" size={430} title={focusedCommentThreadId ? '评论详情' : `评论 (${commentThreads.length})`}>
         {commentClient && boardId ? <CommentPanel
           embedded

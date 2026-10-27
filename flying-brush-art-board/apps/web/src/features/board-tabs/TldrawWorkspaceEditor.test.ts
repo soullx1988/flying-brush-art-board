@@ -85,4 +85,21 @@ describe('TldrawWorkspaceEditor', () => {
     expect(setCamera).toHaveBeenLastCalledWith({ x: 0, y: 0, z: 1 })
     expect(getCurrentPageBounds).not.toHaveBeenCalled()
   })
+
+  it('fits both design chains on first view while leaving room for the canvas controls', () => {
+    const store = createBoardStore()
+    loadSnapshotIntoStore(store, getStoreSnapshot(store))
+    const doc = store.allRecords().find(r => r.typeName === 'document')!
+    store.put([{ ...doc, meta: { commerceDesignMap: { version: 1, template: 'pay-rhythm', sourceBoardId: 'source' } } }])
+    const bridge = new TldrawWorkspaceEditor(getStoreSnapshot(store)), setCamera = vi.fn()
+    bridge.mountEditor({
+      store, setCamera, setSelectedShapes: vi.fn(), setCurrentTool: vi.fn(), updateInstanceState: vi.fn(),
+      getCurrentPageBounds: () => ({ x: 22, y: 0, w: 1120, h: 544 }),
+      getViewportScreenBounds: () => ({ w: 1280, h: 606 }),
+    } as unknown as Editor)
+    const camera = setCamera.mock.calls.at(-1)![0]
+    expect(camera.z).toBeLessThan(1)
+    expect((544 + camera.y) * camera.z).toBeLessThanOrEqual(606 - 60)
+    expect((1120 + 22 + camera.x) * camera.z).toBeLessThan(1280)
+  })
 })

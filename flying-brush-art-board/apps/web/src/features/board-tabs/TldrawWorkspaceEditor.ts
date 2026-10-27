@@ -7,6 +7,7 @@ import {
 } from '@infinite-board/tldraw-adapter'
 
 import type { WorkspaceEditor, WorkspaceViewState } from './workspace-tabs'
+import { readDesignMap } from '../commerce/commerce-design-map'
 
 function hasSnapshotRecords(snapshot: unknown): boolean {
   if (!snapshot || typeof snapshot !== 'object') return false
@@ -100,7 +101,8 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
     // Read long boards from their top, rather than fitting their entire height
     // into an unreadably small overview. Leave room for the native top toolbar.
     const inset = 48
-    const zoom = Math.min(1, (viewport.w - inset * 2) / bounds.w)
+    const isDesignMap = !!readDesignMap(editor.store.allRecords().find(r => r.typeName === 'document')?.meta)
+    const zoom = Math.min(1, (viewport.w - inset * 2) / bounds.w, isDesignMap ? (viewport.h - 140) / bounds.h : Infinity)
     if (zoom <= 0) return
     editor.setCamera({ x: inset / zoom - bounds.x, y: 80 / zoom - bounds.y, z: zoom })
   }

@@ -77,6 +77,7 @@ import {
 } from 'tldraw'
 
 import type { BoardReferenceKind } from '@infinite-board/board-core'
+import { CommerceGeoShapeUtil } from '../commerce/CommerceDesignCanvas'
 import {
   boardReferenceShapeUtils,
   clearManualElbowRouteMeta,
@@ -806,6 +807,7 @@ type PenEraserToolId = 'draw' | 'eraser'
 
 const lastPenEraserToolByEditor = new WeakMap<Editor, PenEraserToolId>()
 const CANVAS_SHAPE_UTILS = [
+  CommerceGeoShapeUtil,
   CanvasTextShapeUtil,
   ...enhancedArrowShapeUtils,
   ...boardReferenceShapeUtils,

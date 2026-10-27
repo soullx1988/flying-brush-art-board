@@ -1,0 +1,40 @@
+.design-map-toolbar { display: flex; align-items: center; gap: 10px; padding: 5px 18px; border-bottom: 1px solid var(--app-border); font-size: 12px; flex-wrap: wrap; }
+.design-map-toolbar > span:first-child { color: #64748b; margin-right: auto; }
+.design-map-source { color: #64748b; }
+.design-map-error { color: #a64b17; }
+.design-map-card { box-sizing: border-box; pointer-events: all; display: flex; flex-direction: column; padding: 13px 18px 7px; border: 1.5px solid #cad4e2; border-radius: 14px; background: #fff; color: #223049; box-shadow: 0 3px 12px #1e293b09; font-family: 'Microsoft YaHei', sans-serif; overflow: hidden; }
+.design-map-card--design { border-color: #a4b6ed; background: #f5f7ff; }
+.design-map-card--implementation { border-color: #8dc9c2; background: #f5fbfa; }
+.design-map-card--validation { border-color: #d4bee8; background: #fcf8ff; }
+.design-map-card header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+.design-map-kind { font-size: 13px; font-weight: 700; letter-spacing: .15em; }
+.design-map-state { font-size: 11px; color: #7d6c4c; }
+.design-map-card h3 { margin: 0 0 8px; font-size: 23px; line-height: 1.4; font-weight: 600; }
+.design-map-card p { margin: 0 0 6px; font-size: 14px; line-height: 1.5; }
+.design-map-card .design-map-goal { font-size: 16px; margin-bottom: 16px; }
+.design-map-card .design-map-small, .design-map-small { font-size: 12px; color: #657186; }
+.design-map-card .design-map-scope { font-size: 11px; color: #657186; line-height: 1.5; }
+.design-map-card .design-map-gap { font-size: 12px; color: #966027; margin-top: 3px; }
+.design-map-card footer { margin-top: auto; text-align: right; }
+.design-map-card footer button { font-family: inherit; }
+.design-map-items { display: grid; gap: 8px; }
+.design-map-item > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 16px; }
+.design-map-item b { font-size: 20px; white-space: nowrap; }
+.design-map-item p { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 5px 0 3px; font-size: 12px; }
+.design-map-item p span, .design-map-rewards > span { display: inline-flex; align-items: center; gap: 4px; }
+.design-map-item small { color: #657186; font-size: 11px; }
+.design-map-item .commerce-item-icon { width: 24px; height: 24px; flex: none; }
+.design-map-details { display: grid; gap: 20px; font-size: 14px; line-height: 1.7; }
+.design-map-details h3 { margin: 0 0 10px; font-size: 18px; }
+.design-map-details h3 > span { float: right; }
+.design-map-details p { margin: 8px 0; }
+.design-map-details summary { cursor: pointer; }
+.design-map-details small { color: #657186; }
+.design-map-product-detail { border-top: 1px solid var(--app-border); padding-top: 16px; }
+.design-map-rewards { display: flex; flex-wrap: wrap; gap: 8px 15px; }
+.design-map-rewards .commerce-item-icon { width: 28px; height: 28px; }
+.design-map-question { padding: 14px; background: #f7f3fb; border-radius: 10px; }
+.design-map-question h3 { margin-top: 10px; }
+.design-map-form { display: grid; gap: 20px; }
+.design-map-form label { display: grid; gap: 6px; }
+.design-map-form > button { justify-self: end; }
