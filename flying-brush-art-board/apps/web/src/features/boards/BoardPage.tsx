@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Box, type Editor, type TLShapeId, type TLStore } from 'tldraw'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Box, useValue, type Editor, type TLShapeId, type TLStore } from 'tldraw'
 import { ChatCircleDots, ClockCounterClockwise, SquaresFour } from '@phosphor-icons/react'
 import { Badge, Button, Drawer, Modal, Tag, toast } from '@ttqtt/liquid-glass-react'
 import type { BoardReferenceShape } from '@infinite-board/tldraw-adapter'
@@ -17,6 +17,10 @@ import type { CommentClient, CommentMessageView, CommentThreadView } from '../co
 import { resolveCommentAnchorPagePoint } from '../comments/CommentPins'
 import { chineseErrorMessage } from '../../ui-text'
 import { subscribeApplicationEvents, type ApplicationEvent } from '../automation-presence/application-events'
+import { CommerceBoardView } from '../commerce/CommerceBoardView'
+import { readCommerceDataset } from '../commerce/commerce-data'
+import { CommerceEvidenceImport } from '../commerce/CommerceEvidenceImport'
+import { importCommerceEvidence } from '../commerce/import-commerce-evidence'
 
 async function loadCommentState(client: CommentClient, boardId: string): Promise<{
   threads: CommentThreadView[]
@@ -62,6 +66,8 @@ export interface BoardPageProps {
   onShowActivity?(): void
   onCreateReference?: (placement: { x: number; y: number }) => void
   onBoardReferenceOpen?(shape: BoardReferenceShape): void
+  onLinkedBoardOpen?(boardId: string): void
+  commerceResources?: readonly { id: string; title: string }[]
   boardReferenceActions?: BoardReferenceActions
   onBoardReferenceDrop?(event: { boardId: string; x: number; y: number }): void
   tldrawUser?: TldrawUserIdentity
@@ -90,6 +96,8 @@ export function BoardPage({
   onShowActivity,
   onCreateReference,
   onBoardReferenceOpen,
+  onLinkedBoardOpen,
+  commerceResources,
   boardReferenceActions,
   onBoardReferenceDrop,
   tldrawUser,
@@ -108,6 +116,14 @@ export function BoardPage({
   const [pendingCommentAnchor, setPendingCommentAnchor] = useState<{ shapeId?: string; x: number; y: number; shapeOffsetX?: number; shapeOffsetY?: number }>()
   const commentReloadGeneration = useRef(0)
   const [automationEvent, setAutomationEvent] = useState<ApplicationEvent>()
+  const documentMeta = useValue('commerce document metadata', () => store.query.records('document').get()[0]?.meta, [store])
+  const commerceData = useMemo(() => readCommerceDataset(documentMeta), [documentMeta])
+  const [canvasOnly, setCanvasOnly] = useState(false)
+  const showCommerce = Boolean(commerceData && !canvasOnly)
+  const commerceSession = useRef(inputSessionKey)
+  commerceSession.current = inputSessionKey
+  useEffect(() => () => { commerceSession.current = '' }, [])
+  useEffect(() => setCanvasOnly(false), [boardId, inputSessionKey])
 
   const closeComments = () => {
     setCommentsOpen(false)
@@ -244,6 +260,11 @@ export function BoardPage({
           </div>
         </div>
         <div className="board-page__status">
+          {commerceData ? <Button variant="accent" size="sm" onClick={() => setCanvasOnly(!canvasOnly)}>{showCommerce ? '查看原生画布' : '打开付费点总览'}</Button> : null}
+          {commerceData ? <CommerceEvidenceImport disabled={readOnly} onImport={async bundle => {
+            await importCommerceEvidence(store, bundle, () => commerceSession.current === inputSessionKey && !readOnly && onEditIntent())
+            toast.success('配图与历史资料已更新')
+          }} /> : null}
           <div className="board-page__state-cluster">
             {readOnly ? <Tag color="warning" size="sm">只读</Tag> : null}
             {collaborationStatus}
@@ -261,7 +282,7 @@ export function BoardPage({
             </Badge>
           ) : null}
           {onShowActivity ? <Button variant="glass" size="sm" icon={<ClockCounterClockwise aria-hidden="true" />} type="button" onClick={onShowActivity}>项目活动</Button> : null}
-          <BoardExportMenu
+          {!showCommerce ? <BoardExportMenu
             {...(projectId ? {
               onExportDrawio: () => exportDrawioBoard({
                 projectId,
@@ -273,11 +294,13 @@ export function BoardPage({
             onExportSvg={(selectionOnly) => void exportVisual('svg', selectionOnly)}
             {...(boardId ? { onExportPdf: () => void exportPdf() } : {})}
             busy={exportBusy}
-          />
+          /> : null}
           <Button variant="glass" size="sm" icon={<SquaresFour aria-hidden="true" />} type="button" onClick={onShowAllBoards}>全部画板</Button>
         </div>
       </header>
       {automationEvent ? <div className={`automation-operation automation-operation--${automationEvent.type.split('.').at(-1)}`} role="status"><strong>{automationEvent.type === 'operation.started' ? 'AI 正在操作' : automationEvent.type === 'operation.committed' ? 'AI 操作完成' : 'AI 操作失败'}</strong><span>{automationEvent.summary}</span></div> : null}
+      <div className="commerce-stage">
+      <div className="commerce-canvas" inert={showCommerce} aria-hidden={showCommerce || undefined}>
       <CanvasEditor
         store={store}
         {...(tldrawUser ? { tldrawUser } : {})}
@@ -355,6 +378,9 @@ export function BoardPage({
         {...(boardReferenceActions ? { boardReferenceActions } : {})}
         {...(onBoardReferenceDrop ? { onBoardReferenceDrop } : {})}
       />
+      </div>
+      {showCommerce && commerceData ? <div className="commerce-overlay"><CommerceBoardView key={boardId ?? inputSessionKey} data={commerceData} onOpenBoard={onLinkedBoardOpen} {...(commerceResources ? { resources: commerceResources } : {})} /></div> : null}
+      </div>
       <Drawer open={Boolean(commentClient && boardId && commentsOpen)} onOpenChange={(open) => { if (!open) closeComments() }} placement="right" size={430} title={focusedCommentThreadId ? '评论详情' : `评论 (${commentThreads.length})`}>
         {commentClient && boardId ? <CommentPanel
           embedded

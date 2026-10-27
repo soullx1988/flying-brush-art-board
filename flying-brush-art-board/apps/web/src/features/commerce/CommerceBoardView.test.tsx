@@ -1,0 +1,90 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { CommerceBoardView } from './CommerceBoardView'
+import { commerceEntrances, entranceProducts, relatedReason } from './commerce-browse'
+import {filterProducts, isCatalogProduct, type CommerceDataset, type CommerceProduct} from './commerce-data'
+
+afterEach(cleanup)
+const product = (key: string, channel: string, title: string): CommerceProduct => ({ key, sku: key, title, channel, kind: 'diamond', price: '480 钻石', rewards: [{ id: 300004, name: '招募券', n: 20 }], needs: ['hero'], status: 'defined', limit: '每日2次', note: '', source: 's' })
+const data: CommerceDataset = { created: '2026-10-26', scope: '本地配置', sources: { s: { name: 'source', path: '/source', sha256: 'hash' } }, needs: [{ id: 'hero', name: '招募', question: '为何招募？', why: '购买动机待确认', principle: '检查免费来源' }], products: [product('204', '日礼包', '日礼包 · 招募券礼包'), product('304', '周礼包', '周礼包 · 招募券礼包'), { ...product('502', '每日特惠礼包', '特惠 · 超值礼包'), kind: 'cash' }, { ...product('missing', '触发礼包缺项', '待核验礼包'), status: 'missing' }, product('future', '以后新增的形式', '新增商品')] }
+
+describe('commerce reading path', () => {
+  it('allows workspace search shortcuts without forwarding typing and deletion to the hidden canvas', () => {
+    const workspaceKey = vi.fn()
+    render(<div onKeyDown={workspaceKey}><CommerceBoardView data={data} /></div>)
+    const input=screen.getByRole('textbox',{name:'搜索全部商品'})
+    fireEvent.keyDown(input,{key:'k',ctrlKey:true})
+    fireEvent.keyDown(input,{key:'n',ctrlKey:true,shiftKey:true})
+    fireEvent.keyDown(input,{key:'ArrowLeft',altKey:true})
+    expect(workspaceKey).toHaveBeenCalledTimes(3)
+    fireEvent.keyDown(input,{key:'Delete'})
+    fireEvent.keyDown(input,{key:'v',ctrlKey:true})
+    fireEvent.keyDown(input,{key:'a'})
+    expect(workspaceKey).toHaveBeenCalledTimes(3)
+  })
+  it('disables an empty reset and focuses the first appended product when continuing the list', () => {
+    const many={...data,products:Array.from({length:45},(_,i)=>product(String(i),'日礼包',`礼包${i}`))}
+    render(<CommerceBoardView data={many} />)
+    fireEvent.click(screen.getByRole('button',{name:'查看完整清单'}))
+    expect(screen.getByRole('button',{name:'清除商品筛选'})).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'继续展示（剩余 27 项）'}))
+    expect(screen.getByRole('button',{name:'查看 礼包18 18'})).toHaveFocus()
+    expect(screen.getByText('找到 45 项 · 已展示 42 项')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox',{name:'找商品、资源或编号'}),{target:{value:'不存在'}})
+    expect(screen.getByText('当前条件没有匹配商品')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'清除商品筛选'}))
+    expect(screen.getByRole('textbox',{name:'找商品、资源或编号'})).toHaveValue('')
+    expect(screen.getByRole('button',{name:'查看 礼包0 0'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'清除商品筛选'})).toBeDisabled()
+  })
+  it('starts with entrances, searches rewards, opens an item, and preserves the list on return', () => {
+    const before = JSON.stringify(data)
+    render(<CommerceBoardView data={data} />)
+    expect(screen.queryByRole('region', { name: '所选商品详情' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看商城商品' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '找商品、资源或编号' }), { target: { value: '204' } })
+    fireEvent.click(screen.getByRole('button', { name: '查看 日礼包 · 招募券礼包 204' }))
+    expect(screen.getByText('招募券 × 20', { selector: '.commerce-chain .commerce-reward span' })).toBeInTheDocument()
+    expect(screen.getByText('未接入钻石购买流水')).toBeInTheDocument()
+    expect(screen.getByText('商品级设计意图待确认')).toBeInTheDocument()
+    expect(screen.getAllByText('同样提供：招募券')).toHaveLength(3)
+    fireEvent.click(screen.getByRole('button', { name: '返回商品清单' }))
+    expect(screen.getByRole('textbox', { name: '找商品、资源或编号' })).toHaveValue('204')
+    expect(screen.queryByRole('button', { name: '查看 周礼包 · 招募券礼包 304' })).not.toBeInTheDocument()
+    expect(JSON.stringify(data)).toBe(before)
+  })
+  it('searches globally and compares candidate needs without copying products', () => {
+    render(<CommerceBoardView data={data} />)
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索全部商品' }), { target: { value: '502' } })
+    fireEvent.click(screen.getByRole('button', { name: '搜索商品' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看 特惠 · 超值礼包 502' }))
+    fireEvent.click(screen.getByRole('button', { name: '比较招募' }))
+    expect(screen.getByRole('heading', { name: '按玩家需求比较' })).toBeInTheDocument()
+    expect(screen.getByText('按资源用途归类 · 需求待确认')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '查看 日礼包 · 招募券礼包 204' })).toBeInTheDocument()
+  })
+  it('hides orphan references but retains valid future channels and original design resources', () => {
+    const open = vi.fn()
+    const flattened = commerceEntrances.flatMap(entry => entranceProducts(data, entry.id))
+    expect(flattened).toHaveLength(data.products.length-1)
+    expect(new Set(flattened.map(p => p.key)).size).toBe(data.products.length-1)
+    expect(entranceProducts(data, 'unverified').map(p => p.key)).toContain('future')
+    expect(entranceProducts(data, 'trigger').map(p => p.key)).not.toContain('missing')
+    expect(relatedReason(data.products[0]!, { ...data.products[1]!, rewards: [] }, data)).toBe('候选需求相同：招募')
+    render(<CommerceBoardView data={data} onOpenBoard={open} resources={[{ id: 'original', title: '15.8 货币与资源总表' }]} />)
+    fireEvent.click(screen.getByRole('button', { name: '货币与资源总表' }))
+    expect(open).toHaveBeenCalledWith('original')
+  })
+  it('does not surface empty cash shells or unmapped tiers through search or need comparison',()=>{
+    const hidden=[{...product('shell','龙宫钥匙礼包','空壳'),kind:'cash' as const,rewards:[],rid:0},{...product('tier','充值档位待对应','档位'),status:'unmapped' as const}]
+    const d={...data,products:[...data.products,...hidden]}, before=JSON.stringify(d)
+    expect(hidden.some(isCatalogProduct)).toBe(false)
+    expect(filterProducts(d,'hero','all','all','').some(p=>['shell','tier','missing'].includes(p.key))).toBe(false)
+    expect(filterProducts(d,'all','all','all','204')).toHaveLength(1)
+    expect(JSON.stringify(d)).toBe(before)
+    render(<CommerceBoardView data={d} />)
+    fireEvent.click(screen.getByRole('button',{name:'查看完整清单'}))
+    expect(screen.queryByText('空壳',{exact:true})).not.toBeInTheDocument()
+    expect(screen.queryByText('待核验礼包',{exact:true})).not.toBeInTheDocument()
+  })
+})

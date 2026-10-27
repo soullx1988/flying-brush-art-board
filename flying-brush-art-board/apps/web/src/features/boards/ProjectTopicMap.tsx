@@ -3,6 +3,7 @@ import { Breadcrumb, Button, Card, Empty, Input, Modal, Select, toast } from '@t
 import { ArrowRight, ArrowUpRight, Compass, MagnifyingGlass, PencilSimple, Plus } from '@phosphor-icons/react'
 import { emptyProjectNavigation, navigationPath, type BoardReferenceRecord, type ProjectNavigation, type ProjectRecord, type StoredBoard } from '@infinite-board/board-core'
 import { createBrowserUuid } from '../../app/browser-uuid'
+import { hasCommerceOverview } from '../commerce/commerce-browse'
 import './project-topic-map.css'
 
 export interface ProjectTopicMapProps {
@@ -23,6 +24,7 @@ export function ProjectTopicMap({ project, boards, references, initialFocus = ''
   const [focus, setFocus] = useState(initialFocus)
   const [query, setQuery] = useState('')
   const [showAllRelations, setShowAllRelations] = useState(false)
+  const [showRelations, setShowRelations] = useState(false)
   const [editing, setEditing] = useState<'board' | 'topic' | 'new-topic'>()
   const [draft, setDraft] = useState(navigation)
   const [parentId, setParentId] = useState('')
@@ -33,6 +35,11 @@ export function ProjectTopicMap({ project, boards, references, initialFocus = ''
   const mapRef = useRef<HTMLElement>(null)
   const previousFocus = useRef(initialFocus)
   const byId = useMemo(() => new Map(boards.map((board) => [board.id, board])), [boards])
+  const commerceBoards = useMemo(() => boards.filter(board => hasCommerceOverview(board.tldrawSnapshot)), [boards])
+  const landingBoard = (topicId: string) => {
+    const matches = commerceBoards.filter(board => navigation.parents[board.id] === topicId)
+    return matches.length === 1 ? matches[0] : undefined
+  }
   const topicById = new Map(navigation.topics.map((topic) => [topic.id, topic]))
   const title = (id: string) => topicById.get(id)?.title ?? byId.get(id)?.title ?? (id === UNCLASSIFIED ? '待归类' : '主题地图')
   const path = (id: string) => navigationPath(navigation, id).filter((node) => topicById.has(node) || byId.has(node))
@@ -44,8 +51,6 @@ export function ProjectTopicMap({ project, boards, references, initialFocus = ''
   const parent = navigation.parents[validFocus]
   const children = (validFocus === UNCLASSIFIED ? unclassified : boards.filter((board) => navigation.parents[board.id] === validFocus)).sort(compareTitles)
   const childCount = (id: string) => boards.filter((board) => navigation.parents[board.id] === id).length
-  const descendantCount = (id: string) => boards.filter((board) => path(board.id).includes(id)).length
-  const siblings = parent ? boards.filter((board) => board.id !== validFocus && navigation.parents[board.id] === parent).sort(compareTitles) : []
   const searchResults = query.trim() ? boards.filter((board) => path(board.id).map(title).join(' / ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).sort(compareTitles) : []
   const localRelations = useMemo(() => {
     const grouped = new Map<string, { id: string; direction: 'out' | 'in'; kinds: Set<string>; count: number }>()
@@ -65,10 +70,9 @@ export function ProjectTopicMap({ project, boards, references, initialFocus = ''
   }, [references, validFocus, byId, navigation.parents])
 
   useEffect(() => { setFocus(initialFocus); setQuery('') }, [project.id, initialFocus])
-  useEffect(() => setShowAllRelations(false), [validFocus])
+  useEffect(() => { setShowAllRelations(false); setShowRelations(false) }, [validFocus])
   useEffect(() => {
-    if (validFocus) locationRef.current?.scrollIntoView?.({ block: 'start' })
-    else if (previousFocus.current) mapRef.current?.scrollIntoView?.({ block: 'start' })
+    if (validFocus || previousFocus.current) mapRef.current?.scrollIntoView?.({ block: 'start', inline: 'nearest' })
     previousFocus.current = validFocus
   }, [validFocus])
   const select = (id: string) => { setFocus(id); setQuery(''); onFocusChange?.(id) }
@@ -104,30 +108,31 @@ export function ProjectTopicMap({ project, boards, references, initialFocus = ''
   }
   const boardNode = (board: StoredBoard, compact = false) => (
     <Card className={`topic-map__node${compact ? ' topic-map__node--compact' : ''}`} key={board.id} padding="sm" radius="16px">
-      <Button variant="ghost" className="topic-map__node-title" onClick={() => select(board.id)}>{board.title}</Button>
-      <div className="topic-map__node-footer"><span>{childCount(board.id) ? `${childCount(board.id)} 个下级画板` : '内容画板'}</span><Button variant="ghost" size="sm" aria-label={`打开 ${board.title}`} onClick={() => onOpenBoard(board.id, 'current')} icon={<ArrowUpRight aria-hidden="true" />}>打开</Button></div>
+      <Button variant="ghost" className="topic-map__node-title" aria-label={`打开 ${board.title}`} onClick={() => onOpenBoard(board.id, 'current')}>{board.title.replace(/^\d+(?:\.\d+)*\s+/, '').split('｜')[0]}</Button>
+      <p className="topic-map__node-description">{board.title.split('｜').slice(1).join('｜')}</p>
+      <div className="topic-map__node-footer">{childCount(board.id) ? <Button variant="ghost" size="sm" onClick={() => select(board.id)}>查看下级内容 · {childCount(board.id)}</Button> : <span>内容画板</span>}<Button variant="ghost" size="sm" onClick={() => select(board.id)}>资料与归属</Button></div>
     </Card>
   )
 
   return (
     <section ref={mapRef} className="topic-map" aria-label="主题地图与局部关系图">
-      <header className="topic-map__heading"><div><p className="eyebrow">按主题找内容</p><h2>主题地图</h2><p>先选主题，再逐层展开。关系来自同一批画板，无需另画一份目录。</p></div><div className="topic-map__toolbar"><Input aria-label="搜索主题地图" prefix={<MagnifyingGlass aria-hidden="true" />} placeholder="找画板、商品或所属主题" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />{onSaveNavigation ? <Button variant="glass" size="sm" icon={<Plus aria-hidden="true" />} onClick={() => edit('new-topic')}>新建主题</Button> : null}</div></header>
+      <header className="topic-map__heading"><div><h2>设计内容</h2><p>选择主题开始阅读；来源、归属和引用资料按需展开。</p></div><div className="topic-map__toolbar"><Input aria-label="搜索主题地图" prefix={<MagnifyingGlass aria-hidden="true" />} placeholder="找画板名称或所属主题" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />{onSaveNavigation ? <Button variant="ghost" size="sm" icon={<Plus aria-hidden="true" />} onClick={() => edit('new-topic')}>新建主题</Button> : null}</div></header>
       {query.trim() ? (
-        <div className="topic-map__search" aria-label="地图搜索结果"><p>{searchResults.length} 个结果 · 同时搜索画板名称与所属路径</p>{searchResults.map((board) => <Card padding="sm" radius="16px" key={board.id}><div className="topic-map__search-row"><div><Button variant="ghost" onClick={() => select(board.id)}>{board.title}</Button><p>{path(board.id).map(title).join(' › ')}</p></div><Button variant="glass" size="sm" onClick={() => onOpenBoard(board.id, 'current')}>打开画板</Button></div></Card>)}{searchResults.length === 0 ? <Empty title="没有找到画板" description="试试商品名称、画板编号或主题名称。" /> : null}</div>
+        <div className="topic-map__search" aria-label="地图搜索结果"><p>{searchResults.length} 个结果 · 同时搜索画板名称与所属路径</p>{searchResults.map((board) => <Card padding="sm" radius="16px" key={board.id}><div className="topic-map__search-row"><div><Button variant="ghost" onClick={() => onOpenBoard(board.id, 'current')}>{board.title}</Button><p>{path(board.id).map(title).join(' › ')}</p></div><Button variant="ghost" size="sm" onClick={() => select(board.id)}>资料与归属</Button></div></Card>)}{searchResults.length === 0 ? <Empty title="没有找到画板" description="试试商品名称、画板编号或主题名称。" /> : null}</div>
       ) : <>
         <nav className={`topic-map__themes${validFocus ? ' topic-map__themes--compact' : ''}`} aria-label="项目主题">
-          {navigation.topics.map((topic, index) => <Card className={`topic-map__theme${path(validFocus).includes(topic.id) ? ' topic-map__theme--active' : ''}`} padding="md" radius="20px" key={topic.id}><span className="topic-map__theme-index">{String(index + 1).padStart(2, '0')} / {descendantCount(topic.id)} 个画板</span><Button variant="ghost" className="topic-map__theme-title" onClick={() => select(topic.id)}>{topic.title}<ArrowRight aria-hidden="true" /></Button><p>{topic.description}</p></Card>)}
+          {navigation.topics.map(topic => { const landing = landingBoard(topic.id); return <Card className={`topic-map__theme${path(validFocus).includes(topic.id) ? ' topic-map__theme--active' : ''}`} padding="md" radius="20px" key={topic.id}><Button variant="ghost" className="topic-map__theme-title" onClick={() => landing ? onOpenBoard(landing.id, 'current') : select(topic.id)}>{topic.title}<ArrowRight aria-hidden="true" /></Button><p>{landing ? '查看投放入口、具体商品、设计依据与历史表现' : topic.description}</p>{landing ? <Button variant="ghost" size="sm" onClick={() => select(topic.id)}>查看设计资料</Button> : null}</Card> })}
           {unclassified.length > 0 ? <Card className="topic-map__theme topic-map__theme--unclassified" padding="md" radius="20px"><span className="topic-map__theme-index">{unclassified.length} 个画板</span><Button variant="ghost" className="topic-map__theme-title" onClick={() => select(UNCLASSIFIED)}>待归类<ArrowRight aria-hidden="true" /></Button><p>新建或尚未设置主要归属的内容，在这里整理。</p></Card> : null}
         </nav>
-        {!validFocus ? <div className="topic-map__intro"><Compass size={28} aria-hidden="true" /><div><strong>从一个主题开始</strong><p>实线表示主要归属，虚线区展示实际引用。共享画板可以被多处引用，内容始终只维护一份。</p></div></div> : <>
+        {!validFocus ? <div className="topic-map__intro"><Compass size={28} aria-hidden="true" /><div><strong>从你想了解的设计开始</strong><p>商业模式直接进入商品总览；原设计讨论、资源总表和待核验资料仍在同一个主题中。</p></div></div> : <>
           <div ref={locationRef} className="topic-map__breadcrumbs"><Breadcrumb items={[{ label: '全部主题', onClick: () => select('') }, ...path(validFocus).map((id) => ({ label: title(id), onClick: () => select(id) }))]} /></div>
           <div className={`topic-map__graph${focusedTopic ? ' topic-map__graph--topic' : ''}`} role="region" aria-label="当前层级">
-            <div className="topic-map__upstream"><p className="topic-map__label">主要归属</p>{parent ? <><Button className="topic-map__parent" variant="glass" onClick={() => select(parent)}>{title(parent)}</Button><p className="topic-map__label">同级内容</p><div className="topic-map__siblings">{siblings.map((board) => <Button variant="ghost" key={board.id} onClick={() => select(board.id)}>{board.title}</Button>)}{!siblings.length ? <p>没有其他同级画板</p> : null}</div></> : <p>{focusedTopic ? '项目主题' : '还没有设置主要归属'}</p>}</div>
-            <Card className="topic-map__focus" padding="lg" radius="22px"><p className="topic-map__label">{focusedTopic ? '当前主题' : '当前画板'}</p><h3>{title(validFocus)}</h3><p>{focusedTopic?.description ?? (focusedBoard ? `${children.length} 个下级画板 · ${localRelations.length} 个引用方向` : '选择画板后，可通过“调整归属”整理到主题或上级画板。')}</p><div className="topic-map__focus-actions">{focusedBoard ? <Button variant="accent" icon={<ArrowUpRight aria-hidden="true" />} onClick={() => onOpenBoard(focusedBoard.id, 'current')}>打开画板</Button> : null}{onSaveNavigation && validFocus !== UNCLASSIFIED ? <Button variant="glass" size="sm" icon={<PencilSimple aria-hidden="true" />} onClick={() => edit(focusedTopic ? 'topic' : 'board')}>{focusedTopic ? '编辑主题' : '调整归属'}</Button> : null}</div></Card>
-            <div className="topic-map__downstream"><p className="topic-map__label">{validFocus === UNCLASSIFIED ? '等待整理' : '展开下一层'} · {children.length}</p><div className="topic-map__children">{children.map((board) => boardNode(board))}{children.length === 0 ? <div className="topic-map__leaf">已到内容层。打开画板即可查看正文。</div> : null}</div></div>
+            <Card className="topic-map__focus" padding="lg" radius="22px"><p className="topic-map__label">{focusedTopic ? '当前主题' : '当前画板'}</p><h3>{title(validFocus)}</h3><p>{focusedTopic?.description ?? (focusedBoard ? '打开正文阅读设计，相关内容列在下方。' : '选择画板后，可通过“调整归属”整理到主题或上级画板。')}</p><div className="topic-map__focus-actions">{focusedBoard ? <Button variant="accent" icon={<ArrowUpRight aria-hidden="true" />} onClick={() => onOpenBoard(focusedBoard.id, 'current')}>打开画板</Button> : null}{onSaveNavigation && validFocus !== UNCLASSIFIED ? <Button variant="glass" size="sm" icon={<PencilSimple aria-hidden="true" />} onClick={() => edit(focusedTopic ? 'topic' : 'board')}>{focusedTopic ? '编辑主题' : '调整归属'}</Button> : null}</div></Card>
+            <div className="topic-map__downstream"><p className="topic-map__label">{validFocus === UNCLASSIFIED ? '等待整理' : commerceBoards.some(b => b.id === validFocus) ? '设计讨论与资料' : '相关内容'} · {children.length}</p><div className="topic-map__children">{children.map((board) => boardNode(board))}{children.length === 0 ? <div className="topic-map__leaf">已到内容层。打开画板即可查看正文。</div> : null}</div></div>
           </div>
-          {focusedBoard ? <section className="topic-map__relations" aria-label="局部引用关系">
-            <div className="topic-map__relations-heading"><div><h3>局部关系图</h3><p>箭头表示原画板的实际引用方向，同一目标的重复引用合并展示。</p></div><span>{localRelations.length} 个引用方向 / {localRelations.reduce((sum, relation) => sum + relation.count, 0)} 条引用</span></div>
+          {focusedBoard ? <Button variant="ghost" aria-expanded={showRelations} onClick={() => setShowRelations(!showRelations)}>{showRelations ? '收起引用资料' : `查看画板引用资料 · ${localRelations.length}`}</Button> : null}
+          {focusedBoard && showRelations ? <section className="topic-map__relations" aria-label="局部引用关系">
+            <div className="topic-map__relations-heading"><div><h3>画板引用资料</h3><p>这里记录资料之间的链接，不代表设计依赖或已确认的因果关系。</p></div><span>{localRelations.length} 个引用方向 / {localRelations.reduce((sum, relation) => sum + relation.count, 0)} 条引用</span></div>
             <div className="topic-map__relation-flow">
               {(['in', 'center', 'out'] as const).map((direction) => {
                 if (direction === 'center') return <Card key="center" padding="md" radius="16px" className="topic-map__relation-center"><p className="topic-map__label">当前画板</p><strong>{focusedBoard.title}</strong></Card>

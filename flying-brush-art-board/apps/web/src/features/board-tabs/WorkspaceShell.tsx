@@ -52,7 +52,7 @@ import {
 } from '../board-references/CreateBoardReferenceDialog'
 import {
   findInboundReferences,
-  historyBreadcrumbEntries,
+  currentReferenceTrail,
   isBrowserBoardHistoryState,
   validateSharedReferencePath,
 } from '../board-references/navigation-state'
@@ -1012,7 +1012,7 @@ export function WorkspaceShell({
   const activeTab = workspaceState.tabs.find((tab) => tab.tabId === workspaceState.activeTabId)
   const activeEditor = workspaceState.activeEditor as TldrawWorkspaceEditor | undefined
   const activeHistoryEntries = activeTab
-    ? historyBreadcrumbEntries(activeTab.session.history, activeTab.session.historyIndex)
+    ? currentReferenceTrail(activeTab.session.history, activeTab.session.historyIndex)
     : []
   const isBareDeepLink = Boolean(
     activeTab &&
@@ -1034,7 +1034,11 @@ export function WorkspaceShell({
           : boardNavigation.goBackAlongHistoryPath(activeTab.tabId)
       )}
       onProjectHome={() => void leaveForProjectHome()}
-      onGoToEntry={(index) => void boardNavigation.goToHistoryEntry(activeTab.tabId, index)}
+      onGoToEntry={(index) => {
+        const entry = activeHistoryEntries[index]
+        const historyIndex = activeTab.session.history.findIndex((candidate) => candidate.entryId === entry?.entryId)
+        if (historyIndex >= 0) void boardNavigation.goToHistoryEntry(activeTab.tabId, historyIndex)
+      }}
     />
     {projectData ? <BoardTopicLocation data={projectData} boardId={activeTab.boardId} onShowMap={() => setWorkspacePanel('map')} /> : null}
     </div>
@@ -1356,6 +1360,8 @@ export function WorkspaceShell({
             setCreateReferenceDialogOpen(true)
           }}
           onBoardReferenceOpen={openReference}
+          onLinkedBoardOpen={(id) => { if (projectData?.boards.some(board => board.id === id)) void openBoard(id, 'new'); else toast.error('关联画板不在当前项目中，请核对来源。') }}
+          commerceResources={projectData?.boards.filter(board => projectData.project.navigation?.parents[board.id] === activeTab.boardId) ?? []}
           {...(boardReferenceActions ? { boardReferenceActions } : {})}
           onBoardReferenceDrop={({ boardId, x, y }) => void createReference({
             mode: 'existing', targetBoardId: boardId, kind: 'embed',
@@ -1389,6 +1395,8 @@ export function WorkspaceShell({
             setCreateReferenceDialogOpen(true)
           }}
           onBoardReferenceOpen={openReference}
+          onLinkedBoardOpen={(id) => { if (projectData?.boards.some(board => board.id === id)) void openBoard(id, 'new'); else toast.error('关联画板不在当前项目中，请核对来源。') }}
+          commerceResources={projectData?.boards.filter(board => projectData.project.navigation?.parents[board.id] === activeTab.boardId) ?? []}
           {...(boardReferenceActions ? { boardReferenceActions } : {})}
           onBoardReferenceDrop={({ boardId, x, y }) => void createReference({
             mode: 'existing', targetBoardId: boardId, kind: 'embed',

@@ -16,6 +16,7 @@ let workspaceStore: {
   snapshot: unknown
   listeners: Set<() => void>
   allRecords(): []
+  query: { records(type: string): { get(): [] } }
   listen(listener: () => void): () => void
   remove(): void
   put(): void
@@ -46,6 +47,7 @@ vi.mock('@infinite-board/tldraw-adapter', async (importOriginal) => ({
       snapshot: { store: {} },
       listeners,
       allRecords: () => [],
+      query: { records: () => ({ get: () => [] }) },
       listen: (listener) => {
         listeners.add(listener)
         return () => listeners.delete(listener)

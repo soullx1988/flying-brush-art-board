@@ -230,6 +230,16 @@ export class WorkspaceTabs {
     const currentTab = this.requireTab(currentTabId)
     if (currentTab.boardId === boardId) {
       if (!this.activeEditor) await this.attachTab(currentTab, false)
+      const previous = this.currentHistoryEntry(currentTab)
+      if (previous.via) {
+        previous.viewState = cloneViewState(this.activeEditor!.getViewState())
+        const directEntry = this.createHistoryEntry(boardId)
+        directEntry.viewState = cloneViewState(previous.viewState)
+        currentTab.session.history = currentTab.session.history.slice(0, currentTab.session.historyIndex + 1)
+        currentTab.session.history.push(directEntry)
+        currentTab.session.historyIndex = currentTab.session.history.length - 1
+        this.emit()
+      }
       return currentTab
     }
 

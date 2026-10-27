@@ -150,6 +150,30 @@ afterEach(() => {
 })
 
 describe('WorkspaceTabs', () => {
+  it('starts a direct trail when reopening the current referenced board without losing edits or back history', async () => {
+    const harness = createHarness()
+    const tab = await harness.workspace.openBoardInNewTab('board-a')
+    await harness.workspace.enterReference(tab.tabId, reference('a-b', 'board-a', 'board-b'), 'current')
+    const editor = harness.workspace.getActiveEditor() as FakeWorkspaceEditor
+    harness.workspace.applyEditableInput(tab.tabId, (active) => {
+      ;(active as FakeWorkspaceEditor).edit({ board: 'b-local' })
+    })
+    const view = { camera: { x: 20, y: 30, z: 2 }, selectedShapeIds: ['shape:kept'], currentToolId: 'draw' }
+    editor.setViewState(view)
+
+    await harness.workspace.openBoardInCurrentTab('board-b')
+
+    expect(harness.workspace.getActiveEditor()).toBe(editor)
+    expect(editor.getSnapshot()).toEqual({ board: 'b-local' })
+    expect(tab.session.history).toHaveLength(3)
+    expect(tab.session.history[2]?.via).toBeUndefined()
+    expect(tab.session.history[2]?.viewState).toEqual(view)
+    await harness.workspace.openBoardInCurrentTab('board-b')
+    expect(tab.session.history).toHaveLength(3)
+    await harness.workspace.goBackAlongHistoryPath(tab.tabId)
+    expect(tab.session.history[tab.session.historyIndex]?.via?.referenceId).toBe('a-b')
+  })
+
   it('mounts a board read-only until its first edit intent acquires the lease', async () => {
     const harness = createHarness()
     const tab = await harness.workspace.openBoardInNewTab('board-a')

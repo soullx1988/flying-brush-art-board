@@ -4,7 +4,7 @@ import type { BoardReferenceRecord } from '@infinite-board/board-core'
 
 import type { UseWorkspaceTabsResult } from '../board-tabs/use-workspace-tabs'
 import type { WorkspaceTab } from '../board-tabs/workspace-tabs'
-import { projectBrowserHistoryState } from './navigation-state'
+import { currentReferenceTrail, projectBrowserHistoryState } from './navigation-state'
 
 export interface BoardNavigationOptions {
   replace?: boolean
@@ -14,7 +14,7 @@ export interface BoardNavigationOptions {
 export type BoardNavigationNavigate = (path: string, options?: BoardNavigationOptions) => void
 
 function referencePathIds(tab: WorkspaceTab): string[] {
-  const entries = tab.session.history.slice(0, tab.session.historyIndex + 1)
+  const entries = currentReferenceTrail(tab.session.history, tab.session.historyIndex)
   const referenceIds: string[] = []
   for (let index = 1; index < entries.length; index += 1) {
     const previous = entries[index - 1]

@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { Box } from 'tldraw'
+import { Box, TLDOCUMENT_ID } from 'tldraw'
+import { createBoardStore } from '@infinite-board/tldraw-adapter'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ApplicationEvent } from '../automation-presence/application-events'
@@ -99,6 +100,29 @@ function emitApplicationEvent(event: Partial<ApplicationEvent> & Pick<Applicatio
 }
 
 describe('BoardPage', () => {
+  it('opens an imported commerce view, retains the canvas, and navigates to the existing source board', () => {
+    const store = createBoardStore()
+    store.put([{ id: TLDOCUMENT_ID, typeName: 'document', name: 'Commerce', gridSize: 10, meta: { commerceOverview: { version: 1, dataset: {
+      created: '2026-10-26', scope: 'test', sources: { test: { name: 'test', path: 'test', sha256: 'test' } },
+      needs: [{ id: 'recruit', name: '招募', question: '为什么招募', why: '待确认', principle: '待确认' }],
+      products: [{ key: 'gift:test', sku: 'test', title: '测试招募券', kind: 'diamond', channel: '日礼包', price: '480 钻石', rewards: [{ id: 1, name: '招募券', n: 20 }], limit: '每日', note: '', source: 'test', status: 'defined', needs: ['recruit'], board: { id: 'existing-board', title: '原画板' } }],
+    } } } }])
+    const open = vi.fn()
+    render(<BoardPage title="Commerce" boardId="commerce" status="clean" readOnly={false} store={store} inputSessionKey="commerce" onEditorMount={vi.fn()} onShowAllBoards={vi.fn()} onEditIntent={() => true} onLinkedBoardOpen={open} />)
+    expect(screen.getByRole('region', { name: '付费点总览' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'request canvas edit' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看商城商品' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看 测试招募券 test' }))
+    fireEvent.click(screen.getByText('配置来源与原设计资料'))
+    fireEvent.click(screen.getByRole('button', { name: '打开原商品画板' }))
+    expect(open).toHaveBeenCalledWith('existing-board')
+    fireEvent.click(screen.getByRole('button', { name: '查看原生画布' }))
+    expect(screen.queryByRole('region', { name: '付费点总览' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'request canvas edit' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '打开付费点总览' }))
+    expect(screen.getByRole('button', { name: '查看商城商品' })).toBeInTheDocument()
+    expect(store.query.records('document').get()[0]?.meta.commerceOverview).toBeDefined()
+  })
   it('always follows committed AI results and no longer exposes a follow toggle', () => {
     boardPageMocks.methods.getShape.mockReturnValue({ id: 'shape:result' })
     boardPageMocks.methods.getShapePageBounds.mockReturnValue(new Box(10, 20, 120, 80))
@@ -109,7 +133,7 @@ describe('BoardPage', () => {
         boardId="board-a"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -145,7 +169,7 @@ describe('BoardPage', () => {
         boardId="board-a"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -169,7 +193,7 @@ describe('BoardPage', () => {
         boardId="board-a"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -192,7 +216,7 @@ describe('BoardPage', () => {
         title="Board A"
         status="clean"
         readOnly
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -218,7 +242,7 @@ describe('BoardPage', () => {
         projectId="project-a"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -251,7 +275,7 @@ describe('BoardPage', () => {
         boardId="board-a"
         status="dirty"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -293,7 +317,7 @@ describe('BoardPage', () => {
         boardId="board-a"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -325,7 +349,7 @@ describe('BoardPage', () => {
         title="Board A"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -355,7 +379,7 @@ describe('BoardPage', () => {
         boardId="board-a"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-1:board-a"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}
@@ -387,7 +411,7 @@ describe('BoardPage', () => {
         boardId="board-b"
         status="clean"
         readOnly={false}
-        store={{} as never}
+        store={createBoardStore()}
         inputSessionKey="tab-2:board-b"
         onEditorMount={vi.fn()}
         onShowAllBoards={vi.fn()}

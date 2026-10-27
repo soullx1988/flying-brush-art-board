@@ -5,6 +5,7 @@ import type { BoardHistoryEntry, BoardReferenceRecord } from '@infinite-board/bo
 import {
   appendReferenceEntry,
   createReferenceTabHistory,
+  currentReferenceTrail,
   findInboundReferences,
   historyBreadcrumbEntries,
   projectBrowserHistoryState,
@@ -45,6 +46,16 @@ function entry(entryId: string, boardId: string): BoardHistoryEntry {
 }
 
 describe('board reference navigation state', () => {
+  it('shows only the reference trail after a direct open while preserving the full history', () => {
+    const first = appendReferenceEntry([entry('a', 'board-a')], 0, reference('a-b', 'board-a', 'board-b'), () => 'b-via')
+    const history = [...first.history, entry('b-direct', 'board-b')]
+    expect(currentReferenceTrail(history, 2).map((candidate) => candidate.entryId)).toEqual(['b-direct'])
+    const next = appendReferenceEntry(history, 2, reference('b-c', 'board-b', 'board-c'), () => 'c')
+    expect(currentReferenceTrail(next.history, 3).map((candidate) => candidate.entryId)).toEqual(['b-direct', 'c'])
+    expect(currentReferenceTrail(next.history, 1).map((candidate) => candidate.entryId)).toEqual(['a', 'b-via'])
+    expect(next.history).toHaveLength(4)
+  })
+
   it('appends a new actual entry even when a link returns to a previously visited board', () => {
     const aToB = reference('a-b', 'board-a', 'board-b')
     const bToA = reference('b-a', 'board-b', 'board-a')

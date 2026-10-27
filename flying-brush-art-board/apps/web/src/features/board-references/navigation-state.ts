@@ -104,6 +104,22 @@ export function historyBreadcrumbEntries(
   return history.slice(0, historyIndex + 1).map((entry) => cloneHistoryEntry(entry))
 }
 
+/** A direct open starts a new visible trail; the complete back history remains available. */
+export function currentReferenceTrail(
+  history: readonly BoardHistoryEntry[],
+  historyIndex: number,
+): BoardHistoryEntry[] {
+  if (historyIndex < 0 || historyIndex >= history.length) return []
+  let start = historyIndex
+  while (start > 0) {
+    const current = history[start]!
+    const previous = history[start - 1]!
+    if (!current.via || current.via.sourceBoardId !== previous.boardId || current.via.targetBoardId !== current.boardId) break
+    start -= 1
+  }
+  return history.slice(start, historyIndex + 1).map((entry) => cloneHistoryEntry(entry))
+}
+
 export function findInboundReferences(
   boardId: string,
   references: readonly BoardReferenceRecord[],
