@@ -273,7 +273,7 @@ export function BoardPage({
             try { await onPayRhythmOpen(boardId, commerceData) }
             catch (error) { toast.error(chineseErrorMessage(error, '无法打开设计画板')) }
             finally { setOpeningDesign(false) }
-          }}>{openingDesign ? '正在打开…' : '调优付费节奏 ↗'}</Button> : null}
+          }}>{openingDesign ? '正在打开…' : '商业设计总览 ↗'}</Button> : null}
           {commerceData ? <Button variant="accent" size="sm" onClick={() => setCanvasOnly(!canvasOnly)}>{showCommerce ? '查看原生画布' : '打开付费点总览'}</Button> : null}
           {commerceData ? <CommerceEvidenceImport disabled={readOnly} onImport={async bundle => {
             await importCommerceEvidence(store, bundle, () => commerceSession.current === inputSessionKey && !readOnly && onEditIntent())

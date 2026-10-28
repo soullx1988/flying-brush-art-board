@@ -95,11 +95,32 @@ describe('TldrawWorkspaceEditor', () => {
     bridge.mountEditor({
       store, setCamera, setSelectedShapes: vi.fn(), setCurrentTool: vi.fn(), updateInstanceState: vi.fn(),
       getCurrentPageBounds: () => ({ x: 22, y: 0, w: 1120, h: 544 }),
+      getCurrentPageShapes: () => [],
       getViewportScreenBounds: () => ({ w: 1280, h: 606 }),
     } as unknown as Editor)
     const camera = setCamera.mock.calls.at(-1)![0]
     expect(camera.z).toBeLessThan(1)
     expect((544 + camera.y) * camera.z).toBeLessThanOrEqual(606 - 60)
     expect((1120 + 22 + camera.x) * camera.z).toBeLessThan(1280)
+  })
+
+  it('reopens a persisted expanded group at a readable scale without changing its position', () => {
+    const store = createBoardStore()
+    loadSnapshotIntoStore(store, getStoreSnapshot(store))
+    const doc = store.allRecords().find(r => r.typeName === 'document')!
+    store.put([{ ...doc, meta: { commerceDesignMap: { version: 1, template: 'pay-rhythm', sourceBoardId: 'source' } } }])
+    const expanded = { id: 'shape:expanded', meta: { commerceEntrance: { version: 1, entrance: 'shop', expanded: true } } }
+    const bridge = new TldrawWorkspaceEditor(getStoreSnapshot(store)), setCamera = vi.fn(), getShapePageBounds = vi.fn(() => ({x:22,y:900,w:1120,h:380}))
+    bridge.mountEditor({
+      store, setCamera, setSelectedShapes: vi.fn(), setCurrentTool: vi.fn(), updateInstanceState: vi.fn(),
+      getCurrentPageShapes: () => [expanded], getShapePageBounds,
+      getCurrentPageBounds: () => ({x:22,y:24,w:1144,h:1256}),
+      getViewportScreenBounds: () => ({w:1280,h:606}),
+    } as unknown as Editor)
+    const camera = setCamera.mock.calls.at(-1)![0]
+    expect(getShapePageBounds).toHaveBeenCalledWith(expanded)
+    expect(camera.z).toBe(1)
+    expect((900 + camera.y) * camera.z).toBe(80)
+    expect((1280 + camera.y) * camera.z).toBeLessThan(606 - 60)
   })
 })

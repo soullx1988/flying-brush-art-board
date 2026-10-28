@@ -8,6 +8,7 @@ import {
 
 import type { WorkspaceEditor, WorkspaceViewState } from './workspace-tabs'
 import { readDesignMap } from '../commerce/commerce-design-map'
+import { readEntranceCard } from '../commerce/commerce-overview-model'
 
 function hasSnapshotRecords(snapshot: unknown): boolean {
   if (!snapshot || typeof snapshot !== 'object') return false
@@ -95,13 +96,17 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
   private frameFirstView(): void {
     const editor = this.editor
     if (!editor) return
-    const bounds = editor.getCurrentPageBounds()
+    const pageBounds = editor.getCurrentPageBounds()
     const viewport = editor.getViewportScreenBounds()
-    if (!bounds || bounds.w <= 0 || viewport.w <= 0 || viewport.h <= 0) return
+    if (!pageBounds || pageBounds.w <= 0 || viewport.w <= 0 || viewport.h <= 0) return
+    const isDesignMap = !!readDesignMap(editor.store.allRecords().find(r => r.typeName === 'document')?.meta)
+    const expanded = isDesignMap ? editor.getCurrentPageShapes().find(shape => readEntranceCard(shape)?.expanded) : undefined
+    // A persisted expanded group is the current reading focus, not blank space
+    // to squeeze into the six-group overview after reopening the board.
+    const bounds = (expanded && editor.getShapePageBounds(expanded)) || pageBounds
     // Read long boards from their top, rather than fitting their entire height
     // into an unreadably small overview. Leave room for the native top toolbar.
     const inset = 48
-    const isDesignMap = !!readDesignMap(editor.store.allRecords().find(r => r.typeName === 'document')?.meta)
     const zoom = Math.min(1, (viewport.w - inset * 2) / bounds.w, isDesignMap ? (viewport.h - 140) / bounds.h : Infinity)
     if (zoom <= 0) return
     editor.setCamera({ x: inset / zoom - bounds.x, y: 80 / zoom - bounds.y, z: zoom })

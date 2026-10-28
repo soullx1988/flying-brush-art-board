@@ -102,6 +102,7 @@ import {
 import { TldrawWorkspaceEditor } from './TldrawWorkspaceEditor'
 import { createPayRhythmSnapshot, designMapFromSnapshot } from '../commerce/commerce-design-map'
 import type { CommerceDataset } from '../commerce/commerce-data'
+import { withCommerceOverview } from '../commerce/commerce-overview-model'
 import type { TldrawUserIdentity } from '../auth/tldraw-user'
 
 export interface ClipboardCommandReceipt {
@@ -770,7 +771,7 @@ export function WorkspaceShell({
     let board = fresh.boards.find(b => designMapFromSnapshot(b.tldrawSnapshot)?.sourceBoardId === sourceBoardId)
     if (!board) {
       const id = `board:pay-rhythm-${sourceBoardId.replace(/^board[:-]/, '')}`
-      try { board = await client.createBoard(projectId, { id, title: '15.01 调优付费节奏｜首充与月卡', tldrawSnapshot: createPayRhythmSnapshot(sourceBoardId, data) }) }
+      try { board = await client.createBoard(projectId, { id, title: '15.01 商业模式总览｜设计—实现—验证', tldrawSnapshot: withCommerceOverview(createPayRhythmSnapshot(sourceBoardId, data)) }) }
       catch (error) {
         // A second click/client may have created the same source-linked board.
         board = (await client.getProject(projectId)).boards.find(b => b.id === id && designMapFromSnapshot(b.tldrawSnapshot)?.sourceBoardId === sourceBoardId)
