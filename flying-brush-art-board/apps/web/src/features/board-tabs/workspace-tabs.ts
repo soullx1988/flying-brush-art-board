@@ -16,6 +16,7 @@ import {
 } from './editing-lease'
 
 export interface WorkspaceViewState {
+  currentPageId?: string
   camera: unknown
   selectedShapeIds: string[]
   currentToolId: string
@@ -123,6 +124,7 @@ const DEFAULT_VIEW_STATE: WorkspaceViewState = {
 
 function cloneViewState(viewState: WorkspaceViewState): WorkspaceViewState {
   return {
+    ...(viewState.currentPageId ? { currentPageId: viewState.currentPageId } : {}),
     camera:
       typeof structuredClone === 'function'
         ? structuredClone(viewState.camera)

@@ -190,6 +190,7 @@ describe('WorkspaceTabs', () => {
     const firstTab = await workspace.openBoardInNewTab('board-a')
     const firstEditor = workspace.getActiveEditor() as FakeWorkspaceEditor
     firstEditor.setViewState({
+      currentPageId: 'page:products',
       camera: { x: 80, y: 40, z: 2 },
       selectedShapeIds: ['shape:one'],
       currentToolId: 'draw',
@@ -202,6 +203,7 @@ describe('WorkspaceTabs', () => {
 
     const inactive = workspace.getTab(firstTab.tabId)!
     expect(inactive.session.history[0]?.viewState).toEqual({
+      currentPageId: 'page:products',
       camera: { x: 80, y: 40, z: 2 },
       selectedShapeIds: ['shape:one'],
       currentToolId: 'draw',

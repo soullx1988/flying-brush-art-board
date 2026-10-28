@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createBoardStore, getStoreSnapshot, loadSnapshotIntoStore } from '@infinite-board/tldraw-adapter'
-import type { Editor, TLGeoShape, TLShapeId } from 'tldraw'
+import type { Editor, TLArrowBinding, TLGeoShape, TLShape, TLShapeId } from 'tldraw'
+import { getIndexAbove } from 'tldraw'
 import { createPayRhythmSnapshot } from './commerce-design-map'
 import { withCommerceOverview } from './commerce-overview-model'
 import { graphProducts, productAnnotation, productGraphPageId, productGraphRecords, productHistorySummary, readProductGraphNode, saveProductAnnotation, syncProductGraph } from './commerce-product-graph'
@@ -56,6 +57,24 @@ describe('native product relationship graph',()=>{
     expect(productHistorySummary(d,p).primary).toBe('2 笔 · 500 钻石')
     expect(productHistorySummary(data,p).primary).toBe('未接入对应消费记录')
   })
+  it('keeps hand-adjusted connection anchors when referenced data refreshes',()=>{
+    const {store,s}=setup(),binding=store.allRecords().find(r=>r.typeName==='binding') as TLArrowBinding
+    const adjusted={...binding,props:{...binding.props,normalizedAnchor:{x:0.25,y:0.85}}}
+    store.put([adjusted])
+    syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,data,s)
+    expect(store.get(binding.id)).toEqual(adjusted)
+  })
+  it('adds several products without overlapping hand-placed notes or reusing layer indices',()=>{
+    const {store,s}=setup(),old=store.allRecords().find(r=>readProductGraphNode(r)?.key==='week') as TLGeoShape
+    const topIndex=store.allRecords().filter((r):r is TLShape=>r.typeName==='shape').map(r=>r.index).sort().at(-1)!
+    store.put([{...old,id:'shape:manual-space' as TLShapeId,index:getIndexAbove(topIndex),x:300,y:360,props:{...old.props,w:900,h:800},meta:{}}])
+    const changed={...data,products:[...data.products,...Array.from({length:6},(_,i)=>product(`added-${i}`,'周礼包'))]}
+    syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,changed,s)
+    const shapes=store.allRecords().filter((r):r is TLShape=>r.typeName==='shape'&&r.parentId===productGraphPageId(s))
+    expect(new Set(shapes.map(r=>r.index)).size).toBe(shapes.length)
+    const cards=shapes.filter(r=>r.type==='geo') as TLGeoShape[]
+    for(let i=0;i<cards.length;i++)for(let j=i+1;j<cards.length;j++){const a=cards[i]!,b=cards[j]!;expect(a.x<b.x+b.props.w&&a.x+a.props.w>b.x&&a.y<b.y+b.props.h&&a.y+a.props.h>b.y).toBe(false)}
+  })
   it('stores one hotfix explanation per product and keeps missing rewards as a separate warning',async()=>{
     const {store}=setup(),shape=store.allRecords().find(r=>readProductGraphNode(r)?.key==='week') as TLGeoShape,editor={store,markHistoryStoppingPoint:vi.fn()} as unknown as Editor
     const ledger={purchases:[{key:'week',date:'2026-10-17',server:102,orders:2,buyers:1,diamonds:500,prices:[150,350],rewards:['']}],payments:[],giftScope:{servers:[102]},orderScope:{from:'2026-10-15',through:'2026-10-26'}}
@@ -68,5 +87,14 @@ describe('native product relationship graph',()=>{
     expect(productAnnotation(store,'week')?.confirmed).toBe(true)
     const doc=store.allRecords().find(r=>r.typeName==='document')!
     expect(Object.keys(doc.meta.commerceProductAnnotations!)).toEqual(['week'])
+  })
+  it('closes a card drawer without sending its close-button pointer events to the canvas',async()=>{
+    const {store}=setup(),shape=store.allRecords().find(r=>readProductGraphNode(r)?.key==='week') as TLGeoShape,canvasPointer=vi.fn()
+    render(<div onPointerDown={canvasPointer}><CommerceOverviewProvider data={data} error="" store={store} editor={()=>undefined} canEdit={()=>true}><CommerceProductGraphShape shape={shape}/></CommerceOverviewProvider></div>)
+    fireEvent.click(screen.getByRole('button',{name:'标记异常'}))
+    const close=await screen.findByRole('button',{name:/^(关闭|Close)$/})
+    fireEvent.pointerDown(close);fireEvent.pointerUp(close);fireEvent.click(close)
+    expect(canvasPointer).not.toHaveBeenCalled()
+    await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })

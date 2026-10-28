@@ -1,4 +1,4 @@
-import type { Editor, TLShapeId, TLStore } from 'tldraw'
+import type { Editor, TLPageId, TLShapeId, TLStore } from 'tldraw'
 
 import {
   createBoardStore,
@@ -78,6 +78,7 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
   getViewState(): WorkspaceViewState {
     if (!this.editor) return this.pendingViewState
     return {
+      currentPageId: this.editor.getCurrentPageId(),
       camera: this.editor.getCamera(),
       selectedShapeIds: [...this.editor.getSelectedShapeIds()],
       currentToolId: this.editor.getCurrentToolId(),
@@ -88,10 +89,12 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
   setViewState(viewState: WorkspaceViewState): void {
     this.pendingViewState = viewState
     if (!this.editor) return
+    const pageMissing = !!viewState.currentPageId && this.editor.store.get(viewState.currentPageId as TLPageId)?.typeName !== 'page'
+    if (viewState.currentPageId && !pageMissing) this.editor.setCurrentPage(viewState.currentPageId as TLPageId)
     this.editor.setCamera(viewState.camera as { x: number; y: number; z?: number })
-    this.editor.setSelectedShapes(viewState.selectedShapeIds as TLShapeId[])
+    this.editor.setSelectedShapes((pageMissing ? [] : viewState.selectedShapeIds) as TLShapeId[])
     this.editor.setCurrentTool(viewState.currentToolId)
-    if (viewState.hasBeenViewed === false) this.frameFirstView()
+    if (viewState.hasBeenViewed === false || pageMissing) this.frameFirstView()
   }
 
   private frameFirstView(): void {

@@ -1,4 +1,4 @@
-import { Box, getIndexAbove, getIndices, toRichText, type Editor, type TLGeoShape, type TLPage, type TLPageId, type TLShapeId, type TLStore } from 'tldraw'
+import { Box, getIndexAbove, getIndexBelow, getIndices, toRichText, type Editor, type TLArrowBinding, type TLGeoShape, type TLPageId, type TLShape, type TLShapeId, type TLStore } from 'tldraw'
 import { z } from 'zod'
 import { entranceProducts, commerceEntrances } from './commerce-browse'
 import { type CommerceDataset, type CommerceProduct } from './commerce-data'
@@ -38,7 +38,8 @@ export function graphProducts(data: CommerceDataset, s: ProductGraphSelector) {
 export function graphPageName(data: CommerceDataset, s: ProductGraphSelector) {
   const entrance = commerceEntrances.find(e=>e.id===s.entrance)?.name ?? '跨入口'
   const resource = s.resource === undefined ? undefined : data.products.flatMap(p=>graphFacts(data,p).rewards).find(r=>r.id===s.resource)?.name
-  return `${entrance} · ${resource ?? data.needs.find(n=>n.id===s.need)?.name ?? '商品链路'}`
+  const need=data.needs.find(n=>n.id===s.need)?.name
+  return `${entrance} · ${resource ? [resource,need].filter(Boolean).join(' · ') : need ?? '商品链路'}`
 }
 
 /** Store identities, layout and arrow bindings only; all business facts resolve from the source. */
@@ -117,9 +118,14 @@ export function syncProductGraph(editor: Editor, data: CommerceDataset, s: Produ
   for(const r of added.filter(r=>r.type==='geo')) {
     const props=r.props as {w:number;h:number}, x=r.x as number, y=r.y as number
     if(existing.some(o=>x<o.x+o.props.w&&x+props.w>o.x&&y<o.y+o.props.h&&y+props.h>o.y)){r.y=bottom;bottom+=props.h+40}
+    existing.push(r as unknown as TLGeoShape)
+    bottom=Math.max(bottom,Number(r.y)+props.h+40)
   }
+  const ordered=editor.store.allRecords().filter((r):r is TLShape=>r.typeName==='shape'&&r.parentId===pageId).sort((a,b)=>a.index<b.index?-1:a.index>b.index?1:0)
+  if(ordered.length){let lower=ordered[0]!.index,upper=ordered.at(-1)!.index;for(const r of added.filter(r=>r.typeName==='shape')){if(r.type==='arrow'){lower=getIndexBelow(lower);r.index=lower}else{upper=getIndexAbove(upper);r.index=upper}}}
   if(added.length)editor.store.put(added as unknown as Parameters<TLStore['put']>[0])
-  const bindings=generated.filter(r=>r.typeName==='binding'&&JSON.stringify(editor.store.get(r.id as TLShapeId))!==JSON.stringify(r))
+  // Refresh source membership without resetting hand-adjusted connection anchors.
+  const bindings=generated.filter(r=>{if(r.typeName!=='binding')return false;const old=editor.store.get(r.id as TLArrowBinding['id']) as TLArrowBinding|undefined;return old&&(old.fromId!==r.fromId||old.toId!==r.toId)})
   if(bindings.length)editor.store.put(bindings as unknown as Parameters<TLStore['put']>[0])
 }
 export function openProductGraph(editor: Editor, data: CommerceDataset, s: ProductGraphSelector, canEdit=true) {

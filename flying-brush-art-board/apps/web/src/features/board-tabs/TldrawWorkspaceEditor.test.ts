@@ -16,6 +16,22 @@ function pageName(snapshot: ReturnType<typeof getStoreSnapshot>): string | undef
 }
 
 describe('TldrawWorkspaceEditor', () => {
+  it('restores the saved inner page before its camera and selection when returning from a source board',()=>{
+    const store=createBoardStore(),snapshot=getStoreSnapshot(store),page=Object.values(snapshot.store).find(r=>r.typeName==='page')!
+    loadSnapshotIntoStore(store,snapshot)
+    const bridge=new TldrawWorkspaceEditor(snapshot),calls:string[]=[]
+    bridge.setViewState({currentPageId:page.id,camera:{x:10,y:20,z:1.5},selectedShapeIds:[],currentToolId:'select',hasBeenViewed:true})
+    const editor={store,setCurrentPage:vi.fn(()=>calls.push('page')),setCamera:vi.fn(()=>calls.push('camera')),setSelectedShapes:vi.fn(),setCurrentTool:vi.fn(),updateInstanceState:vi.fn(),getCurrentPageId:()=>page.id,getCamera:()=>({x:10,y:20,z:1.5}),getSelectedShapeIds:()=>[],getCurrentToolId:()=>'select'} as unknown as Editor
+    bridge.mountEditor(editor)
+    expect(calls).toEqual(['page','camera'])
+    expect(bridge.getViewState().currentPageId).toBe(page.id)
+  })
+  it('falls back safely when a previously viewed inner page was removed',()=>{
+    const store=createBoardStore(),bridge=new TldrawWorkspaceEditor(getStoreSnapshot(store)),setCurrentPage=vi.fn(),setSelectedShapes=vi.fn(),getCurrentPageBounds=vi.fn(()=>undefined)
+    bridge.setViewState({currentPageId:'page:removed',camera:{x:10,y:20,z:1.5},selectedShapeIds:['shape:removed'],currentToolId:'select',hasBeenViewed:true})
+    bridge.mountEditor({store,setCurrentPage,setCamera:vi.fn(),setSelectedShapes,setCurrentTool:vi.fn(),updateInstanceState:vi.fn(),getCurrentPageBounds,getViewportScreenBounds:()=>({w:1280,h:800})} as unknown as Editor)
+    expect(setCurrentPage).not.toHaveBeenCalled();expect(setSelectedShapes).toHaveBeenCalledWith([]);expect(getCurrentPageBounds).toHaveBeenCalled()
+  })
   it('serializes the mounted realtime editor store instead of the detached bridge store', () => {
     const liveStore = createBoardStore()
     loadSnapshotIntoStore(liveStore, snapshotWithPageName('Live realtime page'))
