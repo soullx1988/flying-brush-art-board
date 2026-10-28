@@ -1,0 +1,18 @@
+.item-value-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:6px 16px; border-bottom:1px solid var(--app-border); font-size:12px; }
+.item-value-toolbar > strong { margin-right:10px; font-size:14px; }
+.item-value-toolbar > small { margin-left:auto; color:var(--app-text-muted); }
+.item-value-node { box-sizing:border-box; pointer-events:all; padding:8px 10px 5px; border:1px solid var(--app-border); border-radius:10px; background:var(--app-panel, #fff); color:var(--app-text, #223049); font-family:'Microsoft YaHei',sans-serif; display:flex; flex-direction:column; gap:3px; }
+.item-value-node-main { display:flex; align-items:center; gap:6px; min-height:38px; }
+.item-value-node-main > span { font-size:13px; line-height:1.3; overflow-wrap:anywhere; }
+.item-value-node .commerce-item-icon { width:34px; height:34px; flex:none; }
+.item-value-icon-pending { width:34px; flex:none; text-align:center; color:var(--app-text-muted); font-size:10px; }
+.item-value-node-foot { display:flex; align-items:center; justify-content:space-between; gap:2px; margin-top:auto; }
+.item-value-node-foot strong { font-size:12px; line-height:1.2; font-weight:500; }
+.item-value-detail { display:grid; gap:18px; font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.item-value-detail p, .item-value-detail h3 { margin:0 0 7px; }
+.item-value-detail-heading { display:flex; gap:12px; align-items:center; }
+.item-value-detail-heading .commerce-item-icon { width:56px; height:auto; flex:none; }
+.item-value-detail-heading strong { font-size:24px; display:block; }
+.item-value-detail small { display:block; color:var(--app-text-muted); }
+.item-value-linked-products { display:flex; flex-wrap:wrap; gap:5px 14px; margin-bottom:14px; }
+.item-value-linked-products > span { border-bottom:1px solid var(--app-border); padding:4px 0; }

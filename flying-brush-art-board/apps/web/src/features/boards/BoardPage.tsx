@@ -23,6 +23,7 @@ import { readDesignMap } from '../commerce/commerce-design-map'
 import { CommerceDesignCanvas, type CommerceSourceLoader } from '../commerce/CommerceDesignCanvas'
 import { CommerceEvidenceImport } from '../commerce/CommerceEvidenceImport'
 import { importCommerceEvidence } from '../commerce/import-commerce-evidence'
+import { ItemValueCanvas } from '../commerce/ItemValueCanvas'
 
 async function loadCommentState(client: CommentClient, boardId: string): Promise<{
   threads: CommentThreadView[]
@@ -314,6 +315,7 @@ export function BoardPage({
       </header>
       {automationEvent ? <div className={`automation-operation automation-operation--${automationEvent.type.split('.').at(-1)}`} role="status"><strong>{automationEvent.type === 'operation.started' ? 'AI 正在操作' : automationEvent.type === 'operation.committed' ? 'AI 操作完成' : 'AI 操作失败'}</strong><span>{automationEvent.summary}</span></div> : null}
       <CommerceDesignCanvas sourceBoardId={designMap?.sourceBoardId} loadSource={loadCommerceSource} store={store} editorRef={editorRef} canEdit={() => !readOnly && onEditIntent()} onOpenSource={onLinkedBoardOpen}>
+      <ItemValueCanvas store={store} editorRef={editorRef} loadSource={loadCommerceSource} canEdit={() => !readOnly && onEditIntent()} onOpenSource={onLinkedBoardOpen}>
       <div className="commerce-stage">
       <div className="commerce-canvas" inert={showCommerce} aria-hidden={showCommerce || undefined}>
       <CanvasEditor
@@ -396,6 +398,7 @@ export function BoardPage({
       </div>
       {showCommerce && commerceData ? <div className="commerce-overlay"><CommerceBoardView key={boardId ?? inputSessionKey} data={commerceData} onOpenBoard={onLinkedBoardOpen} {...(commerceResources ? { resources: commerceResources } : {})} /></div> : null}
       </div>
+      </ItemValueCanvas>
       </CommerceDesignCanvas>
       <Drawer open={Boolean(commentClient && boardId && commentsOpen)} onOpenChange={(open) => { if (!open) closeComments() }} placement="right" size={430} title={focusedCommentThreadId ? '评论详情' : `评论 (${commentThreads.length})`}>
         {commentClient && boardId ? <CommentPanel

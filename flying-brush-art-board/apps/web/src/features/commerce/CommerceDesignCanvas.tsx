@@ -14,6 +14,8 @@ import { CommerceDesignEditor } from './CommerceDesignEditor'
 import { CommerceProductGraphShape, CommerceProductGraphToolbar } from './CommerceProductGraph'
 import { readProductGraphNode, readProductGraphPage } from './commerce-product-graph'
 import './commerce-design-canvas.css'
+import { readItemValueNode } from './item-value-map'
+import { ItemValueShape } from './ItemValueCanvas'
 
 export type CommerceSourceLoader = (id: string) => Promise<{ snapshot: unknown; revision: number }>
 type CanvasContext = { data: CommerceDataset | undefined; error: string; open(id: TLShapeId): void }
@@ -105,8 +107,8 @@ export function CommerceDesignCard({ shape }: { shape: TLGeoShape }) {
 
 /** Native geo shapes retain drag, resize, arrow bindings, history and collaboration. */
 export class CommerceGeoShapeUtil extends GeoShapeUtil {
-  override component(shape: TLGeoShape) { return readProductGraphNode(shape) ? <CommerceProductGraphShape shape={shape}/> : readEntranceCard(shape) ? <CommerceEntranceShape shape={shape} /> : readDesignCard(shape) ? <CommerceDesignCard shape={shape} /> : super.component(shape) }
-  override canEdit(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? false : super.canEdit(shape) }
-  override getGeometry(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? new Group2d({ children: [new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })] }) : super.getGeometry(shape) }
-  override onDoubleClick(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? { ...shape } : super.onDoubleClick(shape) }
+  override component(shape: TLGeoShape) { return readItemValueNode(shape) ? <ItemValueShape shape={shape} /> : readProductGraphNode(shape) ? <CommerceProductGraphShape shape={shape}/> : readEntranceCard(shape) ? <CommerceEntranceShape shape={shape} /> : readDesignCard(shape) ? <CommerceDesignCard shape={shape} /> : super.component(shape) }
+  override canEdit(shape: TLGeoShape) { return readItemValueNode(shape) || readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? false : super.canEdit(shape) }
+  override getGeometry(shape: TLGeoShape) { return readItemValueNode(shape) || readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? new Group2d({ children: [new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })] }) : super.getGeometry(shape) }
+  override onDoubleClick(shape: TLGeoShape) { return readItemValueNode(shape) || readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? { ...shape } : super.onDoubleClick(shape) }
 }
