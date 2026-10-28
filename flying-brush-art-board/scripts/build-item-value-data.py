@@ -7,12 +7,14 @@ unknown prices explicit. The source workbook remains the owning editable file.
 import argparse
 import hashlib
 import json
+import importlib.util
+import math
 import re
 from datetime import datetime
 from pathlib import Path
 
 
-def build(catalog_snapshot, config_dir, source_board_id, prices=None):
+def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial_workbook=None, audit_output=None):
     raw = json.loads(Path(catalog_snapshot).read_text(encoding="utf-8"))
     records = raw.get("document", raw)["store"].values()
     catalog = next(r for r in records if r["typeName"] == "document")["meta"]["commerceOverview"]["dataset"]
@@ -88,6 +90,14 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None):
         path = Path(prices)
         price_data = json.loads(path.read_text(encoding="utf-8"))
         sources.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "label": "基础定价源读取结果"})
+    if commercial_workbook:
+        if prices:
+            raise ValueError("Choose one price owner: --prices or --commercial-workbook")
+        spec = importlib.util.spec_from_file_location("commercial_prices", Path(__file__).with_name("commercial-base-prices.py"))
+        reader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reader)
+        price_data, provenance, audit = reader.extract(commercial_workbook, list(items.values()))
+        sources.append(provenance)
     stages = [
         {"id": "start", "label": "上手期", "order": 0, "kind": "progress"},
         {"id": "1-5", "label": "第 1—5 关", "order": 1, "kind": "progress"},
@@ -109,17 +119,22 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None):
             stage = "conditional" if first["kind"] != "progress" else "start" if n == 0 else "1-5" if n <= 5 else "6-10" if n <= 10 else "11-20" if n <= 20 else "21+"
         price = price_data.get(str(item_id), {})
         value = price.get("value")
-        if value is not None and (not isinstance(value, (int, float)) or value < 0 or not price.get("source")):
+        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0 or not price.get("source")):
             raise ValueError(f"Invalid base price evidence: {item_id}")
         cat = "货币" if any(w in name for w in ["币", "钻石", "星辰", "声望", "公会货币"]) else "抽取与次数" if any(w in name for w in ["券", "钥", "体力"]) else "宝石与原石" if any(w in name for w in ["宝石", "原石"]) else "魔灵" if any(w in name for w in ["魔灵", "魔核", "魔晶"]) else "装备与材料" if any(w in name for w in ["武器", "陨铁", "精髓", "精粹", "蓝图"]) else "英雄与其他"
         # Names alone cannot identify named pets, weapon fragments, or hero skins.
         cat = {2: "英雄与碎片", 26: "皮肤", 30: "魔灵", 34: "武器与碎片"}.get(item.get("item_type"), cat)
         result.append({"id": item_id, "name": name, "category": cat, "description": re.sub(r"<[^>]*>", "", item.get("desc", "")),
-            "basePrice": value, "priceSource": price.get("source", ""), "priceNote": price.get("note", "缺现用数值表的基础定价；未采用旧草案或商品成交价。"),
+            "basePrice": value, "priceSource": price.get("source", ""), "priceNote": price.get("note", f"《商业化产出》未提供可唯一对应「{name}」的单品价值关系；待补基础价或旧名映射，不用商品售价代替。" if commercial_workbook else "缺现用数值表的基础定价；未采用旧草案或商品成交价。"),
+            **({"priceEstimate": price["estimate"]} if price.get("estimate") else {}),
             "stageId": stage, "firstPlacement": first["label"] if first else "首次投放位置待核验",
             "placementNote": "这是已核到的配置来源。尚未穷尽引导、邮件、任务、后台活动与个性化条件，不能据此断言全游戏最早获得时间。" if first else "缺少可定位到关卡或时间的有效奖励、商店或活动开放条件。",
             "placementSources": list(dict.fromkeys(c["source"] for c in candidate))[:12]})
-    return {"version": 1, "updated": datetime.now().strftime("%Y-%m-%d"), "sourceBoardId": source_board_id, "priceUnit": "钻石", "scope": "范围为关联商品总览中的有效商品奖励、即时奖励及兑换货币。基础价只接数值表；折扣留在商品总览。投放暂为已核到最早配置来源，未确认全游戏首次。", "sources": sources, "stages": stages, "items": result}
+    if commercial_workbook and audit_output:
+        audit["missingItems"] = [{"id": i["id"], "name": i["name"], "reason": i["priceNote"]} for i in result if i["basePrice"] is None]
+        audit["plottedItems"] = [{"id": i["id"], "name": i["name"], "estimate": i.get("priceEstimate"), "value": i["basePrice"]} for i in result if i["basePrice"] is not None]
+        Path(audit_output).write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"version": 1, "updated": datetime.now().strftime("%Y-%m-%d"), "sourceBoardId": source_board_id, "priceUnit": "钻石", "scope": "范围为关联商品总览中的有效商品奖励、即时奖励及兑换货币。基础价来自指定数值表；标注推算的条目由单品返利关系还原，范围保留表内差异，不是独立精确定价；折扣留在商品总览。投放暂为已核到最早配置来源，未确认全游戏首次。", "sources": sources, "stages": stages, "items": result}
 
 
 if __name__ == "__main__":
@@ -128,8 +143,10 @@ if __name__ == "__main__":
     parser.add_argument("--config-dir", required=True)
     parser.add_argument("--source-board", required=True)
     parser.add_argument("--prices")
+    parser.add_argument("--commercial-workbook")
+    parser.add_argument("--audit-output")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    data = build(args.catalog, args.config_dir, args.source_board, args.prices)
+    data = build(args.catalog, args.config_dir, args.source_board, args.prices, args.commercial_workbook, args.audit_output)
     Path(args.output).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"items": len(data["items"]), "priced": sum(i["basePrice"] is not None for i in data["items"]), "knownPlacement": sum(i["stageId"] not in ("unknown", "conditional") for i in data["items"])}, ensure_ascii=False))

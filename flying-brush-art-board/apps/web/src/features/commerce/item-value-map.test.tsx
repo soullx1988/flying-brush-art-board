@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createBoardStore, loadSnapshotIntoStore } from '@infinite-board/tldraw-adapter'
 import { type TLGeoShape } from 'tldraw'
 import { ItemValueCanvas, ItemValueShape } from './ItemValueCanvas'
-import { createItemValueSnapshot, focusValueItem, itemProducts, itemValueDatasetSchema, itemValueRecords, PENDING_PAGE, readItemValueMap, readItemValueNode, updateItemValueData, valueBand, valuePages, VALUE_PAGE, type ItemValueDataset } from './item-value-map'
+import { createItemValueSnapshot, focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueRecords, PENDING_PAGE, readItemValueMap, readItemValueNode, updateItemValueData, valueBand, valuePages, VALUE_PAGE, type ItemValueDataset } from './item-value-map'
 import type { CommerceDataset } from './commerce-data'
 
 const data: ItemValueDataset = { version: 1, updated: '2026-10-28', sourceBoardId: 'source-board', priceUnit: '钻石', scope: '配置快照', sources: [],
@@ -19,6 +19,14 @@ const catalog: CommerceDataset = { created: '2026-10-28', scope: '', sources: { 
 ] }
 afterEach(cleanup)
 describe('item value and first placement map', () => {
+  it('shows the full valuation spread instead of a spurious precise median', () => {
+    const item = { ...data.items[0]!, basePrice: 30, priceEstimate: { min: 29, max: 31 } }
+    expect(itemPriceLabel(data, item)).toBe('29–31 钻石')
+    expect(itemPriceLabel(data, { ...item, priceEstimate: { min: 30, max: 30 } })).toBe('≈ 30 钻石')
+    expect(itemValueDatasetSchema.safeParse({ ...data, items: [{ ...item, basePrice: null }] }).success).toBe(false)
+    expect(itemValueDatasetSchema.safeParse({ ...data, items: [{ ...item, priceEstimate: { min: 35, max: 31 } }] }).success).toBe(false)
+    expect(itemValueDatasetSchema.safeParse({ ...data, items: [{ ...item, basePrice: 40 }] }).success).toBe(false)
+  })
   it('keeps the independent board separate from merchandise definitions and discounts', () => {
     const snapshot = createItemValueSnapshot(data)
     const doc = Object.values(snapshot.store).find(r => r.typeName === 'document')!

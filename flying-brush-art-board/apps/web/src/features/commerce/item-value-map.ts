@@ -11,11 +11,13 @@ export const itemValueDatasetSchema = z.object({
   items: z.array(z.object({
     id: z.number().int(), name: z.string(), category: z.string(), description: z.string(),
     basePrice: z.number().finite().nonnegative().nullable(), priceSource: z.string(), priceNote: z.string(),
+    priceEstimate: z.object({ min: z.number().finite().nonnegative(), max: z.number().finite().nonnegative() }).optional(),
     stageId: z.string(), firstPlacement: z.string(), placementNote: z.string(), placementSources: z.array(z.string()),
   })).max(10000),
 }).superRefine((d, ctx) => {
   if (new Set(d.items.map(i => i.id)).size !== d.items.length || new Set(d.stages.map(s => s.id)).size !== d.stages.length) ctx.addIssue({ code: 'custom', message: '道具或投放节点身份重复' })
   if (d.items.some(i => !d.stages.some(s => s.id === i.stageId) || (i.basePrice !== null && !i.priceSource.trim()))) ctx.addIssue({ code: 'custom', message: '道具缺少投放节点或定价依据' })
+  if (d.items.some(i => i.priceEstimate && (i.basePrice === null || i.priceEstimate.min > i.priceEstimate.max || i.basePrice < i.priceEstimate.min || i.basePrice > i.priceEstimate.max))) ctx.addIssue({ code: 'custom', message: '推算范围与道具价值不一致' })
 })
 export type ItemValueDataset = z.infer<typeof itemValueDatasetSchema>
 export type ValueItem = ItemValueDataset['items'][number]
@@ -30,7 +32,12 @@ export function readItemValueNode(shape: { meta: unknown } | undefined) {
   return r.success ? r.data.itemValueNode : undefined
 }
 export const itemShapeId = (id: number) => `shape:item-value-${id}` as TLShapeId
-export const itemPriceLabel = (d: ItemValueDataset, i: ValueItem) => i.basePrice === null ? '基础价待核验' : `${i.basePrice.toLocaleString('zh-CN', { maximumFractionDigits: 6 })} ${d.priceUnit}`
+export function itemPriceLabel(d: ItemValueDataset, i: ValueItem) {
+  const number = (n: number) => n.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
+  if (i.basePrice === null) return '基础价待补'
+  if (i.priceEstimate) return `${i.priceEstimate.min === i.priceEstimate.max ? `≈ ${number(i.priceEstimate.min)}` : `${number(i.priceEstimate.min)}–${number(i.priceEstimate.max)}`} ${d.priceUnit}`
+  return `${number(i.basePrice)} ${d.priceUnit}`
+}
 export function itemProducts(data: CommerceDataset | undefined, id: number) {
   return data?.products.filter(p => isCatalogProduct(p) && [...p.rewards, ...(p.extraRewards ?? [])].some(r => r.id === id)) ?? []
 }
@@ -62,27 +69,27 @@ export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_
   const plotted = data.items.filter(i => i.basePrice !== null)
   const stages = data.stages.filter(s => plotted.some(i => i.stageId === s.id)).sort((a, b) => a.order - b.order)
   const colWidth = 368, left = 230
-  text('shape:iv-title', VALUE_PAGE, 0, -140, '道具价值投放总览', 900, 'xl')
-  text('shape:iv-subtitle', VALUE_PAGE, 0, -66, `基础定价（${data.priceUnit}） × 首次投放节点 · 按价格区间分层`, 1800)
-  text('shape:iv-y', VALUE_PAGE, 0, 0, '基础定价 ↑', 210)
+  text('shape:iv-title', VALUE_PAGE, 0, -114, '道具价值投放总览', 900, 'xl')
+  text('shape:iv-subtitle', VALUE_PAGE, 0, -50, `基础价值（${data.priceUnit}/个） × 已核到的投放节点 · 价格按区间分层，推算项保留范围`, Math.max(1100, left + stages.length * colWidth))
+  text('shape:iv-y', VALUE_PAGE, 0, 0, '基础价值 ↑', 210)
   stages.forEach((s, c) => text(`shape:iv-stage-${c}`, VALUE_PAGE, left + c * colWidth, 0, `${s.label}${s.kind !== 'progress' ? '\n条件区 · 不代表先后' : ''}`, colWidth - 20))
-  let y = 96
+  let y = 72
   for (const [b, band] of bands.entries()) {
     const groups = stages.map(s => plotted.filter(i => i.stageId === s.id && valueBand(i.basePrice!) === b).sort((a, b) => b.basePrice! - a.basePrice! || a.id - b.id))
     if (!groups.some(g => g.length)) continue
-    const height = Math.max(116, ...groups.map(g => Math.ceil(g.length / 2) * 100 + 20))
+    const height = Math.max(108, ...groups.map(g => Math.ceil(g.length / 2) * 100 + 8))
     text(`shape:iv-band-${b}`, VALUE_PAGE, 0, y + 14, band.label, 210)
     groups.forEach((items, c) => {
       line(`shape:iv-cell-${b}-${c}`, left + c * colWidth - 8, y, colWidth, height)
-      items.forEach((i, k) => node(i, VALUE_PAGE, left + c * colWidth + (k % 2) * 178, y + 12 + Math.floor(k / 2) * 100))
+      items.forEach((i, k) => node(i, VALUE_PAGE, left + c * colWidth + (k % 2) * 178, y + 10 + Math.floor(k / 2) * 100))
     })
-    y += height + 28
+    y += height + 16
   }
   if (!plotted.length) {
     text('shape:iv-empty', VALUE_PAGE, left, y, '基础定价尚未核验。全部道具已收录在「基础价待核验」。', 1100, 'm')
     y += 100
   }
-  text('shape:iv-x', VALUE_PAGE, left, y + 10, '首次投放节点 →  ·  关卡为配置条件；活动与待核验条件单列', Math.max(1100, stages.length * colWidth))
+  text('shape:iv-x', VALUE_PAGE, left, y + 10, '投放进度 →  ·  全游戏首次仍待核验；活动与待核验条件单列', Math.max(1100, stages.length * colWidth))
   const pending = data.items.filter(i => i.basePrice === null).sort((a, b) => a.category.localeCompare(b.category, 'zh-CN') || a.id - b.id)
   text('shape:iv-pending-title', PENDING_PAGE, 0, -110, `待核验道具 · ${pending.length} 项`, 1000, 'xl')
   text('shape:iv-pending-note', PENDING_PAGE, 0, -40, '基础价缺失时不按零元绘图。点开道具查看缺项、投放条件与来源。', 1400)
