@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { HTMLContainer, useValue, type Editor, type TLGeoShape, type TLShapeId, type TLStore } from 'tldraw'
 import { Button, Drawer, Input, Select, Tag, toast } from '@ttqtt/liquid-glass-react'
 import { commerceEntrances, entranceFor, entranceProducts } from './commerce-browse'
@@ -12,13 +12,23 @@ import { CommercePagedTable } from './CommercePagedTable'
 import { readDesignCard, updateDesignCard } from './commerce-design-map'
 import { entranceDesign, entranceHistory, readEntranceCard, toggleEntrance, type DesignFields } from './commerce-overview-model'
 import { CommerceDesignEditor } from './CommerceDesignEditor'
+import { openProductGraph, productAnnotation, readProductGraphPage, syncProductGraph, type ProductGraphSelector } from './commerce-product-graph'
 
-type Panel = { kind: 'design'; shapeId: TLShapeId } | { kind: 'products'; entrance: string; need?: string; query?: string } | { kind: 'product'; key: string; entrance: string; need?: string; query?: string }
+type Panel = { kind: 'design'; shapeId: TLShapeId } | { kind: 'products'; entrance: string; need?: string; query?: string } | { kind: 'product'; key: string; entrance: string; need?: string; query?: string; canvas?: boolean }
 type OverviewContextValue = { data?: CommerceDataset | undefined; error: string; store: TLStore; editor(): Editor | undefined; canEdit(): boolean; open(panel: Panel): void }
 const OverviewContext = createContext<OverviewContextValue | undefined>(undefined)
+export const useCommerceOverview = () => useContext(OverviewContext)
+export function browseProductGraph(context: OverviewContextValue, selector: ProductGraphSelector) {
+  const editor=context.editor()
+  if(!editor || !context.data){toast.error('商品数据尚未读取完成');return}
+  if(!openProductGraph(editor,context.data,selector,context.canEdit()))toast.error('无法新增商品视图：画板只读或已到页面数量上限')
+}
 
 export function CommerceOverviewProvider({ data, error, store, editor, canEdit, onOpenSource, children }: Omit<OverviewContextValue, 'open'> & { onOpenSource?: ((id: string) => void) | undefined; children: ReactNode }) {
   const [panel, setPanel] = useState<Panel>()
+  const annotation=useValue('product detail annotation',()=>panel?.kind==='product'?productAnnotation(store,panel.key):undefined,[store,panel])
+  const activePage=useValue('product graph page',()=>{const id=store.query.records('instance').get()[0]?.currentPageId;return id?store.get(id):undefined},[store])
+  useEffect(()=>{const selector=readProductGraphPage(activePage), ed=editor();if(selector&&ed&&data&&canEdit())ed.run(()=>syncProductGraph(ed,data,selector))},[activePage,data])
   const shape = useValue('overview design selection', () => panel?.kind === 'design' ? store.get(panel.shapeId) as TLGeoShape | undefined : undefined, [store, panel])
   const card = readEntranceCard(shape), design = useValue('overview linked design', () => card ? entranceDesign(store, card) : undefined, [store, card])
   const entry = commerceEntrances.find(e => e.id === (panel?.kind === 'design' ? card?.entrance : panel?.entrance))
@@ -42,15 +52,16 @@ export function CommerceOverviewProvider({ data, error, store, editor, canEdit, 
       <div className="design-map-details">
         {error ? <Tag color="warning">引用未更新，当前为上次读取值</Tag> : null}
         {panel?.kind === 'design' ? design ? <CommerceDesignEditor key={panel.shapeId} value={pickDesign(design)} onSave={save} /> : <p>原设计已移除，需恢复关联。</p> : !data ? <p>{error || '正在读取商品与历史…'}</p> : panel?.kind === 'products' ? <OverviewProducts key={`${panel.entrance}:${panel.need ?? ''}`} data={data} entrance={panel.entrance} initialNeed={panel.need} initialQuery={panel.query} onSelect={(p, need, query) => setPanel({ kind: 'product', key: p.key, entrance: panel.entrance, query, ...(need !== 'all' ? { need } : {}) })} /> : product ? <>
-          <Button size="sm" variant="ghost" onClick={() => setPanel({kind:'products',entrance:panel!.kind === 'product' ? panel!.entrance : 'all',...(panel?.kind === 'product' && panel.need ? {need:panel.need} : {}), ...(panel?.kind === 'product' && panel.query ? {query:panel.query} : {})})}>← 返回商品清单</Button>
+          <Button size="sm" variant="ghost" onClick={() => panel?.kind==='product'&&panel.canvas ? setPanel(undefined) : setPanel({kind:'products',entrance:panel!.kind === 'product' ? panel!.entrance : 'all',...(panel?.kind === 'product' && panel.need ? {need:panel.need} : {}), ...(panel?.kind === 'product' && panel.query ? {query:panel.query} : {})})}>{panel?.kind==='product'&&panel.canvas?'← 返回商品画板':'← 返回商品清单'}</Button>
           <div><Tag>{entranceFor(product).name}</Tag><h3>{product.title} <span>{productFacts(data, product).price}</span></h3><small>{product.channel} · {product.sku} · 配置核对 {data.created}</small></div>
+          {annotation?<section><Tag color="warning">{annotation.label} · {annotation.confirmed?'原因已确认':'待核验'}</Tag><p>{annotation.detail}</p></section>:null}
           {product.channel === '首充' || product.channel === '月卡' ? <strong>{product.channel === '首充' ? '分日奖励合计' : '每日奖励'}</strong> : null}
           <ProductFacts data={data} product={product} />
           {product.extraRewards?.length ? <p>购买即时：{product.extraRewards.map(r => `${r.name} × ${r.n}`).join('、')}</p> : null}
           <p>{product.limit}</p>{product.note ? <details><summary>商品说明</summary><p>{product.note}</p></details> : null}
           <GamePlacement evidence={data.evidence} product={product} />
           <section><h3>历史验证</h3><TestProductResults data={data} product={product} group="all" />{!data.evidence?.revenue ? <p>历史统计尚未接入。</p> : null}</section>
-          <div><h3>共同需求</h3><p className="commerce-muted">按资源用途关联，购买动机待确认。</p>{data.needs.filter(n => n.id !== 'unknown' && product.needs.includes(n.id)).map(n => <Button key={n.id} size="sm" variant="ghost" onClick={() => setPanel({kind:'products',entrance:'all',need:n.id})}>{n.name} ↗</Button>)}</div>
+          <div><h3>共同需求</h3><p className="commerce-muted">按资源用途关联，购买动机待确认。</p>{data.needs.filter(n => n.id !== 'unknown' && product.needs.includes(n.id)).map(n => <Button key={n.id} size="sm" variant="ghost" onClick={() => {const current=editor();if(current&&openProductGraph(current,data,{entrance:'all',need:n.id},canEdit()))setPanel(undefined)}}>{n.name} ↗</Button>)}</div>
           {product.board && onOpenSource ? <Button variant="ghost" onClick={() => onOpenSource(product.board!.id)}>原设计资料 ↗</Button> : null}
         </> : <p>商品已移除或引用已失效，请核对商品总览。</p>}
       </div>
@@ -72,15 +83,15 @@ export function CommerceEntranceShape({ shape }: { shape: TLGeoShape }) {
   const examples = [...products.filter(p=>p.kind==='cash'||p.kind==='diamond'),...products].filter(p=>{if(seenChannels.has(p.channel))return false;seenChannels.add(p.channel);return true}).slice(0,3)
   const rewards = [...new Map(products.flatMap(p => p.rewards).map(r => [r.id,r])).values()].slice(0,3)
   const act = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn() }
-  const browse = () => open({kind:'products',entrance:card.entrance})
+  const browse = () => browseProductGraph(context,{entrance:card.entrance,need:'all'})
   return <HTMLContainer><article className={`commerce-entrance-shape${card.expanded ? ' is-expanded' : ''}`} aria-label={`${entry.name}分组`} style={{width:shape.props.w,height:shape.props.h}}>
     <header><h2>{entry.name}</h2><span>{data ? `${products.length} 项` : '读取中…'}</span><div>{rewards.map(r => <GameItemIcon key={r.id} evidence={data?.evidence} id={r.id} name={r.name} />)}</div></header>
     {card.expanded ? <div className="commerce-chain-columns">
       <section className="commerce-chain-design"><h3>设计 <small>{design?.decision === 'confirmed' ? '已确认' : '待确认'}</small></h3><h4>{design?.title ?? '设计引用待恢复'}</h4><p>{design?.goal}</p><p className="commerce-chain-muted">{design?.measure}</p><Button size="sm" variant="ghost" onPointerDown={e=>e.stopPropagation()} onClick={act(()=>open({kind:'design',shapeId:shape.id}))}>编辑设计</Button>
-        <div className="commerce-chain-needs"><small>共同需求 · 候选关联</small>{needs.slice(0,3).map(n=><Button size="sm" variant="ghost" key={n.id} onPointerDown={e=>e.stopPropagation()} onClick={act(()=>open({kind:'products',entrance:'all',need:n.id}))}>{n.name} ↗</Button>)}</div>
+        <div className="commerce-chain-needs"><small>按玩家需求展开商品 · 候选关联</small>{needs.map(n=><Button size="sm" variant="ghost" key={n.id} onPointerDown={e=>e.stopPropagation()} onClick={act(()=>browseProductGraph(context,{entrance:card.entrance,need:n.id}))}>{n.name} · {products.filter(p=>p.needs.includes(n.id)).length} ↗</Button>)}</div>
       </section>
       <span className="commerce-chain-arrow">→</span>
-      <section className="commerce-chain-implementation"><h3>实现 <small>引用现有商品</small></h3><p>{entry.description}</p>{data ? examples.map(p=><div className="commerce-chain-product" key={p.key}><span>{p.rewards[0] ? <GameItemIcon evidence={data.evidence} id={p.rewards[0].id} name={p.rewards[0].name} /> : null}{p.title}</span><strong>{productFacts(data,p).price}</strong></div>) : <p>正在读取…</p>}<Button size="sm" variant="ghost" onPointerDown={e=>e.stopPropagation()} onClick={act(browse)}>查看全部 {products.length} 项 →</Button>
+      <section className="commerce-chain-implementation"><h3>实现 <small>引用现有商品</small></h3><p>{entry.description}</p>{data ? examples.map(p=><div className="commerce-chain-product" key={p.key}><span>{p.rewards[0] ? <GameItemIcon evidence={data.evidence} id={p.rewards[0].id} name={p.rewards[0].name} /> : null}{p.title}</span><strong>{productFacts(data,p).price}</strong></div>) : <p>正在读取…</p>}<Button size="sm" variant="ghost" onPointerDown={e=>e.stopPropagation()} onClick={act(browse)}>展开商品卡 · {products.length} 项 →</Button>
         {card.entrance === 'benefits' || card.entrance === 'first' ? <Button size="sm" variant="ghost" onPointerDown={e=>e.stopPropagation()} onClick={act(()=>{const ed=editor(); if(!ed)return; const id=`shape:rhythm-${card.entrance==='first'?'first':'monthly'}-design` as TLShapeId, target=ed.getShape(id); if(!target){toast.error('原专题已移除');return} ed.setCurrentPage(target.parentId as Parameters<Editor['setCurrentPage']>[0]); ed.zoomToFit({animation:{duration:200}})})}>{card.entrance==='first'?'首充':'月卡'}专题 ↗</Button> : null}
       </section>
       <span className="commerce-chain-arrow">→</span>
@@ -97,7 +108,7 @@ export function CommerceEntranceShape({ shape }: { shape: TLGeoShape }) {
 export function OverviewOtherEntries() {
   const context = useContext(OverviewContext)
   if (!context?.data) return null
-  return <><Button size="sm" variant="ghost" onClick={()=>context.open({kind:'products',entrance:'all',need:'all'})}>共同需求</Button>{['exchange','unverified'].map(id=><Button size="sm" variant="ghost" key={id} onClick={()=>context.open({kind:'products',entrance:id})}>{id==='exchange'?'资源兑换':'入口待核验'} · {entranceProducts(context.data!,id).length}</Button>)}</>
+  return <><Button size="sm" variant="ghost" onClick={()=>browseProductGraph(context,{entrance:'all',need:'all'})}>共同需求</Button>{['exchange','unverified'].map(id=><Button size="sm" variant="ghost" key={id} onClick={()=>browseProductGraph(context,{entrance:id,need:'all'})}>{id==='exchange'?'资源兑换':'入口待核验'} · {entranceProducts(context.data!,id).length}</Button>)}</>
 }
 
 function OverviewProducts({ data, entrance, initialNeed, initialQuery, onSelect }: {data:CommerceDataset;entrance:string;initialNeed?:string|undefined;initialQuery?:string|undefined;onSelect(p:CommerceProduct,need:string,query:string):void}) {

@@ -11,6 +11,8 @@ import { yuan } from './commerce-revenue'
 import { CommerceOverviewProvider, CommerceEntranceShape, OverviewOtherEntries } from './CommerceOverviewCanvas'
 import { arrangeOverview, ensureCommerceOverview, overviewPageId, readEntranceCard, showCommerceOverview } from './commerce-overview-model'
 import { CommerceDesignEditor } from './CommerceDesignEditor'
+import { CommerceProductGraphShape, CommerceProductGraphToolbar } from './CommerceProductGraph'
+import { readProductGraphNode, readProductGraphPage } from './commerce-product-graph'
 import './commerce-design-canvas.css'
 
 export type CommerceSourceLoader = (id: string) => Promise<{ snapshot: unknown; revision: number }>
@@ -22,20 +24,20 @@ export function CommerceDesignCanvas({ sourceBoardId, loadSource, store, editorR
   editorRef: RefObject<Editor | undefined>; canEdit(): boolean; onOpenSource?: ((id: string) => void) | undefined; children: ReactNode
 }) {
   const [data, setData] = useState<CommerceDataset>(), [error, setError] = useState(''), [busy, setBusy] = useState(false)
-  const [selectedId, setSelectedId] = useState<TLShapeId>(), refreshRef = useRef<() => Promise<void>>(async () => undefined)
+  const [selectedId, setSelectedId] = useState<TLShapeId>(), refreshRef = useRef<(notify?: boolean) => Promise<void>>(async () => undefined)
   const selected = useValue('selected design card', () => selectedId ? store.get(selectedId) as TLGeoShape | undefined : undefined, [store, selectedId])
   const card = selected && readDesignCard(selected)
   useEffect(() => {
     let alive = true, pending = false
     setData(undefined); setError(''); setSelectedId(undefined)
-    const refresh = async () => {
+    const refresh = async (notify = false) => {
       if (!sourceBoardId || !loadSource || pending || !alive) return
       pending = true; setBusy(true)
       try {
         const response = await loadSource(sourceBoardId), next = datasetFromSnapshot(response.snapshot)
         if (!next) throw new Error('商品总览中没有有效数据')
-        if (alive) { setData(next); setError('') }
-      } catch (e) { if (alive) setError(e instanceof Error ? e.message : '来源读取失败') }
+        if (alive) { setData(next); setError(''); if(notify)toast.success('商品与历史引用已刷新，保留当前布局') }
+      } catch (e) { if (alive) {setError(e instanceof Error ? e.message : '来源读取失败');if(notify)toast.error('引用未更新，继续显示上次读取值')} }
       finally { pending = false; if (alive) setBusy(false) }
     }
     refreshRef.current = refresh
@@ -47,19 +49,21 @@ export function CommerceDesignCanvas({ sourceBoardId, loadSource, store, editorR
   }, [sourceBoardId, loadSource, store])
   const hasOverview = useValue('overview exists', () => !!sourceBoardId && !!store.get(overviewPageId), [store, sourceBoardId])
   const overviewActive = useValue('overview active', () => !!sourceBoardId && store.query.records('instance').get()[0]?.currentPageId === overviewPageId, [store, sourceBoardId])
+  const graphActive = useValue('product graph active',()=>{const id=sourceBoardId&&store.query.records('instance').get()[0]?.currentPageId;return !!(id&&readProductGraphPage(store.get(id)))},[store,sourceBoardId])
   const products = card && data ? linkedProducts(data, card) : []
   const design = useValue('linked design goal', () => card ? readDesignCard(store.get(card.designId as TLShapeId) as TLGeoShape ?? { meta: {} }) : undefined, [store, card?.designId])
   return <Context.Provider value={{ data, error, open: setSelectedId }}><CommerceOverviewProvider data={data} error={error} store={store} editor={() => editorRef.current} canEdit={canEdit} onOpenSource={onOpenSource}>
-    {sourceBoardId ? <div className="design-map-toolbar" role="region" aria-label="设计画板工具">
+    {sourceBoardId && !graphActive ? <div className="design-map-toolbar" role="region" aria-label="设计画板工具">
       <span>拖动分组 · 展开链路</span>
       <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; if (!ed) return; if (hasOverview) showCommerceOverview(ed, canEdit()); else if(canEdit()) ensureCommerceOverview(ed) }}>{hasOverview ? '商业总览' : '建立六类总览'}</Button>
-      {!overviewActive ? <Button size="sm" variant="ghost" onClick={() => editorRef.current?.zoomToFit({ animation: { duration: 200 } })}>全览</Button> : null}
-      <Button size="sm" variant="ghost" onClick={() => { if (editorRef.current && canEdit()) overviewActive ? arrangeOverview(editorRef.current) : arrangePayRhythm(editorRef.current) }}>整理布局</Button>
-      <Button size="sm" variant="ghost" disabled={busy} onClick={async () => { await refreshRef.current(); }}> {busy ? '读取中…' : '刷新引用'}</Button>
+      {!overviewActive && !graphActive ? <Button size="sm" variant="ghost" onClick={() => editorRef.current?.zoomToFit({ animation: { duration: 200 } })}>全览</Button> : null}
+      {!graphActive ? <Button size="sm" variant="ghost" onClick={() => { if (editorRef.current && canEdit()) overviewActive ? arrangeOverview(editorRef.current) : arrangePayRhythm(editorRef.current) }}>整理布局</Button> : null}
+      <Button size="sm" variant="ghost" disabled={busy} onClick={async () => { await refreshRef.current(true); }}> {busy ? '读取中…' : '刷新引用'}</Button>
       {onOpenSource ? <Button size="sm" variant="ghost" onClick={() => onOpenSource(sourceBoardId)}>商品总览 ↗</Button> : null}
       {overviewActive ? <OverviewOtherEntries /> : null}
       <span role="status" className={error ? 'design-map-error' : 'design-map-source'}>{error ? `引用未更新：${error}` : data ? `引用已更新 · 配置 ${data.created}` : '正在读取商品总览'}</span>
     </div> : null}
+    {graphActive ? <CommerceProductGraphToolbar onRefresh={()=>refreshRef.current(true)} busy={busy}/> : null}
     {children}
     <Drawer open={Boolean(card)} onOpenChange={open => { if (!open) setSelectedId(undefined) }} placement="right" size={560} title={card ? `${designKindNames[card.kind]} · ${card.theme === 'first' ? '首充' : '月卡'}` : ''}>
       {card && selected ? <div className="design-map-details">
@@ -101,8 +105,8 @@ export function CommerceDesignCard({ shape }: { shape: TLGeoShape }) {
 
 /** Native geo shapes retain drag, resize, arrow bindings, history and collaboration. */
 export class CommerceGeoShapeUtil extends GeoShapeUtil {
-  override component(shape: TLGeoShape) { return readEntranceCard(shape) ? <CommerceEntranceShape shape={shape} /> : readDesignCard(shape) ? <CommerceDesignCard shape={shape} /> : super.component(shape) }
-  override canEdit(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) ? false : super.canEdit(shape) }
-  override getGeometry(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) ? new Group2d({ children: [new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })] }) : super.getGeometry(shape) }
-  override onDoubleClick(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) ? { ...shape } : super.onDoubleClick(shape) }
+  override component(shape: TLGeoShape) { return readProductGraphNode(shape) ? <CommerceProductGraphShape shape={shape}/> : readEntranceCard(shape) ? <CommerceEntranceShape shape={shape} /> : readDesignCard(shape) ? <CommerceDesignCard shape={shape} /> : super.component(shape) }
+  override canEdit(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? false : super.canEdit(shape) }
+  override getGeometry(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? new Group2d({ children: [new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })] }) : super.getGeometry(shape) }
+  override onDoubleClick(shape: TLGeoShape) { return readDesignCard(shape) || readEntranceCard(shape) || readProductGraphNode(shape) ? { ...shape } : super.onDoubleClick(shape) }
 }

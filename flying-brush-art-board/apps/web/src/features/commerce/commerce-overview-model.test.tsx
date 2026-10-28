@@ -6,6 +6,8 @@ import { createPayRhythmSnapshot, readDesignCard, updateDesignCard } from './com
 import { collapsePatch, entranceDesign, entranceHistory, readEntranceCard, withCommerceOverview } from './commerce-overview-model'
 import { CommerceEntranceShape, CommerceOverviewProvider } from './CommerceOverviewCanvas'
 import type { CommerceDataset, CommerceProduct } from './commerce-data'
+import { CommerceProductGraphShape } from './CommerceProductGraph'
+import { productGraphPageId, productGraphRecords, readProductGraphNode } from './commerce-product-graph'
 
 const product=(key:string,channel:string):CommerceProduct=>({key,sku:key,title:key,channel,kind:'diamond',price:'10 钻石',rewards:[{id:123,name:'培养券',n:2}],limit:'1次',note:'',source:'s',status:'defined',needs:['n']})
 const data:CommerceDataset={created:'test',scope:'test',sources:{s:{name:'test',path:'test',sha256:'test'}},needs:[{id:'n',name:'成长',question:'补充培养材料',why:'候选',principle:''}],products:[product('first','首充'),product('monthly','月卡'),product('shop','日礼包'),product('chain','招募链'),product('trigger','宝石条件礼包'),product('event','英雄试炼')]}
@@ -69,13 +71,13 @@ describe('commerce overview references',()=>{
     fireEvent.click(screen.getByRole('button',{name:'保存设计'}))
     expect(update).not.toHaveBeenCalled()
   })
-  it('opens cross-category needs from the same catalog and displays newly refreshed rewards',()=>{
-    const {store}=setup(),shape=store.get('shape:commerce-entrance-shop' as TLGeoShape['id']) as TLGeoShape
-    const expanded={...shape,meta:{...shape.meta,commerceEntrance:{...readEntranceCard(shape)!,expanded:true}}}
-    const before=JSON.stringify(getStoreSnapshot(store)),props={error:'',store,editor:()=>undefined,canEdit:()=>false,children:<CommerceEntranceShape shape={expanded}/>}
+  it('displays refreshed cross-category product cards without persisting prices or rewards',()=>{
+    const {store}=setup(),selector={entrance:'all',need:'n'},id=productGraphPageId(selector),records=productGraphRecords(data,selector)
+    store.put([{id,typeName:'page',name:'Comparison',index:'a3',meta:{commerceProductGraph:selector}},...records] as never[])
+    const shape=store.allRecords().find(r=>readProductGraphNode(r)?.kind==='product'&&readProductGraphNode(r)?.key==='monthly') as TLGeoShape
+    const before=JSON.stringify(getStoreSnapshot(store)),props={error:'',store,editor:()=>undefined,canEdit:()=>false,children:<CommerceProductGraphShape shape={shape}/>}
     const view=render(<CommerceOverviewProvider {...props} data={data}/>)
-    fireEvent.click(screen.getByRole('button',{name:'成长 ↗'}))
-    expect(screen.getByRole('button',{name:'查看商品 monthly'})).toBeInTheDocument()
+    expect(screen.getByLabelText('商品卡 monthly')).toBeInTheDocument()
     const changed={...data,products:data.products.map(p=>p.key==='monthly'?{...p,price:'12 钻石',rewards:[{id:123,name:'培养券',n:8}]}:p)}
     view.rerender(<CommerceOverviewProvider {...props} data={changed}/>)
     expect(screen.getByText('培养券 × 8')).toBeInTheDocument()

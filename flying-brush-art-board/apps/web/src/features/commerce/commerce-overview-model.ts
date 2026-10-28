@@ -13,6 +13,7 @@ const position = z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.nu
 const entranceSchema = z.object({
   version: z.literal(1), entrance: z.enum(['shop', 'benefits', 'first', 'trigger', 'chain', 'events']),
   expanded: z.boolean().default(false), home: position.optional(), designRef: z.string().optional(), design: designFieldsSchema.optional(),
+  needDesigns: z.record(z.string(),designFieldsSchema).optional(),
 })
 export type EntranceCard = z.infer<typeof entranceSchema>
 export function readEntranceCard(shape: { meta: unknown } | undefined) {
@@ -86,7 +87,7 @@ export function toggleEntrance(editor: Editor, id: TLShapeId) {
     }
     const otherBounds = editor.getCurrentPageShapes().filter(s => s.id !== id).flatMap(s => { const b = editor.getShapePageBounds(s); return b ? [b] : [] })
     const y = Math.max(shape.y + shape.props.h, ...otherBounds.map(b => b.maxY)) + 64
-    editor.updateShapes([{ id, type: 'geo', x: Math.min(shape.x, ...otherBounds.map(b => b.x)), y, props: { w: 1120, h: 380 }, meta: { ...shape.meta, commerceEntrance: { ...card, expanded: true, home: { x: shape.x, y: shape.y, w: shape.props.w, h: shape.props.h } } } }])
+    editor.updateShapes([{ id, type: 'geo', x: Math.min(shape.x, ...otherBounds.map(b => b.x)), y, props: { w: 1120, h: 460 }, meta: { ...shape.meta, commerceEntrance: { ...card, expanded: true, home: { x: shape.x, y: shape.y, w: shape.props.w, h: shape.props.h } } } }])
   })
   const bounds = editor.getShapePageBounds(id)
   if (bounds) editor.zoomToBounds(bounds, { inset: 64, animation: { duration: 250 } })

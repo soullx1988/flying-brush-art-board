@@ -9,6 +9,7 @@ import {
 import type { WorkspaceEditor, WorkspaceViewState } from './workspace-tabs'
 import { readDesignMap } from '../commerce/commerce-design-map'
 import { readEntranceCard } from '../commerce/commerce-overview-model'
+import { graphFirstBounds, readProductGraphPage } from '../commerce/commerce-product-graph'
 
 function hasSnapshotRecords(snapshot: unknown): boolean {
   if (!snapshot || typeof snapshot !== 'object') return false
@@ -100,10 +101,12 @@ export class TldrawWorkspaceEditor implements WorkspaceEditor {
     const viewport = editor.getViewportScreenBounds()
     if (!pageBounds || pageBounds.w <= 0 || viewport.w <= 0 || viewport.h <= 0) return
     const isDesignMap = !!readDesignMap(editor.store.allRecords().find(r => r.typeName === 'document')?.meta)
+    const isProductGraph = isDesignMap && editor.getCurrentPageId && !!readProductGraphPage(editor.store.get(editor.getCurrentPageId()))
     const expanded = isDesignMap ? editor.getCurrentPageShapes().find(shape => readEntranceCard(shape)?.expanded) : undefined
     // A persisted expanded group is the current reading focus, not blank space
     // to squeeze into the six-group overview after reopening the board.
-    const bounds = (expanded && editor.getShapePageBounds(expanded)) || pageBounds
+    const bounds = (isProductGraph && graphFirstBounds(editor)) || (expanded && editor.getShapePageBounds(expanded)) || pageBounds
+    if (isProductGraph) { editor.zoomToBounds(bounds, { inset: 128 }); return }
     // Read long boards from their top, rather than fitting their entire height
     // into an unreadably small overview. Leave room for the native top toolbar.
     const inset = 48
