@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { SelectionAll, Table as TableIcon, TreeStructure } from '@phosphor-icons/react'
-import Underline from '@tiptap/extension-underline'
 import {
   ArrowShapeArrowheadEndStyle,
   ArrowShapeArrowheadStartStyle,
@@ -150,7 +149,8 @@ export const CANVAS_TLDRAW_OPTIONS = {
   maxShapesPerPage: 10_000,
   text: {
     tipTapConfig: {
-      extensions: [...tipTapDefaultExtensions, Underline],
+      // The bundled Tiptap 3 StarterKit already registers underline.
+      extensions: tipTapDefaultExtensions,
     },
   },
 }

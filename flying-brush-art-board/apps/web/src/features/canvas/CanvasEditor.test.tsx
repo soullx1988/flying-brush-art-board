@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { act, cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Editor, TLUiActionsContextType, TLUiOverrides } from 'tldraw'
+import { renderHtmlFromRichText, renderRichTextFromHTML } from 'tldraw'
 import { readCanvasToolStylePreference, writeCanvasToolStylePreference } from './tool-style-preferences'
 
 import { BoardSession } from '../boards/board-session'
@@ -140,7 +141,24 @@ vi.mock('tldraw', async (importOriginal) => ({
   },
 }))
 
-import { CanvasEditor, ShapeConnectionHandles, getCanvasLicenseKey } from './CanvasEditor'
+import { CANVAS_TLDRAW_OPTIONS, CanvasEditor, ShapeConnectionHandles, getCanvasLicenseKey } from './CanvasEditor'
+
+it('round-trips underline and other text formats without duplicate extension warnings', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const editor = { getTextOptions: () => CANVAS_TLDRAW_OPTIONS.text } as unknown as Editor
+  try {
+    const richText = renderRichTextFromHTML(editor, '<p><u><strong><em><s>设计验证</s></em></strong></u></p>')
+    const parsed = richText as { content?: Array<{ content?: Array<{ marks?: Array<{ type: string }> }> }> }
+    const marks = (parsed.content?.[0]?.content?.[0]?.marks ?? []).map(mark => mark.type)
+    expect(marks).toEqual(expect.arrayContaining(['underline', 'bold', 'italic', 'strike']))
+    expect(new Set(marks).size).toBe(marks.length)
+    const html = renderHtmlFromRichText(editor, richText)
+    for (const tag of ['u', 'strong', 'em', 's']) expect(html).toContain(`<${tag}>`)
+    expect(warn.mock.calls.filter(args => args.some(arg => String(arg).includes('Duplicate extension names')))).toEqual([])
+  } finally {
+    warn.mockRestore()
+  }
+})
 
 describe('CanvasEditor', () => {
   it('ships a complete Chinese translation asset with the tldraw fallback keys filled', () => {
