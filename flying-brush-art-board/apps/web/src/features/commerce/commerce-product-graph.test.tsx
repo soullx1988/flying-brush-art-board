@@ -5,7 +5,7 @@ import type { Editor, TLArrowBinding, TLGeoShape, TLShape, TLShapeId } from 'tld
 import { getIndexAbove } from 'tldraw'
 import { createPayRhythmSnapshot } from './commerce-design-map'
 import { withCommerceOverview } from './commerce-overview-model'
-import { graphProducts, productAnnotation, productGraphPageId, productGraphRecords, productHistorySummary, readProductGraphNode, saveProductAnnotation, syncProductGraph } from './commerce-product-graph'
+import { graphProducts, growProductGraphCard, productAnnotation, productGraphPageId, productGraphRecords, productHistorySummary, readProductGraphNode, saveProductAnnotation, syncProductGraph } from './commerce-product-graph'
 import { CommerceProductGraphShape } from './CommerceProductGraph'
 import { CommerceOverviewProvider, CommerceEntranceShape } from './CommerceOverviewCanvas'
 import { readEntranceCard } from './commerce-overview-model'
@@ -56,6 +56,34 @@ describe('native product relationship graph',()=>{
     const d={...data,evidence:{ledger,icons:{},assets:{}} as unknown as CommerceDataset['evidence']}
     expect(productHistorySummary(d,p).primary).toBe('2 笔 · 500 钻石')
     expect(productHistorySummary(data,p).primary).toBe('未接入对应消费记录')
+    expect(productHistorySummary(data,{...p,kind:'resource'})).toEqual({primary:'尚未接入对应兑换流水',secondary:'兑换次数与资源消耗待核验'})
+  })
+  it('grows long-content cards without clipping and only pushes newly obstructed linked cards',()=>{
+    const {store}=setup(),first=store.allRecords().find(r=>readProductGraphNode(r)?.key==='week') as TLGeoShape
+    const below={...first,id:'shape:below' as TLShapeId,x:first.x+15,y:first.y+first.props.h+28}
+    const last={...below,id:'shape:last' as TLShapeId,y:below.y+below.props.h+28}
+    const note={...last,id:'shape:note' as TLShapeId,x:2000,meta:{}}
+    store.put([below,last,note])
+    const neighbor=store.allRecords().find(r=>readProductGraphNode(r)?.key==='month')
+    const editor={store,getShape:(id:TLShapeId)=>store.get(id),run:(fn:()=>void)=>fn(),updateShapes:(changes:TLGeoShape[])=>store.put(changes.map(r=>{const old=store.get(r.id) as TLGeoShape;return {...old,...r,props:{...old.props,...r.props}}}))} as unknown as Editor
+    growProductGraphCard(editor,first.id,first.props.h+92)
+    expect((store.get(first.id) as TLGeoShape).props.h).toBe(first.props.h+92)
+    expect((store.get(below.id) as TLGeoShape).y).toBe(below.y+92)
+    expect((store.get(last.id) as TLGeoShape).y).toBe(last.y+92)
+    expect((store.get(below.id) as TLGeoShape).x).toBe(below.x)
+    expect(store.get(note.id)).toEqual(note)
+    expect(store.get(neighbor!.id)).toEqual(neighbor)
+    growProductGraphCard(editor,first.id,first.props.h+92)
+    expect((store.get(last.id) as TLGeoShape).y).toBe(last.y+92)
+  })
+  it('uses short local associations rather than a fan of links from the need hub',()=>{
+    const rows=productGraphRecords({...data,products:Array.from({length:12},(_,i)=>product(`p${i}`,'周礼包'))},{entrance:'shop',need:'spirit'})
+    const starts=rows.filter(r=>r.typeName==='binding'&&(r.props as TLArrowBinding['props']).terminal==='start')
+    expect(starts.filter(r=>String(r.toId).includes(':need:'))).toHaveLength(1)
+    const vertical=rows.find(r=>r.id===`binding:shape:${productGraphPageId({entrance:'shop',need:'spirit'})}:link:p2:start`)!
+    expect(vertical.toId).toContain(':product:p0')
+    expect((vertical.props as TLArrowBinding['props']).normalizedAnchor).toEqual({x:0.5,y:1})
+    expect(rows.filter(r=>r.type==='arrow'&&(r.props as {arrowheadEnd:string}).arrowheadEnd==='arrow')).toHaveLength(1)
   })
   it('keeps hand-adjusted connection anchors when referenced data refreshes',()=>{
     const {store,s}=setup(),binding=store.allRecords().find(r=>r.typeName==='binding') as TLArrowBinding
@@ -64,10 +92,25 @@ describe('native product relationship graph',()=>{
     syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,data,s)
     expect(store.get(binding.id)).toEqual(adjusted)
   })
+  it('migrates both endpoints of legacy hub links once, then preserves manually adjusted anchors',()=>{
+    const {store,s}=setup(),expanded={...data,products:[...data.products,product('third','周礼包')]}
+    syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,expanded,s)
+    const arrowId=`shape:${productGraphPageId(s)}:link:third` as TLShapeId
+    const arrow=store.get(arrowId) as TLShape
+    const start=store.get(`binding:${arrowId}:start` as TLArrowBinding['id']) as TLArrowBinding
+    const end=store.get(`binding:${arrowId}:end` as TLArrowBinding['id']) as TLArrowBinding
+    store.put([{...arrow,meta:{commerceGraphOwner:productGraphPageId(s)}},{...start,toId:`shape:${productGraphPageId(s)}:need:spirit` as TLShapeId,props:{...start.props,normalizedAnchor:{x:1,y:0.16}}},{...end,props:{...end.props,normalizedAnchor:{x:0,y:0.16}}}])
+    syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,expanded,s)
+    expect((store.get(start.id) as TLArrowBinding).props.normalizedAnchor).toEqual({x:0.5,y:1})
+    expect((store.get(end.id) as TLArrowBinding).props.normalizedAnchor).toEqual({x:0.5,y:0})
+    const adjusted={...(store.get(end.id) as TLArrowBinding),props:{...end.props,normalizedAnchor:{x:0.2,y:0.6}}}
+    store.put([adjusted]);syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,expanded,s)
+    expect(store.get(end.id)).toEqual(adjusted)
+  })
   it('adds several products without overlapping hand-placed notes or reusing layer indices',()=>{
     const {store,s}=setup(),old=store.allRecords().find(r=>readProductGraphNode(r)?.key==='week') as TLGeoShape
     const topIndex=store.allRecords().filter((r):r is TLShape=>r.typeName==='shape').map(r=>r.index).sort().at(-1)!
-    store.put([{...old,id:'shape:manual-space' as TLShapeId,index:getIndexAbove(topIndex),x:300,y:360,props:{...old.props,w:900,h:800},meta:{}}])
+    store.put([{...old,id:'shape:manual-space' as TLShapeId,index:getIndexAbove(topIndex),x:300,y:old.y+old.props.h+26,props:{...old.props,w:900,h:800},meta:{}}])
     const changed={...data,products:[...data.products,...Array.from({length:6},(_,i)=>product(`added-${i}`,'周礼包'))]}
     syncProductGraph({store,deleteShapes:vi.fn()} as unknown as Editor,changed,s)
     const shapes=store.allRecords().filter((r):r is TLShape=>r.typeName==='shape'&&r.parentId===productGraphPageId(s))

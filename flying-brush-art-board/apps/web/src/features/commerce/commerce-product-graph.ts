@@ -58,11 +58,14 @@ export function productGraphRecords(data: CommerceDataset, s: ProductGraphSelect
     items.forEach((p,i)=>{
       const id=`shape:${pageId}:product:${token(p.key)}`,arrow=`shape:${pageId}:link:${token(p.key)}`
       const rewardCount=graphFacts(data,p).rewards.length+(p.extraRewards?.length ?? 0)
-      records.push(geo(id,p.key,'product',350+i%2*410,y+Math.floor(i/2)*330,380,310+Math.max(0,rewardCount-1)*30))
-      records.push({...shape(arrow,0,0),type:'arrow',meta:{commerceGraphOwner:pageId},props:{kind:'arc',elbowMidPoint:0.5,dash:'dashed',size:'s',fill:'none',color:'light-blue',labelColor:'grey',bend:0,start:{x:0,y:0},end:{x:60,y:0},arrowheadStart:'none',arrowheadEnd:'arrow',richText:toRichText(''),labelPosition:0.5,font:'sans',scale:1}})
-      const from=i%2===0?hub:`shape:${pageId}:product:${token(items[i-1]!.key)}`
-      if(i%2===1)(records.at(-1)!.props as {arrowheadEnd:string}).arrowheadEnd='none'
-      for(const [terminal,target,anchor] of [['start',from,1],['end',id,0]] as const) records.push({id:`binding:${arrow}:${terminal}`,typeName:'binding',type:'arrow',fromId:arrow,toId:target,props:{terminal,normalizedAnchor:{x:anchor,y:0.16},isExact:false,isPrecise:true,snap:'none'},meta:{commerceGraphOwner:pageId}})
+      records.push(geo(id,p.key,'product',350+i%2*410,y+Math.floor(i/2)*380,380,350+Math.max(0,rewardCount-1)*30))
+      records.push({...shape(arrow,0,0),type:'arrow',meta:{commerceGraphOwner:pageId,commerceGraphLayout:2},props:{kind:'arc',elbowMidPoint:0.5,dash:'dashed',size:'s',fill:'none',color:'light-blue',labelColor:'grey',bend:0,start:{x:0,y:0},end:{x:60,y:0},arrowheadStart:'none',arrowheadEnd:'arrow',richText:toRichText(''),labelPosition:0.5,font:'sans',scale:1}})
+      // One local chain per need, rather than hundreds of overlapping hub-to-row links.
+      // These are associations, not a purchase sequence, so product links have no arrowhead.
+      const vertical=i>0&&i%2===0
+      const from=i===0?hub:`shape:${pageId}:product:${token(items[i-(vertical?2:1)]!.key)}`
+      if(i>0)(records.at(-1)!.props as {arrowheadEnd:string}).arrowheadEnd='none'
+      for(const [terminal,target,anchor] of [['start',from,vertical?{x:0.5,y:1}:{x:1,y:0.16}],['end',id,vertical?{x:0.5,y:0}:{x:0,y:0.16}]] as const) records.push({id:`binding:${arrow}:${terminal}`,typeName:'binding',type:'arrow',fromId:arrow,toId:target,props:{terminal,normalizedAnchor:anchor,isExact:false,isPrecise:true,snap:'none'},meta:{commerceGraphOwner:pageId}})
     })
     // Leave room for the largest card in each row, including bundles with many rewards.
     let rowY=y
@@ -124,9 +127,39 @@ export function syncProductGraph(editor: Editor, data: CommerceDataset, s: Produ
   const ordered=editor.store.allRecords().filter((r):r is TLShape=>r.typeName==='shape'&&r.parentId===pageId).sort((a,b)=>a.index<b.index?-1:a.index>b.index?1:0)
   if(ordered.length){let lower=ordered[0]!.index,upper=ordered.at(-1)!.index;for(const r of added.filter(r=>r.typeName==='shape')){if(r.type==='arrow'){lower=getIndexBelow(lower);r.index=lower}else{upper=getIndexAbove(upper);r.index=upper}}}
   if(added.length)editor.store.put(added as unknown as Parameters<TLStore['put']>[0])
-  // Refresh source membership without resetting hand-adjusted connection anchors.
-  const bindings=generated.filter(r=>{if(r.typeName!=='binding')return false;const old=editor.store.get(r.id as TLArrowBinding['id']) as TLArrowBinding|undefined;return old&&(old.fromId!==r.fromId||old.toId!==r.toId)})
+  // Keep hand-adjusted anchors unless the association itself changes. When a former
+  // hub link becomes a local vertical link, migrate both ends together.
+  const changedLinks=new Set(generated.filter(r=>{if(r.typeName!=='binding')return false;const old=editor.store.get(r.id as TLArrowBinding['id']) as TLArrowBinding|undefined;return old&&(old.fromId!==r.fromId||old.toId!==r.toId)}).map(r=>r.fromId))
+  for(const r of generated)if(r.typeName==='shape'&&r.type==='arrow'&&editor.store.get(r.id as TLShapeId)?.meta.commerceGraphLayout!==2)changedLinks.add(r.id)
+  const bindings=generated.filter(r=>r.typeName==='binding'&&changedLinks.has(r.fromId))
   if(bindings.length)editor.store.put(bindings as unknown as Parameters<TLStore['put']>[0])
+  const arrows=generated.flatMap(r=>{
+    if(r.typeName!=='shape'||r.type!=='arrow')return []
+    const old=editor.store.get(r.id as TLShapeId) as TLShape|undefined
+    const end=(r.props as {arrowheadEnd:string}).arrowheadEnd
+    return old?.type==='arrow'&&(old.props.arrowheadEnd!==end||old.meta.commerceGraphLayout!==2)?[{...old,meta:{...old.meta,commerceGraphLayout:2},props:{...old.props,arrowheadEnd:end}}]:[]
+  })
+  if(arrows.length)editor.store.put(arrows as unknown as Parameters<TLStore['put']>[0])
+}
+
+/** Expand to the rendered content. Only displace lower linked cards newly hit by that growth;
+ * keep freehand notes, horizontal placement and intentional existing overlaps intact. */
+export function growProductGraphCard(editor:Editor,id:TLShapeId,height:number){
+  const current=editor.getShape<TLGeoShape>(id)
+  if(!current||current.type!=='geo'||!readProductGraphNode(current)||height<=current.props.h+1||!Number.isFinite(height))return
+  const cards=editor.store.allRecords().filter((r):r is TLGeoShape=>r.typeName==='shape'&&r.type==='geo'&&r.parentId===current.parentId&&!!readProductGraphNode(r)&&r.rotation===0).sort((a,b)=>a.y-b.y)
+  const changed=new Map<TLShapeId,TLGeoShape>([[id,{...current,props:{...current.props,h:Math.ceil(height)}}]])
+  for(const card of cards){
+    if(card.id===id)continue
+    let y=card.y
+    for(const [otherId,other] of changed){
+      const before=cards.find(r=>r.id===otherId)!
+      if(!before||card.y<before.y+before.props.h-1)continue
+      if(card.x<other.x+other.props.w&&card.x+card.props.w>other.x&&y<other.y+other.props.h+28)y=other.y+other.props.h+28
+    }
+    if(y!==card.y)changed.set(card.id,{...card,y})
+  }
+  editor.run(()=>editor.updateShapes([...changed.values()].map(r=>({id:r.id,type:'geo',y:r.y,props:{h:r.props.h}}))),{history:'ignore'})
 }
 export function openProductGraph(editor: Editor, data: CommerceDataset, s: ProductGraphSelector, canEdit=true) {
   const id=productGraphPageId(s)
@@ -146,6 +179,7 @@ export function openProductGraph(editor: Editor, data: CommerceDataset, s: Produ
 export function productHistorySummary(data:CommerceDataset,p:CommerceProduct) {
   const rows=ledgerRows(data,p,'all'), facts=graphFacts(data,p), report=productRevenue(data,p,'all')
   const dateSpan=(from:string,through:string)=>`${from.slice(5)}—${through.slice(5)}`
+  if(p.kind==='resource')return {primary:'尚未接入对应兑换流水',secondary:'兑换次数与资源消耗待核验'}
   if(p.kind==='diamond')return rows.purchases.length ? {
     primary:`${rows.purchases.reduce((n,r)=>n+r.orders,0).toLocaleString('zh-CN')} 笔 · ${rows.purchases.reduce((n,r)=>n+r.diamonds,0).toLocaleString('zh-CN')} 钻石`,
     secondary:`${dateSpan(facts.from!,facts.through!)} · ${facts.servers.length} 服 · 已知角色`,
@@ -156,5 +190,6 @@ export function productHistorySummary(data:CommerceDataset,p:CommerceProduct) {
   }}
   if(report)return {primary:`${report.orders} 笔 · ${yuan(report.yuan)}（含代金券）`,secondary:'现金金额未拆分 · 测试范围见来源'}
   if(facts.claimOnly)return {primary:`${facts.orders} 笔领取记录`,secondary:'免费与广告尚未区分'}
+  if(['free','ad','mixed'].includes(p.kind))return {primary:'尚未接入对应领取流水',secondary:p.kind==='free'?'领取次数待核验':'领取次数与广告完成情况待核验'}
   return {primary:'暂无对应商品级记录',secondary:'不等于没有销售；缺对应流水'}
 }

@@ -1,10 +1,10 @@
-import { useRef, useState, type ComponentProps } from 'react'
+import { useEffect, useRef, useState, type ComponentProps } from 'react'
 import { HTMLContainer, useValue, type TLGeoShape, type TLPage, type TLShapeId } from 'tldraw'
 import { Button, Drawer, Input, Select, toast } from '@ttqtt/liquid-glass-react'
 import { commerceEntrances, entranceFor } from './commerce-browse'
 import { GameItemIcon } from './CommerceEvidenceView'
 import { browseProductGraph, useCommerceOverview } from './CommerceOverviewCanvas'
-import { arrangeProductGraph, focusProductGraph, graphFacts, graphProducts, resourceProductCount, productHistorySummary, readProductGraphNode, readProductGraphPage, productAnnotation, saveProductAnnotation, type ProductAnnotation } from './commerce-product-graph'
+import { arrangeProductGraph, focusProductGraph, graphFacts, graphProducts, growProductGraphCard, resourceProductCount, productHistorySummary, readProductGraphNode, readProductGraphPage, productAnnotation, saveProductAnnotation, type ProductAnnotation } from './commerce-product-graph'
 import { readEntranceCard, showCommerceOverview } from './commerce-overview-model'
 import { CommerceDesignEditor } from './CommerceDesignEditor'
 
@@ -12,6 +12,25 @@ import { CommerceDesignEditor } from './CommerceDesignEditor'
 // header and backdrop out of tldraw's pointer capture as well as its form body.
 function CanvasDrawer(props:ComponentProps<typeof Drawer>){
   return <div onPointerDown={e=>e.stopPropagation()} onPointerUp={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()}><Drawer {...props}/></div>
+}
+
+function useCardContentSize(shape:TLGeoShape){
+  const c=useCommerceOverview(),ref=useRef<HTMLElement>(null)
+  useEffect(()=>{
+    const element=ref.current
+    if(!element||!c?.data||typeof ResizeObserver==='undefined')return
+    let frame=0
+    const observer=new ResizeObserver(()=>{
+      cancelAnimationFrame(frame)
+      frame=requestAnimationFrame(()=>{
+        const ed=c.editor()
+        if(ed&&c.canEdit())growProductGraphCard(ed,shape.id,element.offsetHeight)
+      })
+    })
+    observer.observe(element)
+    return()=>{observer.disconnect();cancelAnimationFrame(frame)}
+  },[c?.store,c?.data,shape.id])
+  return ref
 }
 
 export function CommerceProductGraphToolbar({onRefresh,busy}:{onRefresh():void;busy:boolean}) {
@@ -37,6 +56,7 @@ export function CommerceProductGraphToolbar({onRefresh,busy}:{onRefresh():void;b
 
 export function CommerceProductGraphShape({shape}:{shape:TLGeoShape}) {
   const c=useCommerceOverview(),node=readProductGraphNode(shape)!
+  const contentRef=useCardContentSize(shape)
   const page=useValue('product graph selector',()=>{const parent=c?.store.get(shape.parentId) as TLPage|undefined;return readProductGraphPage(parent)?parent:c?.store.get(node.owner as TLPage['id']) as TLPage|undefined},[c?.store,shape.parentId,node.owner])
   const annotation=useValue('product history annotation',()=>c&&productAnnotation(c.store,node.key),[c?.store,node.key])
   const [annotating,setAnnotating]=useState(false)
@@ -44,15 +64,17 @@ export function CommerceProductGraphShape({shape}:{shape:TLGeoShape}) {
   const data=c.data,s=readProductGraphPage(page)??{entrance:'all',need:'all'}
   const act=(fn:()=>void)=>(e:React.MouseEvent)=>{e.stopPropagation();fn()}
   const pointer=(e:React.PointerEvent)=>e.stopPropagation()
-  const style={width:shape.props.w,height:shape.props.h}
+  const style={width:shape.props.w,minHeight:shape.props.h}
   if(node.kind==='need')return <CommerceNeedNode shape={shape}/>
   const p=data.products.find(p=>p.key===node.key)
   if(!p)return <HTMLContainer><article className="commerce-product-node" style={style}><h3>商品引用已移除</h3><p>{node.key}</p></article></HTMLContainer>
   const facts=graphFacts(data,p),history=productHistorySummary(data,p), needs=data.needs.filter(n=>p.needs.includes(n.id))
+  const [price,...priceRules]=facts.price.split(/[；;]/)
+  const title=p.title.replace(`${p.channel} · `,'').replace(/^资源兑换 · /,'')
   const sameResource=facts.rewards.filter(r=>![300001,300003].includes(r.id)).map(r=>({r,count:resourceProductCount(data,r.id)})).filter(r=>r.count>1)
   const source=()=>c.open({kind:'product',key:p.key,entrance:s.entrance,canvas:true})
-  return <HTMLContainer><article className="commerce-product-node" aria-label={`商品卡 ${p.key}`} style={style}>
-    <header><small>{entranceFor(p).name} · {p.channel} · {p.sku}</small><h2>{p.title.replace(`${p.channel} · `,'')}</h2><strong>{facts.price}</strong></header>
+  return <HTMLContainer><article ref={contentRef} className="commerce-product-node" aria-label={`商品卡 ${p.key}`} style={style}>
+    <header><small>{entranceFor(p).name} · {p.channel} · {p.sku}</small><h2>{title}</h2><div className="commerce-product-price"><strong>{price}</strong>{priceRules.length?<small>{priceRules.join('；')}</small>:null}</div></header>
     <div className="commerce-product-need"><b>需求</b><span>{needs.map(n=>n.name).join('、')||'待补'}<small>候选关联</small></span></div>
     <div className="commerce-product-rewards"><b>{p.channel==='月卡'?'每日获得':p.channel==='首充'?'分日奖励合计':'获得'}</b><div>{facts.rewards.map((r,i)=><span key={`${r.id}:${i}`}><GameItemIcon evidence={data.evidence} id={r.id} name={r.name}/>{r.name} × {r.n}</span>)}{p.extraRewards?.length?<small>购买即时：{p.extraRewards.map(r=>`${r.name} × ${r.n}`).join('、')}</small>:null}</div></div>
     <p className="commerce-product-limit">{p.limit}</p>
@@ -72,13 +94,14 @@ function ProductAnnotationForm({value,onSave}:{value:ProductAnnotation|undefined
 
 function CommerceNeedNode({shape}:{shape:TLGeoShape}) {
   const c=useCommerceOverview()!,node=readProductGraphNode(shape)!,data=c.data!,[editing,setEditing]=useState(false)
+  const contentRef=useCardContentSize(shape)
   const page=c.store.get(shape.parentId) as TLPage,s=readProductGraphPage(page)??readProductGraphPage(c.store.get(node.owner as TLPage['id']))??{entrance:'all',need:'all'},need=data.needs.find(n=>n.id===node.key)
   const canonicalId=`shape:commerce-entrance-${s.entrance}` as TLShapeId
   const canonical=useValue('shared category need intent',()=>c.store.get(canonicalId) as TLGeoShape|undefined,[c.store,canonicalId])
   const entry=readEntranceCard(canonical),saved=entry?.needDesigns?.[node.key]
   const design=saved??{title:need?.name??'设计归属待补',goal:need?.question??'具体需求待确认',measure:'曝光 → 购买 → 使用 → 是否缓解需求',decision:'draft' as const}
   const products=graphProducts(data,{...s,need:node.key})
-  return <HTMLContainer><article className="commerce-need-node" aria-label={`需求节点 ${need?.name??node.key}`} style={{width:shape.props.w,height:shape.props.h}}>
+  return <HTMLContainer><article ref={contentRef} className="commerce-need-node" aria-label={`需求节点 ${need?.name??node.key}`} style={{width:shape.props.w,minHeight:shape.props.h}}>
     <small>{commerceEntrances.find(e=>e.id===s.entrance)?.name??'跨入口'} → 玩家需求</small><h2>{design.title}</h2><p>{design.goal}</p><span className="commerce-node-status">{design.decision==='confirmed'?'已确认设计意图':'候选关联 · 购买动机待确认'}</span><p><strong>{products.length} 项商品</strong><br/><small>{design.measure}</small></p>
     {entry?<Button size="sm" variant="ghost" onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setEditing(true)}}>编辑需求目标</Button>:null}
     <Button size="sm" variant="ghost" onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();browseProductGraph(c,{entrance:'all',need:node.key})}}>比较其他入口同需求 →</Button>
