@@ -1,4 +1,4 @@
-"""Synthetic fixtures only; no private workbook or game values in test fixtures."""
+"""Synthetic fixtures only; no private workbook is authored or changed."""
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -13,53 +13,69 @@ spec.loader.exec_module(prices)
 def workbook():
     w = openpyxl.Workbook()
     s = w.active
-    s.title = "日周月礼包表"
-    s.append([])
-    s.append([])
-    s.append([None, "名称", "道具", "道具数量", "钻石价格", "返利比", "折扣"])
+    s.title = "IN_玩法_道具定价"
+    for _ in range(4): s.append([])
+    s.append([None, "道具名称", "rmb价值", "钻石价值", "金币价值", "道具id"])
     return w, s
 
 
+def extract(w, items):
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "source.xlsx"
+        w.save(path)
+        before = path.read_bytes()
+        result = prices.extract(path, items)
+        assert before == path.read_bytes(), "source workbook must remain read-only"
+        return result
+
+
 class ValuationTests(unittest.TestCase):
-    def test_free_ad_and_raw_sale_are_not_base_prices(self):
+    def test_direct_column_wins_over_merchandise_prices(self):
         w, s = workbook()
-        for p, f in [(0, 10), ("广告", 10), (100, None), (100, "=#REF!")]:
-            s.append([None, "礼包", "材料", 5, p, f])
-        rows, skipped = prices.read_rows(w)
-        self.assertFalse(rows)
-        self.assertEqual(len(skipped), 4)
+        s.append([None, "材料", 3, 30, 600, 1])
+        sales = w.create_sheet("日周月礼包表")
+        sales.append([None, "礼包", "材料", 20, 480, 1.3])
+        result, _, _ = extract(w, [{"id": 1, "name": "材料"}])
+        self.assertEqual(result['1']['value'], 30)
+        self.assertIn('!D6', result['1']['source'])
+        self.assertNotIn('estimate', result['1'])
 
-    def test_duplicate_sheets_do_not_weight_the_estimate_twice(self):
+    def test_zero_missing_error_and_uncached_formula_are_distinct(self):
         w, s = workbook()
-        s.append([None, "礼包", "材料", 5, 100, 1.5])
-        duplicate = w.copy_worksheet(s)
-        duplicate.title = "日周月礼包"
-        duplicate.append([None, "礼包2", "材料", 10, 200, 1.6])
-        rows, _ = prices.read_rows(w)
-        self.assertEqual([r["value"] for r in rows["材料"]], [30, 32])
-        self.assertEqual(len(rows["材料"][0]["sources"]), 2)
+        for n, v in enumerate([0, None, '#REF!', '=C9*10', 0.05], 1):
+            s.append([None, f"材料{n}", None, v, None, n])
+        result, _, _ = extract(w, [{"id": n, "name": f"材料{n}"} for n in range(1, 6)])
+        self.assertEqual([result[str(n)]['value'] for n in range(1, 6)], [0, None, None, None, 0.05])
 
-    def test_conflicting_values_and_ambiguous_names_remain_unpriced(self):
+    def test_duplicate_id_conflict_is_not_averaged(self):
         w, s = workbook()
-        s.append([None, "礼包", "冲突材料", 1, 100, 2])
-        s.append([None, "礼包2", "冲突材料", 1, 100, 4])
-        s.append([None, "礼包3", "同名材料", 1, 100, 2])
-        s.append([None, "礼包4", "旧名材料", 1, 100, 2])
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "source.xlsx"
-            w.save(path)
-            before = path.read_bytes()
-            result, _, audit = prices.extract(path, [{"id": 1, "name": "冲突材料"}, {"id": 2, "name": "同名材料"}, {"id": 3, "name": "同名材料"}, {"id": 4, "name": "新名材料"}])
-            self.assertFalse(result)
-            self.assertEqual(len(audit["unmatched"]), 3)
-            self.assertEqual(before, path.read_bytes())
+        for v in [30, 40]: s.append([None, "材料", None, v, None, 1])
+        result, _, audit = extract(w, [{"id": 1, "name": "材料"}])
+        self.assertIsNone(result['1']['value'])
+        self.assertEqual(len(audit['unmatched']), 1)
 
-    def test_changed_headers_fail_closed(self):
+    def test_id_mapping_distinguishes_fragments_and_preserves_name_difference(self):
         w, s = workbook()
-        s["F3"] = "充值返还"
-        with self.assertRaises(ValueError):
-            prices.read_rows(w)
+        s.append([None, "角色碎片", None, 5, None, 1])
+        s.append([None, "角色", None, 50, None, 2])
+        s.append([None, "旧名称", None, 20, None, 3])
+        result, _, audit = extract(w, [{"id": 1, "name": "角色", "debris": 1}, {"id": 2, "name": "角色"}, {"id": 3, "name": "新名称"}])
+        self.assertEqual(result['1']['displayName'], '角色碎片')
+        self.assertEqual(result['2']['value'], 50)
+        self.assertEqual(audit['nameDifferences'][0]['id'], 3)
+
+    def test_no_fallback_to_other_id_or_generic_quality(self):
+        w, s = workbook()
+        s.append([None, "材料", None, 30, None, 99])
+        s.append([None, "随机精良宝石", None, 40, None, 50])
+        result, _, _ = extract(w, [{"id": 1, "name": "材料"}, {"id": 2, "name": "精良头盔宝石", "quality": 2}])
+        self.assertFalse(result)
+
+    def test_wrong_workbook_fails_instead_of_inventing_prices(self):
+        w = openpyxl.Workbook()
+        with self.assertRaises(ValueError): prices.read_rows(w)
+        w, s = workbook(); s['D5'] = '商品售价'
+        with self.assertRaises(ValueError): prices.read_rows(w)
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == '__main__': unittest.main()

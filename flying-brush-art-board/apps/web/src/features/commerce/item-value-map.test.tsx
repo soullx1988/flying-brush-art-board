@@ -19,10 +19,13 @@ const catalog: CommerceDataset = { created: '2026-10-28', scope: '', sources: { 
 ] }
 afterEach(cleanup)
 describe('item value and first placement map', () => {
-  it('shows the full valuation spread instead of a spurious precise median', () => {
+  it('retires legacy estimates and displays only the direct base value', () => {
     const item = { ...data.items[0]!, basePrice: 30, priceEstimate: { min: 29, max: 31 } }
-    expect(itemPriceLabel(data, item)).toBe('29–31 钻石')
-    expect(itemPriceLabel(data, { ...item, priceEstimate: { min: 30, max: 30 } })).toBe('≈ 30 钻石')
+    expect(itemPriceLabel(data, item)).toBe('基础价待核验')
+    const migrated = itemValueDatasetSchema.parse({ ...data, items: [item] }).items[0]!
+    expect(migrated.basePrice).toBeNull()
+    expect(migrated.priceEstimate).toBeUndefined()
+    expect(itemPriceLabel(data, data.items[0]!)).toBe('30 钻石')
     expect(itemValueDatasetSchema.safeParse({ ...data, items: [{ ...item, basePrice: null }] }).success).toBe(false)
     expect(itemValueDatasetSchema.safeParse({ ...data, items: [{ ...item, priceEstimate: { min: 35, max: 31 } }] }).success).toBe(false)
     expect(itemValueDatasetSchema.safeParse({ ...data, items: [{ ...item, basePrice: 40 }] }).success).toBe(false)

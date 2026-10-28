@@ -73,8 +73,8 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
           <div className="item-value-detail-heading"><GameItemIcon evidence={catalog?.evidence} id={selected.id} name={selected.name} /><div><strong>{itemPriceLabel(map, selected)}</strong><small>{selected.category} · {selected.id} · 每 1 单位</small></div></div>
           {error ? <Tag color="warning">{error}</Tag> : null}
           <p>{selected.description || '用途待补'}</p>
-          <section><h3>基础定价 {selected.priceEstimate ? <Tag color="warning">表内推算</Tag> : null}</h3>
-            {selected.priceEstimate ? <><p>由单品价格、数量和返利关系还原；范围保留各行差异。</p><details><summary>查看源表与计算</summary><p>{selected.priceSource}</p><p style={{ whiteSpace: 'pre-line' }}>{selected.priceNote}</p></details></> : <><p>{selected.priceSource || '缺现用数值表中的基础定价条目'}</p>{selected.priceNote ? <p>{selected.priceNote}</p> : null}</>}
+          <section><h3>基础定价</h3>
+            <p>{selected.priceNote}</p><details><summary>查看定价来源</summary><p>{selected.priceSource || '现用定价页尚未匹配到对应条目'}</p></details>
           </section>
           <section><h3>已核到的投放来源</h3><p>{selected.firstPlacement}</p><p>{selected.placementNote}</p><details><summary>投放依据</summary>{selected.placementSources.map((s, n) => <p key={n}>{s}</p>)}</details></section>
           <section><h3>关联商品配置 · {itemProducts(catalog, selected.id).length}</h3><small>配置收录不代表当前开放；生效状态与历史见商品总览。</small><div className="item-value-linked-products">{itemProducts(catalog, selected.id).slice(0, 8).map(p => <span key={p.key}>{p.title} · {p.sku}</span>)}</div>{itemProducts(catalog, selected.id).length > 8 ? <details><summary>其余 {itemProducts(catalog, selected.id).length - 8} 项</summary><div className="item-value-linked-products">{itemProducts(catalog, selected.id).slice(8).map(p => <span key={p.key}>{p.title} · {p.sku}</span>)}</div></details> : null}{onOpenSource ? <Button variant="glass" onClick={() => onOpenSource(map.sourceBoardId)}>到商品总览查看售价、折扣与历史 ↗</Button> : null}</section>

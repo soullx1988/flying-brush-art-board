@@ -18,7 +18,11 @@ export const itemValueDatasetSchema = z.object({
   if (new Set(d.items.map(i => i.id)).size !== d.items.length || new Set(d.stages.map(s => s.id)).size !== d.stages.length) ctx.addIssue({ code: 'custom', message: '道具或投放节点身份重复' })
   if (d.items.some(i => !d.stages.some(s => s.id === i.stageId) || (i.basePrice !== null && !i.priceSource.trim()))) ctx.addIssue({ code: 'custom', message: '道具缺少投放节点或定价依据' })
   if (d.items.some(i => i.priceEstimate && (i.basePrice === null || i.priceEstimate.min > i.priceEstimate.max || i.basePrice < i.priceEstimate.min || i.basePrice > i.priceEstimate.max))) ctx.addIssue({ code: 'custom', message: '推算范围与道具价值不一致' })
-})
+}).transform(d => ({ ...d, items: d.items.map(i => {
+  if (!i.priceEstimate) return i
+  const { priceEstimate: _retired, ...rest } = i
+  return { ...rest, basePrice: null, priceSource: '', priceNote: '旧版礼包反推值已停用，请更新为《商业化产出》道具定价页的直接值。' }
+}) }))
 export type ItemValueDataset = z.infer<typeof itemValueDatasetSchema>
 export type ValueItem = ItemValueDataset['items'][number]
 export const VALUE_PAGE = 'page:item-value-map' as TLPageId
@@ -35,7 +39,7 @@ export const itemShapeId = (id: number) => `shape:item-value-${id}` as TLShapeId
 export function itemPriceLabel(d: ItemValueDataset, i: ValueItem) {
   const number = (n: number) => n.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
   if (i.basePrice === null) return '基础价待补'
-  if (i.priceEstimate) return `${i.priceEstimate.min === i.priceEstimate.max ? `≈ ${number(i.priceEstimate.min)}` : `${number(i.priceEstimate.min)}–${number(i.priceEstimate.max)}`} ${d.priceUnit}`
+  if (i.priceEstimate) return '基础价待核验'
   return `${number(i.basePrice)} ${d.priceUnit}`
 }
 export function itemProducts(data: CommerceDataset | undefined, id: number) {
@@ -70,7 +74,7 @@ export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_
   const stages = data.stages.filter(s => plotted.some(i => i.stageId === s.id)).sort((a, b) => a.order - b.order)
   const colWidth = 368, left = 230
   text('shape:iv-title', VALUE_PAGE, 0, -114, '道具价值投放总览', 900, 'xl')
-  text('shape:iv-subtitle', VALUE_PAGE, 0, -50, `基础价值（${data.priceUnit}/个） × 已核到的投放节点 · 价格按区间分层，推算项保留范围`, Math.max(1100, left + stages.length * colWidth))
+  text('shape:iv-subtitle', VALUE_PAGE, 0, -50, `基础价值（${data.priceUnit}/个） × 已核到的投放节点 · 直接读取《商业化产出》道具定价`, Math.max(1100, left + stages.length * colWidth))
   text('shape:iv-y', VALUE_PAGE, 0, 0, '基础价值 ↑', 210)
   stages.forEach((s, c) => text(`shape:iv-stage-${c}`, VALUE_PAGE, left + c * colWidth, 0, `${s.label}${s.kind !== 'progress' ? '\n条件区 · 不代表先后' : ''}`, colWidth - 20))
   let y = 72

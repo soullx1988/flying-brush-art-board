@@ -1,97 +1,81 @@
-"""Read-only extraction of item valuation evidence; never infer from sale price alone.
-
-The supplied workbook has single-item price/rebate relationships rather than a
-base-price column. Preserve the spread of all row estimates, not false precision.
-Generated values are an exchange artifact; the workbook remains the owner.
-"""
+"""Read explicit diamond values only; merchandise prices never supply a baseline."""
 from collections import defaultdict
-from decimal import Decimal
-from statistics import median
 import hashlib
 import math
 from pathlib import Path
 
 
-def positive(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+def number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
 
 def read_rows(workbook):
-    rows = defaultdict(dict)
-    skipped = []
-    for sheet in ("日周月礼包表", "日周月礼包"):
-        if sheet not in workbook.sheetnames:
+    sheet = next((s for s in ("IN_玩法_道具定价", "道具定价") if s in workbook.sheetnames), None)
+    if sheet is None:
+        raise ValueError("所选工作簿没有道具定价页；请核对正式数值目录，不能改用礼包售价反推")
+    ws = workbook[sheet]
+    expected = {2: "道具名称", 4: "钻石价值", 6: "道具id"}
+    if any(ws.cell(5, col).value != label for col, label in expected.items()):
+        raise ValueError(f"{sheet}: 道具名称/钻石价值/道具id表头不匹配，请核对工作簿版本")
+    rows = []
+    for n, row in enumerate(ws.iter_rows(min_row=6, max_col=6, values_only=True), 6):
+        name, value, item_id = row[1], row[3], row[5]
+        if not isinstance(name, str) or not name.strip():
             continue
-        ws = workbook[sheet]
-        expected = {3: "道具", 4: "道具数量", 5: "钻石价格", 6: "返利比", 7: "折扣"}
-        if any(ws.cell(3, col).value != label for col, label in expected.items()):
-            raise ValueError(f"{sheet}: pricing headers changed; review the source before importing")
-        for row in ws.iter_rows(min_row=4, max_col=7):
-            _, _, item, quantity, price, rebate, discount = row
-            if not isinstance(item.value, str) or not item.value.strip():
-                continue
-            name = item.value.strip()
-            where = f"{sheet}!C{item.row}:G{item.row}"
-            q, p, f, d = quantity.value, price.value, rebate.value, discount.value
-            if not positive(q) or not positive(p):
-                skipped.append({"source": where, "name": name, "reason": "免费、广告或缺少有效数量/钻石价格，不能用于基础价"})
-                continue
-            # Two simultaneous definitions require human review, not an arbitrary preference.
-            if positive(f) and positive(d):
-                skipped.append({"source": where, "name": name, "reason": "返利比与折扣同时存在，口径待核验"})
-                continue
-            dec = lambda x: Decimal(str(x))
-            if positive(f):
-                value = dec(p) * dec(f) / dec(q)
-                formula = f"{price.coordinate} × {rebate.coordinate} ÷ {quantity.coordinate} = {p} × {f} ÷ {q}"
-            elif positive(d) and d <= 1:
-                value = dec(p) / dec(d) / dec(q)
-                formula = f"{price.coordinate} ÷ {discount.coordinate} ÷ {quantity.coordinate} = {p} ÷ {d} ÷ {q}"
-            else:
-                skipped.append({"source": where, "name": name, "reason": "缺有效返利比/折扣；售价不能替代基础价"})
-                continue
-            key = (q, p, f, d)
-            evidence = rows[name].setdefault(key, {"value": float(value), "formula": formula, "sources": []})
-            evidence["sources"].append(where)
-    return {name: list(values.values()) for name, values in rows.items()}, skipped
+        valid_id = number(item_id) and item_id > 0 and int(item_id) == item_id
+        rows.append({"name": name.strip(), "value": value, "id": int(item_id) if valid_id else None,
+                     "source": f"{sheet}!D{n}", "identitySource": f"{sheet}!B{n}:F{n}"})
+    return rows
 
 
-def extract(path, items):
+def extract(path, items, source_url=None, revision=None):
     import openpyxl
     path = Path(path)
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=False)
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
-        groups, skipped = read_rows(workbook)
+        rows = read_rows(workbook)
     finally:
         workbook.close()
-    by_name = defaultdict(list)
+    origin = source_url or str(path)
+    if revision:
+        origin += f"@r{revision}"
+    by_id, by_name = defaultdict(list), defaultdict(list)
+    for row in rows:
+        if row["id"] is not None:
+            by_id[row["id"]].append(row)
+        else:
+            by_name[row["name"]].append(row)
+    name_counts = defaultdict(int)
     for item in items:
-        by_name[item["name"]].append(item["id"])
-    prices, unmatched = {}, []
-    for name, evidence in groups.items():
-        matches = by_name.get(name, [])
-        if len(matches) != 1:
-            unmatched.append({"name": name, "reason": "当前道具名称未唯一匹配，未自动转译旧名称", "evidence": evidence})
+        name_counts[item["name"]] += 1
+    prices, unmatched, renamed = {}, [], []
+    for item in items:
+        evidence = by_id.get(item["id"], [])
+        if not evidence and name_counts[item["name"]] == 1:
+            evidence = by_name.get(item["name"], [])
+        if not evidence:
             continue
-        values = [e["value"] for e in evidence]
-        low, high = min(values), max(values)
-        # Large disagreements are not a usable baseline, even as an approximate plot.
-        if high / low > 1.15:
-            unmatched.append({"name": name, "reason": "单品还原值相差超过 15%，基础价值冲突待核验", "evidence": evidence})
+        sources = "、".join(dict.fromkeys(r["source"] for r in evidence))
+        note = "直接读取道具定价的钻石价值列。商品折扣与成交价在商品总览查看。"
+        values = [r["value"] for r in evidence]
+        if not all(number(v) for v in values) or len(set(values)) != 1:
+            reason = "基础价单元格为空、错误或无有效公式缓存" if not all(number(v) for v in values) else "同一道具ID存在不同基础价，待核对源表"
+            prices[str(item["id"])] = {"value": None, "source": f"{origin} / {sources}", "note": reason}
+            unmatched.append({"id": item["id"], "reason": reason, "evidence": evidence})
             continue
-        sources = list(dict.fromkeys(s for e in evidence for s in e["sources"]))
-        prices[str(matches[0])] = {
-            "value": median(values),
-            "estimate": {"min": low, "max": high},
-            "source": f"{path} / " + "、".join(sources),
-            "note": "表内推算，非独立基础价列。单品价值 = 钻石价格 × 返利比 ÷ 数量（仅填折扣时为价格 ÷ 折扣 ÷ 数量）。返利比精度有限，保留各行还原值范围，未强行归为一个精确数值。\n"
-                + "\n".join(f"{e['sources'][0]}：{e['formula']} → {e['value']:g} 钻石/个" for e in evidence)
-                + "\n链式礼包的价值总和未逐项拆分，不参与单价还原；本值不能证明现行线上商品价格。",
-        }
-    # This is a dimensional identity, not a commercial exchange-rate assumption.
-    if len(by_name.get("钻石", [])) == 1:
-        prices[str(by_name["钻石"][0])] = {"value": 1, "source": "坐标单位：每 1 钻石以 1 钻石计", "note": "仅作钻石价值单位基准；不是人民币汇率。"}
-    provenance = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "label": "用户指定《商业化产出》：单品价值关系，只读推算"}
-    audit = {"source": provenance, "unmatched": unmatched, "skipped": skipped,
-             "excluded": ["链式礼包 F 列为整段/礼包价值总和，未逐项归因，且存在 #REF! 公式；不分摊为道具单价。", "未将随机/全职业经验自动映射为英雄经验，未将宠物相关旧名自动映射为魔灵道具。"]}
+        names = list(dict.fromkeys(r["name"] for r in evidence))
+        display_name = item["name"]
+        if names != [item["name"]]:
+            if names == [item["name"] + "碎片"] and item.get("debris") == 1:
+                display_name = names[0]
+                note += f" 工程名称为「{item['name']}」，debris=1；显示碎片全称。"
+            else:
+                note += f" 按相同道具ID读取；源表名称「{'、'.join(names)}」，工程名称「{item['name']}」，名称差异待核验。"
+                renamed.append({"id": item["id"], "name": item["name"], "sourceNames": names})
+        if values[0] == 0:
+            note += " 源表填0，仅表示表内基础定价值，不代表免费出售。"
+        prices[str(item["id"])] = {"value": values[0], "source": f"{origin} / {sources}", "note": note, "displayName": display_name}
+    provenance = {"path": origin, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "label": "商业化产出：道具定价·钻石价值（直接读取）"}
+    audit = {"source": provenance, "sourceRows": len(rows), "unmatched": unmatched, "nameDifferences": renamed,
+             "excluded": ["未使用礼包售价、折扣、返利比或历史成交反推基础价。", "未把随机宝石的价格套用到具体部位宝石；未用旧副本补齐。"]}
     return prices, provenance, audit
