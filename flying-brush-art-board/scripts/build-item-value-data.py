@@ -176,7 +176,9 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
         cat = "货币" if any(w in name for w in ["币", "钻石", "星辰", "声望", "公会货币"]) else "抽取与次数" if any(w in name for w in ["券", "钥", "体力"]) else "宝石与原石" if any(w in name for w in ["宝石", "原石"]) else "魔灵" if any(w in name for w in ["魔灵", "魔核", "魔晶"]) else "装备与材料" if any(w in name for w in ["武器", "陨铁", "精髓", "精粹", "蓝图"]) else "英雄与其他"
         # Names alone cannot identify named pets, weapon fragments, or hero skins.
         cat = {2: "英雄与碎片", 26: "皮肤", 30: "魔灵", 34: "武器与碎片"}.get(item.get("item_type"), cat)
+        family = {2: "英雄碎片" if item.get("debris") == 1 else "英雄", 10: "英雄", 18: "专属武器碎片" if item.get("debris") == 1 else "专属武器", 22: "部位宝石", 26: "皮肤", 30: "魔灵", 33: "武器", 34: "武器碎片"}.get(item.get("item_type"))
         result.append({"id": item_id, "name": name, "category": cat, "description": re.sub(r"<[^>]*>", "", item.get("desc", "")),
+            **({"family": family, "quality": item["quality"]} if family else {}),
             "basePrice": value, "priceSource": price.get("source", ""), "priceNote": price.get("note", (f"现用道具定价页没有 ID {item_id} 的对应行。" + ("表内随机宝石与具体部位宝石不是同一道具，不能直接套价。" if item.get("item_type") == 22 else "该ID也不在当前道具配置中，需先确认身份。" if not item else "需补充该道具定价行或明确名称映射。")) if commercial_workbook else "缺现用数值表的基础定价；未采用旧草案或商品成交价。"),
             "stageId": stage, "firstPlacement": first["label"] if first else "首次投放位置待核验",
             "placementNote": "这是已核到的配置来源。尚未穷尽引导、邮件、任务、后台活动与个性化条件，不能据此断言全游戏最早获得时间。" if first else "缺少可定位到关卡或时间的有效奖励、商店或活动开放条件。",

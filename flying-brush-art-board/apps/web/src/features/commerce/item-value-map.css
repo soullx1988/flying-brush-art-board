@@ -16,3 +16,10 @@
 .item-value-detail small { display:block; color:var(--app-text-muted); }
 .item-value-linked-products { display:flex; flex-wrap:wrap; gap:5px 14px; margin-bottom:14px; }
 .item-value-linked-products > span { border-bottom:1px solid var(--app-border); padding:4px 0; }
+.item-value-group header { display:flex; align-items:center; min-height:28px; font-size:13px; line-height:1.2; }
+.item-value-group header small { color:var(--app-text-muted); font-size:12px; }
+.item-value-group-icons { display:flex; gap:4px; align-items:center; height:32px; }
+.item-value-group-icons > span { display:flex; align-items:center; font-size:18px; }
+.item-value-group-icons .commerce-item-icon { width:28px; height:28px; }
+.item-value-group-icons > small { font-size:11px; white-space:nowrap; color:var(--app-text-muted); }
+.item-value-group .item-value-node-foot strong { font-size:11px; }

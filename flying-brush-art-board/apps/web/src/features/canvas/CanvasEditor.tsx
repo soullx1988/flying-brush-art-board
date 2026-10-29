@@ -77,6 +77,7 @@ import {
 
 import type { BoardReferenceKind } from '@infinite-board/board-core'
 import { CommerceGeoShapeUtil } from '../commerce/CommerceDesignCanvas'
+import { itemValueVisibility } from '../commerce/item-value-map'
 import {
   boardReferenceShapeUtils,
   clearManualElbowRouteMeta,
@@ -2543,6 +2544,7 @@ export function CanvasEditor({
       }}
     >
       <Tldraw
+        getShapeVisibility={itemValueVisibility}
         assetUrls={CANVAS_ASSET_URLS}
         options={CANVAS_TLDRAW_OPTIONS}
         overrides={CANVAS_UI_OVERRIDES}

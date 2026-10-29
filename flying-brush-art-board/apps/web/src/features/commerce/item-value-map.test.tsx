@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createBoardStore, loadSnapshotIntoStore } from '@infinite-board/tldraw-adapter'
 import { type TLGeoShape } from 'tldraw'
 import { ItemValueCanvas, ItemValueShape } from './ItemValueCanvas'
-import { createItemValueSnapshot, focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueRecords, PENDING_PAGE, readItemValueMap, readItemValueNode, updateItemValueData, valueBand, valuePages, VALUE_PAGE, type ItemValueDataset } from './item-value-map'
+import { createItemValueSnapshot, focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueRecords, itemValueGroups, itemValueVisibility, keepApprovedPrices, readItemValueGroup, toggleItemValueGroup, PENDING_PAGE, readItemValueMap, readItemValueNode, updateItemValueData, valueBand, valuePages, VALUE_PAGE, type ItemValueDataset } from './item-value-map'
 import type { CommerceDataset } from './commerce-data'
 
 const data: ItemValueDataset = { version: 1, updated: '2026-10-28', sourceBoardId: 'source-board', priceUnit: '钻石', scope: '配置快照', sources: [],
@@ -19,6 +19,40 @@ const catalog: CommerceDataset = { created: '2026-10-28', scope: '', sources: { 
 ] }
 afterEach(cleanup)
 describe('item value and first placement map', () => {
+  it('groups only matching kind, quality, unit price and placement; preserves members through expansion', () => {
+    const items = Array.from({ length: 6 }, (_, n) => ({ ...data.items[0]!, id: 20 + n, name: `武器碎片${n}`, family: '武器碎片', quality: 4 }))
+    const mixed = { ...data, items: [...items, { ...items[0]!, id: 31, family: '武器' }, { ...items[0]!, id: 32, quality: 5 }, { ...items[0]!, id: 33, basePrice: 40 }, { ...items[0]!, id: 34, stageId: 'unknown' }] }
+    expect(itemValueGroups(mixed)).toHaveLength(1)
+    expect(itemValueGroups(mixed)[0]?.items).toHaveLength(6)
+    const store = createBoardStore(); loadSnapshotIntoStore(store, createItemValueSnapshot(mixed))
+    const group = store.query.records('shape').get().find(s => readItemValueGroup(s))! as TLGeoShape
+    const member = store.get('shape:item-value-20' as TLGeoShape['id'])! as TLGeoShape
+    const editor = { store, getShape: (id: TLGeoShape['id']) => store.get(id), markHistoryStoppingPoint: vi.fn(), run: (fn: () => void) => fn() }
+    expect(itemValueVisibility(member, editor as never)).toBe('hidden')
+    store.put([{ ...group, x: group.x + 37 }])
+    toggleItemValueGroup(editor as never, group.id)
+    expect(readItemValueGroup(store.get(group.id))?.expanded).toBe(true)
+    expect((store.get(member.id) as TLGeoShape).x).toBe((store.get(group.id) as TLGeoShape).x)
+    expect(itemValueVisibility(store.get(member.id) as TLGeoShape, editor as never)).toBe('inherit')
+    const visible = store.query.records('shape').get().filter(s => s.type === 'geo' && (readItemValueNode(s) || readItemValueGroup(s)) && itemValueVisibility(s, editor as never) !== 'hidden') as TLGeoShape[]
+    for (let a = 0; a < visible.length; a++) for (let b = a + 1; b < visible.length; b++) {
+      const x = visible[a]!, y = visible[b]!
+      expect(x.x < y.x + y.props.w && x.x + x.props.w > y.x && x.y < y.y + y.props.h && x.y + x.props.h > y.y).toBe(false)
+    }
+    toggleItemValueGroup(editor as never, group.id)
+    expect((store.get(group.id) as TLGeoShape).x).toBe(group.x + 37)
+    expect(itemValueVisibility(store.get(member.id) as TLGeoShape, editor as never)).toBe('hidden')
+    expect(store.query.records('shape').get().filter(s => readItemValueNode(s))).toHaveLength(mixed.items.length)
+  })
+  it('retains an approved price on refresh and explicitly reports a conflicting new source price', () => {
+    const confirmed = { ...data, items: [{ ...data.items[1]!, basePrice: 40, priceSource: '用户确认', approvedPrice: { value: 40, source: '用户确认' } }] }
+    const missing = { ...data, items: [data.items[1]!] }
+    expect(keepApprovedPrices(confirmed, missing).items[0]?.basePrice).toBe(40)
+    const conflict = keepApprovedPrices(confirmed, { ...missing, items: [{ ...missing.items[0]!, basePrice: 99, priceSource: '源表新值' }] }).items[0]!
+    expect(conflict.basePrice).toBe(40)
+    expect(conflict.priceNote).toContain('新资料为 99 钻')
+    expect(itemValueDatasetSchema.safeParse({ ...confirmed, items: [{ ...confirmed.items[0], basePrice: 20 }] }).success).toBe(false)
+  })
   it('retires legacy estimates and displays only the direct base value', () => {
     const item = { ...data.items[0]!, basePrice: 30, priceEstimate: { min: 29, max: 31 } }
     expect(itemPriceLabel(data, item)).toBe('基础价待核验')

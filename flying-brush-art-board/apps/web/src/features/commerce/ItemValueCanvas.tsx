@@ -1,14 +1,14 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { Box, HTMLContainer, useValue, type Editor, type TLGeoShape, type TLStore } from 'tldraw'
+import { Box, HTMLContainer, useEditor, useValue, type Editor, type TLGeoShape, type TLShapeId, type TLStore } from 'tldraw'
 import { Button, Drawer, Select, Tag, toast } from '@ttqtt/liquid-glass-react'
 import { GameItemIcon } from './CommerceEvidenceView'
 import { datasetFromSnapshot } from './commerce-design-map'
 import type { CommerceSourceLoader } from './CommerceDesignCanvas'
 import type { CommerceDataset } from './commerce-data'
-import { focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, readItemValueMap, readItemValueNode, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
+import { focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueGroups, readItemValueMap, readItemValueNode, readItemValueGroup, toggleItemValueGroup, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
 import './item-value-map.css'
 
-const Context = createContext<{ map?: ItemValueDataset | undefined; catalog?: CommerceDataset | undefined; open(id: number): void }>({ open: () => undefined })
+const Context = createContext<{ map?: ItemValueDataset | undefined; catalog?: CommerceDataset | undefined; open(id: number): void; toggle(id: TLShapeId): void }>({ open: () => undefined, toggle: () => undefined })
 
 export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenSource, children }: {
   store: TLStore; editorRef: RefObject<Editor | undefined>; loadSource?: CommerceSourceLoader | undefined;
@@ -46,11 +46,21 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     if (kind === 'pending') ed.zoomToBounds(map?.reviewGroups?.length ? new Box(-40, -150, 1700, 900) : new Box(-40, -150, 1160, 720), { targetZoom: 1, animation: { duration: 200 } })
     else ed.zoomToFit({ animation: { duration: 200 } })
   }
-  return <Context.Provider value={{ map, catalog, open: setSelectedId }}>
+  return <Context.Provider value={{ map, catalog, open: setSelectedId, toggle: id => {
+    const ed = editorRef.current; if (!ed || !canEdit()) return
+    toggleItemValueGroup(ed, id); ed.selectNone()
+    const group = readItemValueGroup(ed.getShape(id))
+    if (group?.expanded) {
+      const shapes = ed.store.query.records('shape').get().filter(s => s.id === id || s.meta.itemValueGroupId === id)
+      const bounds = shapes.flatMap(s => ed.getShapePageBounds(s.id) ?? [])
+      if (bounds.length) { const x = Math.min(...bounds.map(b => b.x)), y = Math.min(...bounds.map(b => b.y)); ed.zoomToBounds(new Box(x - 40, y - 40, Math.max(...bounds.map(b => b.maxX)) - x + 80, Math.max(...bounds.map(b => b.maxY)) - y + 80), { targetZoom: 1, animation: { duration: 200 } }) }
+    }
+  } }}>
     {map ? <div className="item-value-toolbar" role="region" aria-label="道具价值投放导航">
       <strong>道具价值投放总览</strong>
       <Button size="sm" variant="ghost" onClick={() => navigate('value')}>二维总览</Button>
       <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(i => i.basePrice === null).length}</Button>
+      <Select aria-label="定位同类" placeholder="定位同类" value="" options={itemValueGroups(map).map(g => ({ value: g.key, label: `${g.label} · ${g.items.length}项 · ${itemPriceLabel(map, g.items[0]!)}` }))} onChange={key => { const ed = editorRef.current; if (!ed) return; const shape = ed.store.query.records('shape').get().find(s => readItemValueGroup(s)?.key === key); if (!shape) return; ed.setCurrentPage(shape.parentId as import('tldraw').TLPageId); ed.selectNone(); const b = ed.getShapePageBounds(shape.id); if (b) ed.zoomToBounds(new Box(b.x - 160, b.y - 120, b.w + 320, b.h + 240), { targetZoom: 1, animation: { duration: 200 } }) }} />
       <Select aria-label="定位道具" placeholder="定位道具" value="" options={map.items.map(i => ({ value: String(i.id), label: `${i.name} · ${i.id}` }))} onChange={id => { const ed = editorRef.current; if (ed && !focusValueItem(ed, Number(id))) toast.error('道具图标已被移除，请整理坐标恢复') }} />
       <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; if (ed && canEdit()) { updateItemValueData(store, map, ed); ed.zoomToFit(); toast.success('已按基础价与投放条件整理坐标') } }}>整理坐标</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh.current(true)}>{busy ? '读取中…' : '刷新商品引用'}</Button>
@@ -93,5 +103,21 @@ export function ItemValueShape({ shape }: { shape: TLGeoShape }) {
   return <HTMLContainer><article className="item-value-node" style={{ width: shape.props.w, height: shape.props.h }} aria-label={`道具 ${item?.name ?? node.itemId}`}>
     <div className="item-value-node-main">{catalog?.evidence?.icons?.[node.itemId] ? <GameItemIcon evidence={catalog.evidence} id={node.itemId} name={item?.name ?? String(node.itemId)} /> : <small className="item-value-icon-pending">图标<br />待补</small>}<span>{item?.name ?? `道具 ${node.itemId}`}</span></div>
     <div className="item-value-node-foot"><strong>{map && item ? itemPriceLabel(map, item) : '读取中…'}</strong><Button variant="ghost" size="sm" aria-label={`展开${item?.name ?? node.itemId}`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); open(node.itemId) }}>↗</Button></div>
+  </article></HTMLContainer>
+}
+
+export function ItemValueGroupShape({ shape }: { shape: TLGeoShape }) {
+  const ed = useEditor()
+  const { map, catalog, toggle } = useContext(Context), group = readItemValueGroup(shape)!
+  useEffect(() => ed.sideEffects.registerAfterChangeHandler('shape', (before, after) => {
+    if (after.id !== shape.id || !ed.isIn('select.translating') || !readItemValueGroup(after)?.expanded || (before.x === after.x && before.y === after.y)) return
+    const selectedIds = new Set(ed.getSelectedShapeIds())
+    ed.updateShapes(ed.store.query.records('shape').get().filter(s => s.meta.itemValueGroupId === after.id && !selectedIds.has(s.id)).map(s => ({ id: s.id, type: s.type, x: s.x + after.x - before.x, y: s.y + after.y - before.y })))
+  }), [ed, shape.id])
+  const items = group.itemIds.flatMap(id => map?.items.find(i => i.id === id) ?? [])
+  return <HTMLContainer><article className="item-value-node item-value-group" style={{ width: shape.props.w, height: shape.props.h }} aria-label={`同类 ${group.label}`}>
+    <header><strong>{group.label}</strong></header>
+    <div className="item-value-group-icons">{items.slice(0, 3).map(i => <span key={i.id} title={i.name}>{catalog?.evidence?.icons?.[i.id] ? <GameItemIcon evidence={catalog.evidence} id={i.id} name={i.name} /> : <small className="item-value-icon-pending">图标待补</small>}</span>)}{items.length > 3 ? <span aria-label={`另外 ${items.length - 3} 项`}>…</span> : null}<small>{items.length}项</small></div>
+    <div className="item-value-node-foot"><strong>{map && items[0] ? `${itemPriceLabel(map, items[0])}/个` : '读取中…'}</strong><Button variant="ghost" size="sm" aria-label={`${group.expanded ? '收起' : '展开'}${group.label}（${items.length}项）`} aria-expanded={group.expanded} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); toggle(shape.id) }}>{group.expanded ? '收起' : '展开'}</Button></div>
   </article></HTMLContainer>
 }
