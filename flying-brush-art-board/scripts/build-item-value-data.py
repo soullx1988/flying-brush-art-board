@@ -14,6 +14,54 @@ from datetime import datetime
 from pathlib import Path
 
 
+def pricing_reviews(result, items, drops, prices, products):
+    """Questions are generated from missing direct rows, never new price assumptions."""
+    pools = {d["id"]: d for d in drops}
+    parents = {}
+    for parent in items.values():
+        price = prices.get(str(parent["id"]), {})
+        if price.get("value") is None or parent.get("item_type") != 5 or parent.get("use_value") != 1:
+            continue
+        pool_key = str(parent.get("use_detail_value", ""))
+        pool = pools.get(int(pool_key)) if pool_key.isdigit() else None
+        rewards = pool.get("weight_drop_award", []) if pool else []
+        if not rewards or pool.get("sure_drop_award") or pool.get("special_probability_drop_award") or any(r.get("num") != 1 for r in rewards):
+            continue
+        for reward in rewards:
+            child = items.get(reward["id"], {})
+            if child.get("item_type") == 22 and child.get("quality") == parent.get("quality"):
+                parents.setdefault(child["id"], []).append((parent, price, pool))
+    groups = {}
+    for item in result:
+        if item["basePrice"] is not None:
+            continue
+        item_id = item["id"]
+        candidate = parents.get(item_id, [])
+        if len(candidate) == 1:
+            parent, price, pool = candidate[0]
+            key = f"pool-{pool['id']}"
+            title = parent["name"].removeprefix("随机") + " · 具体部位"
+            question = f"各部位是否统一采用 {price['value']:g} 钻/个，还是分别定价？当前保持空缺，等你决定。"
+            context = f"表内「{parent['name']}」为 {price['value']:g} 钻，随机池包含这些部位；表中未规定确定部位的价值。"
+            sources = [price["source"], f"tables_sysdrop_tbdrop.json / {pool['id']}.weight_drop_award"]
+        else:
+            key, title = f"item-{item_id}", item["name"]
+            channels = list(dict.fromkeys(p["channel"] for p in products if any(r["id"] == item_id for r in p["rewards"] + p.get("extraRewards", []))))
+            context = (item["description"] or "当前道具配置与定价页均未找到此ID。") + (f" 关联入口：{'、'.join(channels)}。" if channels else "")
+            question = "请确认正确名称、道具ID及基础钻石价值；若已废弃，注明剔除。" if item_id not in items else "请填写每 1 个道具的基础钻石价值。"
+            sources = [item["priceNote"]]
+        if key not in groups:
+            groups[key] = {"id": key, "kind": "price", "title": title, "itemIds": [], "question": question, "context": context, "sources": sources}
+        groups[key]["itemIds"].append(item_id)
+    for item in result:
+        price = prices.get(str(item["id"]), {})
+        if item["basePrice"] is not None and "名称差异待核验" in price.get("note", ""):
+            groups[f"name-{item['id']}"] = {"id": f"name-{item['id']}", "kind": "name", "title": item["name"] + " · 名称核对", "itemIds": [item["id"]],
+                "question": "请确认是否只是同一道具改名；如不是，需修正源表ID与对应定价。",
+                "context": f"当前按同ID取 {item['basePrice']:g} 钻。" + price["note"].split("按相同道具ID读取；")[-1], "sources": [price["source"]]}
+    return list(groups.values())
+
+
 def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial_workbook=None, audit_output=None, commercial_source_url=None, commercial_source_revision=None):
     raw = json.loads(Path(catalog_snapshot).read_text(encoding="utf-8"))
     records = raw.get("document", raw)["store"].values()
@@ -29,6 +77,7 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
         return json.loads(content)
 
     items = {i["id"]: i for i in load("tables_sysitems_tbitems.json")}
+    drops = load("tables_sysdrop_tbdrop.json")
     missions = load("tables_sysbattles_tbbattlechaptermission.json")
     functions = {r["id"]: r for r in load("tables_sysfunction_tbfunctionlist.json")}
     switches = {r["id"]: r["isOpen"] for r in load("tables_sysfunction_tbfunctionswitch.json")}
@@ -132,11 +181,13 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
             "stageId": stage, "firstPlacement": first["label"] if first else "首次投放位置待核验",
             "placementNote": "这是已核到的配置来源。尚未穷尽引导、邮件、任务、后台活动与个性化条件，不能据此断言全游戏最早获得时间。" if first else "缺少可定位到关卡或时间的有效奖励、商店或活动开放条件。",
             "placementSources": list(dict.fromkeys(c["source"] for c in candidate))[:12]})
+    reviews = pricing_reviews(result, items, drops, price_data, products)
     if commercial_workbook and audit_output:
+        audit["reviewGroups"] = reviews
         audit["missingItems"] = [{"id": i["id"], "name": i["name"], "reason": i["priceNote"]} for i in result if i["basePrice"] is None]
         audit["plottedItems"] = [{"id": i["id"], "name": i["name"], "estimate": i.get("priceEstimate"), "value": i["basePrice"]} for i in result if i["basePrice"] is not None]
         Path(audit_output).write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"version": 1, "updated": datetime.now().strftime("%Y-%m-%d"), "sourceBoardId": source_board_id, "priceUnit": "钻石", "scope": "范围为关联商品总览中的有效商品奖励、即时奖励及兑换货币。基础价直接读取《商业化产出》道具定价页的钻石价值列；折扣留在商品总览。投放暂为已核到最早配置来源，未确认全游戏首次。", "sources": sources, "stages": stages, "items": result}
+    return {"version": 1, "updated": datetime.now().strftime("%Y-%m-%d"), "sourceBoardId": source_board_id, "priceUnit": "钻石", "scope": "范围为关联商品总览中的有效商品奖励、即时奖励及兑换货币。基础价直接读取《商业化产出》道具定价页的钻石价值列；折扣留在商品总览。投放暂为已核到最早配置来源，未确认全游戏首次。", "sources": sources, "stages": stages, "items": result, "reviewGroups": reviews}
 
 
 if __name__ == "__main__":

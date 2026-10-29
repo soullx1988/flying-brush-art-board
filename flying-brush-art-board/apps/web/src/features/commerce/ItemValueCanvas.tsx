@@ -19,6 +19,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
   const [selectedId, setSelectedId] = useState<number>(), file = useRef<HTMLInputElement>(null)
   const refresh = useRef<(notify?: boolean) => Promise<void>>(async () => undefined)
   const selected = map?.items.find(i => i.id === selectedId)
+  const review = map?.reviewGroups?.find(g => g.itemIds.includes(selectedId ?? -1))
   useEffect(() => {
     let alive = true, pending = false
     setCatalog(undefined); setError(''); setSelectedId(undefined)
@@ -42,14 +43,14 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     const page = valuePages(store)[kind]
     if (!page) { toast.error('总览页面缺失'); return }
     ed.setCurrentPage(page); ed.selectNone()
-    if (kind === 'pending') ed.zoomToBounds(new Box(-40, -150, 1160, 720), { targetZoom: 1, animation: { duration: 200 } })
+    if (kind === 'pending') ed.zoomToBounds(map?.reviewGroups?.length ? new Box(-40, -150, 1700, 900) : new Box(-40, -150, 1160, 720), { targetZoom: 1, animation: { duration: 200 } })
     else ed.zoomToFit({ animation: { duration: 200 } })
   }
   return <Context.Provider value={{ map, catalog, open: setSelectedId }}>
     {map ? <div className="item-value-toolbar" role="region" aria-label="道具价值投放导航">
       <strong>道具价值投放总览</strong>
       <Button size="sm" variant="ghost" onClick={() => navigate('value')}>二维总览</Button>
-      <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>基础价待核验 · {map.items.filter(i => i.basePrice === null).length}</Button>
+      <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(i => i.basePrice === null).length}</Button>
       <Select aria-label="定位道具" placeholder="定位道具" value="" options={map.items.map(i => ({ value: String(i.id), label: `${i.name} · ${i.id}` }))} onChange={id => { const ed = editorRef.current; if (ed && !focusValueItem(ed, Number(id))) toast.error('道具图标已被移除，请整理坐标恢复') }} />
       <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; if (ed && canEdit()) { updateItemValueData(store, map, ed); ed.zoomToFit(); toast.success('已按基础价与投放条件整理坐标') } }}>整理坐标</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh.current(true)}>{busy ? '读取中…' : '刷新商品引用'}</Button>
@@ -76,6 +77,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
           <section><h3>基础定价</h3>
             <p>{selected.priceNote}</p><details><summary>查看定价来源</summary><p>{selected.priceSource || '现用定价页尚未匹配到对应条目'}</p></details>
           </section>
+          {review ? <section><h3>{review.kind === 'price' ? '待你定价' : '待核对名称'}</h3><p>{review.context}</p><p>{review.question}</p><details><summary>核对依据</summary>{review.sources.map(s => <p key={s}>{s}</p>)}</details></section> : null}
           <section><h3>已核到的投放来源</h3><p>{selected.firstPlacement}</p><p>{selected.placementNote}</p><details><summary>投放依据</summary>{selected.placementSources.map((s, n) => <p key={n}>{s}</p>)}</details></section>
           <section><h3>关联商品配置 · {itemProducts(catalog, selected.id).length}</h3><small>配置收录不代表当前开放；生效状态与历史见商品总览。</small><div className="item-value-linked-products">{itemProducts(catalog, selected.id).slice(0, 8).map(p => <span key={p.key}>{p.title} · {p.sku}</span>)}</div>{itemProducts(catalog, selected.id).length > 8 ? <details><summary>其余 {itemProducts(catalog, selected.id).length - 8} 项</summary><div className="item-value-linked-products">{itemProducts(catalog, selected.id).slice(8).map(p => <span key={p.key}>{p.title} · {p.sku}</span>)}</div></details> : null}{onOpenSource ? <Button variant="glass" onClick={() => onOpenSource(map.sourceBoardId)}>到商品总览查看售价、折扣与历史 ↗</Button> : null}</section>
           <details><summary>来源与范围</summary><p>{map.scope}</p>{map.sources.map(s => <p key={s.path}>{s.label}<br />{s.path}<br /><small>SHA-256：{s.sha256}</small></p>)}</details>

@@ -48,6 +48,14 @@ describe('item value and first placement map', () => {
     expect(itemValueDatasetSchema.safeParse({ ...data, items: [data.items[0], data.items[0]] }).success).toBe(false)
     expect([0, 0.99, 1, 9.99, 10, 100, 1000, 10000].map(valueBand)).toEqual([5, 5, 4, 4, 3, 2, 1, 0])
   })
+  it('keeps review references out of prices and renders questions on the pending page', () => {
+    const reviewGroups = [{ id: 'missing', kind: 'price' as const, title: '材料定价', itemIds: [2], question: '是否按参考价定价？', context: '参考价不代表已确认基础价', sources: ['数值表!D9'] }]
+    const parsed = itemValueDatasetSchema.parse({ ...data, reviewGroups })
+    expect(parsed.items.find(i => i.id === 2)?.basePrice).toBeNull()
+    const records = itemValueRecords(parsed)
+    expect(records.find(r => r.id === 'shape:iv-review-body-missing')?.parentId).toBe(PENDING_PAGE)
+    expect(itemValueDatasetSchema.safeParse({ ...data, reviewGroups: [{ ...reviewGroups[0], itemIds: [999] }] }).success).toBe(false)
+  })
   it('resolves pages and items after project import rewrites record identities', () => {
     const snapshot = createItemValueSnapshot(data)
     const records = Object.values(snapshot.store).map(r => ({ ...r,

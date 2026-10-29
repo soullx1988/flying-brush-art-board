@@ -8,6 +8,7 @@ export const itemValueDatasetSchema = z.object({
   version: z.literal(1), updated: z.string(), sourceBoardId: z.string().min(1),
   priceUnit: z.string().min(1), scope: z.string(), sources: z.array(sourceSchema),
   stages: z.array(z.object({ id: z.string(), label: z.string(), order: z.number(), kind: z.enum(['progress', 'conditional', 'unknown']) })),
+  reviewGroups: z.array(z.object({ id: z.string(), kind: z.enum(['price', 'name']), title: z.string(), itemIds: z.array(z.number().int()).min(1), question: z.string(), context: z.string(), sources: z.array(z.string()) })).optional(),
   items: z.array(z.object({
     id: z.number().int(), name: z.string(), category: z.string(), description: z.string(),
     basePrice: z.number().finite().nonnegative().nullable(), priceSource: z.string(), priceNote: z.string(),
@@ -18,6 +19,7 @@ export const itemValueDatasetSchema = z.object({
   if (new Set(d.items.map(i => i.id)).size !== d.items.length || new Set(d.stages.map(s => s.id)).size !== d.stages.length) ctx.addIssue({ code: 'custom', message: '道具或投放节点身份重复' })
   if (d.items.some(i => !d.stages.some(s => s.id === i.stageId) || (i.basePrice !== null && !i.priceSource.trim()))) ctx.addIssue({ code: 'custom', message: '道具缺少投放节点或定价依据' })
   if (d.items.some(i => i.priceEstimate && (i.basePrice === null || i.priceEstimate.min > i.priceEstimate.max || i.basePrice < i.priceEstimate.min || i.basePrice > i.priceEstimate.max))) ctx.addIssue({ code: 'custom', message: '推算范围与道具价值不一致' })
+  if (d.reviewGroups?.some(g => g.itemIds.some(id => !d.items.some(i => i.id === id)))) ctx.addIssue({ code: 'custom', message: '待处理事项引用了未收录道具' })
 }).transform(d => ({ ...d, items: d.items.map(i => {
   if (!i.priceEstimate) return i
   const { priceEstimate: _retired, ...rest } = i
@@ -64,7 +66,7 @@ export function valuePages(store: TLStore) {
 }
 export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_PAGE, pending: PENDING_PAGE }) {
   const { value: VALUE_PAGE, pending: PENDING_PAGE } = pages
-  const records: Record<string, unknown>[] = [], indices = getIndices(data.items.length + data.stages.length * 20 + 100)
+  const records: Record<string, unknown>[] = [], indices = getIndices(data.items.length + data.stages.length * 20 + (data.reviewGroups?.length ?? 0) * 3 + 100)
   let n = 0
   const shape = (id: string, page: TLPageId, x: number, y: number, locked = false) => ({ id, typeName: 'shape', parentId: page, index: indices[n++]!, x, y, rotation: 0, opacity: 1, isLocked: locked, meta: { itemValueLayout: true } })
   const text = (id: string, page: TLPageId, x: number, y: number, content: string, w: number, size = 's', color = 'black') => records.push({ ...shape(id, page, x, y, true), type: 'text', props: { richText: toRichText(content), w, autoSize: false, scale: 1, color, size, font: 'sans', textAlign: 'start' } })
@@ -95,9 +97,16 @@ export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_
   }
   text('shape:iv-x', VALUE_PAGE, left, y + 10, '投放进度 →  ·  全游戏首次仍待核验；活动与待核验条件单列', Math.max(1100, stages.length * colWidth))
   const pending = data.items.filter(i => i.basePrice === null).sort((a, b) => a.category.localeCompare(b.category, 'zh-CN') || a.id - b.id)
-  text('shape:iv-pending-title', PENDING_PAGE, 0, -110, `待核验道具 · ${pending.length} 项`, 1000, 'xl')
-  text('shape:iv-pending-note', PENDING_PAGE, 0, -40, '基础价缺失时不按零元绘图。点开道具查看缺项、投放条件与来源。', 1400)
+  const reviews = data.reviewGroups ?? []
+  text('shape:iv-pending-title', PENDING_PAGE, 0, -110, `定价待处理 · ${pending.length} 个道具`, 1200, 'xl')
+  text('shape:iv-pending-note', PENDING_PAGE, 0, -40, reviews.length ? `${reviews.filter(g => g.kind === 'price').length} 项定价事项 · ${reviews.filter(g => g.kind === 'name').length} 项名称核对。参考价尚未写成这些道具的定价。` : '基础价缺失时不按零元绘图。点开道具查看缺项、投放条件与来源。', 1600)
   let pendingY = 50
+  reviews.forEach((g, k) => {
+    const x = (k % 3) * 550, y = 50 + Math.floor(k / 3) * 230
+    text(`shape:iv-review-title-${g.id}`, PENDING_PAGE, x, y, `${k + 1}. ${g.title}${g.itemIds.length > 1 ? ` · ${g.itemIds.length}项` : ''}`, 520, 'm')
+    text(`shape:iv-review-body-${g.id}`, PENDING_PAGE, x, y + 60, `${g.context}\n${g.question}`, 510)
+  })
+  if (reviews.length) pendingY += Math.ceil(reviews.length / 3) * 230 + 50
   for (const [index, category] of [...new Set(pending.map(i => i.category))].entries()) {
     const group = pending.filter(i => i.category === category)
     text(`shape:iv-pending-group-${index}`, PENDING_PAGE, 0, pendingY, `${category} · ${group.length}`, 1100, 'm')

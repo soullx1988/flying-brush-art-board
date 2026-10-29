@@ -8,6 +8,9 @@ import openpyxl
 spec = importlib.util.spec_from_file_location("prices", Path(__file__).with_name("commercial-base-prices.py"))
 prices = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prices)
+builder_spec = importlib.util.spec_from_file_location("builder", Path(__file__).with_name("build-item-value-data.py"))
+builder = importlib.util.module_from_spec(builder_spec)
+builder_spec.loader.exec_module(builder)
 
 
 def workbook():
@@ -74,6 +77,17 @@ class ValuationTests(unittest.TestCase):
     def test_wrong_workbook_fails_instead_of_inventing_prices(self):
         w = openpyxl.Workbook()
         with self.assertRaises(ValueError): prices.read_rows(w)
+
+    def test_related_random_items_become_questions_not_invented_prices(self):
+        result = [{"id": n, "name": f"部位{n}", "basePrice": None, "description": "", "priceNote": "缺直接定价"} for n in [1, 2]]
+        items = {n: {"id": n, "name": f"部位{n}", "item_type": 22, "quality": 2} for n in [1, 2]}
+        items[3] = {"id": 3, "name": "随机测试宝石", "item_type": 5, "quality": 2, "use_value": 1, "use_detail_value": "10"}
+        drops = [{"id": 10, "weight_drop_award": [{"id": 1, "num": 1}, {"id": 2, "num": 1}]}]
+        reviews = builder.pricing_reviews(result, items, drops, {"3": {"value": 42, "source": "Sheet!D6"}}, [])
+        self.assertEqual(len(reviews), 1)
+        self.assertEqual(reviews[0]['itemIds'], [1, 2])
+        self.assertIn('42', reviews[0]['question'])
+        self.assertTrue(all(i['basePrice'] is None for i in result))
         w, s = workbook(); s['D5'] = '商品售价'
         with self.assertRaises(ValueError): prices.read_rows(w)
 
