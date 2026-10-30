@@ -5,6 +5,8 @@ import { GameItemIcon } from './CommerceEvidenceView'
 import { datasetFromSnapshot } from './commerce-design-map'
 import type { CommerceSourceLoader } from './CommerceDesignCanvas'
 import type { CommerceDataset } from './commerce-data'
+import { isCatalogProduct } from './commerce-data'
+import { productFacts } from './commerce-facts'
 import { productPlacement } from './commerce-catalog'
 import { currentPricePage, focusPriceChain, growPriceCard, openPriceChain, pricePageSize, priceLink, priceProducts, readPriceNode, readPriceSelection, selectedQuantity, type PriceSelection } from './item-price-chain'
 import { productHistorySummary } from './commerce-product-graph'
@@ -23,6 +25,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
   const [catalog, setCatalog] = useState<CommerceDataset>(), [error, setError] = useState(''), [busy, setBusy] = useState(false)
   const [selectedId, setSelectedId] = useState<number>(), file = useRef<HTMLInputElement>(null)
   const [productKey, setProductKey] = useState<string>()
+  const [coverageOpen, setCoverageOpen] = useState(false)
   const selectedProduct = catalog?.products.find(p => p.key === productKey)
   const priceSelection = useValue('active item price chain', () => { const id = store.query.records('instance').get()[0]?.currentPageId; return id ? readPriceSelection(store.get(id)) : undefined }, [store])
   const showChain = (selection: PriceSelection) => {
@@ -79,6 +82,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
       <Button size="sm" variant="ghost" onClick={() => navigate('value')}>二维总览</Button>
       <Button size="sm" variant={priceSelection ? 'glass' : 'ghost'} disabled={!catalog} onClick={() => { const saved = readPriceSelection(currentPricePage(store)); saved ? showChain(saved) : chain(map.items.some(i => i.id === 300004) ? 300004 : map.items[0]!.id) }}>道具 → 商品售价</Button>
       <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(i => i.basePrice === null).length}</Button>
+      <Button size="sm" variant="ghost" onClick={() => setCoverageOpen(true)}>收录与缺项</Button>
       {!priceSelection ? <><Select aria-label="定位同类" placeholder="定位同类" value="" options={itemValueGroups(map).map(g => ({ value: g.key, label: `${g.label} · ${g.items.length}项 · ${itemPriceLabel(map, g.items[0]!)}` }))} onChange={key => { const ed = editorRef.current; if (!ed) return; const shape = ed.store.query.records('shape').get().find(s => readItemValueGroup(s)?.key === key); if (!shape) return; ed.setCurrentPage(shape.parentId as import('tldraw').TLPageId); ed.selectNone(); const b = ed.getShapePageBounds(shape.id); if (b) ed.zoomToBounds(new Box(b.x - 160, b.y - 120, b.w + 320, b.h + 240), { targetZoom: 1, animation: { duration: 200 } }) }} />
       <Select aria-label="定位道具" placeholder="定位道具" value="" options={map.items.map(i => ({ value: String(i.id), label: `${i.name} · ${i.id}` }))} onChange={id => { const ed = editorRef.current; if (ed && !focusValueItem(ed, Number(id))) toast.error('道具图标已被移除，请整理坐标恢复') }} /></> : null}
       {!priceSelection ? <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; if (ed && canEdit()) { updateItemValueData(store, map, ed); ed.zoomToFit(); toast.success('已按基础价与投放条件整理坐标') } }}>整理坐标</Button> : null}
@@ -113,6 +117,22 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     })() : null}
     {children}
     <div onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+      <Drawer open={coverageOpen} onOpenChange={setCoverageOpen} placement="right" size={580} title="收录与缺项">
+        {map ? <div className="item-value-detail">
+          <section><h3>已收录 {map.items.length} 种道具与货币</h3><p>{map.items.filter(i => i.basePrice !== null).length} 项有基础价；{map.items.filter(i => i.approvedPrice).length} 项采用你已确认的补充定价。</p><p>商品奖励与即时奖励、兑换消耗货币均在范围内。随机道具的候选内容放在该道具详情中，不算必得奖励。</p></section>
+          {[
+            { title: '基础价待补', items: map.items.filter(i => i.basePrice === null), note: '缺现用定价行；身份不明的道具需先确认 ID。' },
+            { title: '名称待核对', items: map.items.filter(i => map.reviewGroups?.some(g => g.kind === 'name' && g.itemIds.includes(i.id))), note: '同 ID 的工程名称与定价表名称不一致。' },
+            { title: '图标待补', items: catalog ? map.items.filter(i => !catalog.evidence?.icons?.[i.id]) : [], note: catalog ? '当前游戏图标尚未匹配。' : '商品资料读取后检查图标。' },
+            { title: '首次时间待核验', items: map.items.filter(i => ['unknown', 'conditional'].includes(i.stageId)), note: `${map.items.filter(i => i.stageId === 'conditional').length} 项只有入口／条件线索，${map.items.filter(i => i.stageId === 'unknown').length} 项尚未定位到首次节点。其余也仅是已核到的配置来源。` },
+          ].map(group => <section key={group.title}><h3>{group.title} · {group.items.length}</h3><p>{group.note}</p>{group.items.length ? <details><summary>查看具体道具</summary><div className="item-value-linked-products">{group.items.map(i => <Button key={i.id} size="sm" variant="ghost" onClick={() => { setCoverageOpen(false); setSelectedId(i.id) }}>{i.name} · {i.id} ↗</Button>)}</div></details> : null}</section>)}
+          <section><h3>历史验证还缺什么</h3><p>历史资料按测试批次保留。10 月商品金额、现金／代金券订单、钻石购买样本各有范围；6 月日报不能分摊到当前商品。</p><p>资源兑换扣费与发奖流水、逐服发布记录、曝光与退款资料尚未齐全。没有记录不代表没有购买，也不代表未投放。</p><Button variant="ghost" onClick={() => { setCoverageOpen(false); if (onOpenSource) onOpenSource(map.sourceBoardId) }}>查看商品总览与历史范围 ↗</Button></section>
+          {coverageOpen && catalog ? (() => {
+            const facts = catalog.products.filter(isCatalogProduct).map(p => ({ product: p, facts: productFacts(catalog, p) }))
+            return [{ label: '源表与测试流水存在差异', list: facts.filter(r => r.facts.difference) }, { label: '到账明细未核全或存在多个版本', list: facts.filter(r => r.facts.incomplete || r.facts.varied) }].map(group => <section key={group.label}><h3>{group.label} · {group.list.length} 项</h3><details><summary>查看商品（两组可能重合）</summary>{group.list.map(({ product: p }) => <p key={p.key}><Button variant="ghost" size="sm" onClick={() => { setCoverageOpen(false); setProductKey(p.key) }}>{p.title} · {p.sku} ↗</Button></p>)}</details></section>)
+          })() : null}
+        </div> : null}
+      </Drawer>
       <Drawer open={Boolean(selected)} onOpenChange={open => { if (!open) setSelectedId(undefined) }} placement="right" size={520} title={selected?.name ?? '道具'}>
         {selected && map ? <div className="item-value-detail">
           <div className="item-value-detail-heading"><GameItemIcon evidence={catalog?.evidence} id={selected.id} name={selected.name} /><div><strong>{itemPriceLabel(map, selected)}</strong><small>{selected.category} · {selected.id} · 每 1 单位</small></div></div>
@@ -123,6 +143,9 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
           </section>
           {review ? <section><h3>{review.kind === 'price' ? '待你定价' : '待核对名称'}</h3><p>{review.context}</p><p>{review.question}</p><details><summary>核对依据</summary>{review.sources.map(s => <p key={s}>{s}</p>)}</details></section> : null}
           <section><h3>已核到的投放来源</h3><p>{selected.firstPlacement}</p><p>{selected.placementNote}</p><details><summary>投放依据</summary>{selected.placementSources.map((s, n) => <p key={n}>{s}</p>)}</details></section>
+          {selected.contents?.length ? <section><h3>打开后可能获得 · {selected.contents.length} 种</h3><p>候选内容来自掉落配置；不表示一次全得，也不继承容器的基础价。</p><details><summary>查看内容与来源</summary>{selected.contents.map(r => <div key={`${r.id}-${r.kind}`} className="item-value-content"><GameItemIcon evidence={catalog?.evidence} id={r.id} name={r.name} /><div>{r.name} · {r.id}<small>{r.kind === 'random' ? '随机候选' : r.kind === 'choice' ? '自选候选' : '固定内容'} · {r.source}</small></div></div>)}</details></section> : null}
+          {selected.contentGaps?.length ? <section><h3>内容规则待核验</h3>{selected.contentGaps.map(g => <p key={g}>{g}</p>)}</section> : null}
+          {selected.exchangeUses?.length ? <section><h3>兑换消耗去向 · {selected.exchangeUses.length} 项</h3><p>这里是花掉该货币的商品，不是获得该货币的来源。</p><details><summary>查看兑换商品</summary>{selected.exchangeUses.map(key => { const p = catalog?.products.find(p => p.key === key); return p ? <p key={key}><Button variant="ghost" size="sm" onClick={() => { setSelectedId(undefined); setProductKey(key) }}>{productPlacement(p)} · {p.title} · {p.price} ↗</Button></p> : <p key={key}>{key} · 商品引用待更新</p> })}</details></section> : null}
           <section><h3>关联商品 · {itemProducts(catalog, selected.id).length}</h3><Button variant="glass" disabled={!catalog} onClick={() => chain(selected.id)}>展开商品售价关联图 →</Button><small>在画布上比较人民币、钻石与资源兑换等全部获得方式。</small>{onOpenSource ? <Button variant="ghost" onClick={() => onOpenSource(map.sourceBoardId)}>商品总览 · 折扣与完整历史 ↗</Button> : null}</section>
           <details><summary>来源与范围</summary><p>{map.scope}</p>{map.sources.map(s => <p key={s.path}>{s.label}<br />{s.path}<br /><small>SHA-256：{s.sha256}</small></p>)}</details>
         </div> : null}
@@ -183,7 +206,7 @@ export function ItemPriceChainShape({ shape }: { shape: TLGeoShape }) {
       <Button size="sm" variant="ghost" onPointerDown={e => e.stopPropagation()} onClick={() => open(node.itemId)}>基础价与投放依据 ↗</Button>
     </> : !catalog || !product || !link ? <p>商品引用读取中或已失效，请刷新商品引用。</p> : node.kind === 'product' ? <>
       <header><small>{productPlacement(product)} · {product.sku}</small><h3>{product.title}</h3></header>
-      <div className="item-price-reward"><GameItemIcon evidence={catalog.evidence} id={node.itemId} name={item?.name ?? String(node.itemId)} /><strong>{item?.name} × {quantity!.regular}{quantity!.extra ? <small>；额外 × {quantity!.extra}</small> : null}</strong><span>{item?.basePrice != null && quantity!.regular ? `仅本项基础价值 ${amountLabel(item.basePrice * quantity!.regular)} 钻` : quantity!.extra ? '额外奖励单列，不与周期领取合并' : '基础价值待补'}</span></div>
+      <div className="item-price-reward"><GameItemIcon evidence={catalog.evidence} id={node.itemId} name={item?.name ?? String(node.itemId)} /><strong>{item?.name}{quantity!.regular ? ` × ${quantity!.regular}` : ''}{quantity!.extra ? <small>{quantity!.regular ? '；' : ' · '}{product.channel === '月卡' ? '购买即时' : '额外'} × {quantity!.extra}</small> : null}{!quantity!.regular && !quantity!.extra ? ' · 本次记录未确认数量' : ''}</strong><span>{item?.basePrice != null && quantity!.regular ? `仅本项基础价值 ${amountLabel(item.basePrice * quantity!.regular)} 钻` : quantity!.extra ? '额外奖励单列，不与周期领取合并' : '基础价值待补'}</span></div>
       <div className="item-price-caption">{link.facts.actual ? '数量：测试流水实得' : '数量：配置快照'}{link.facts.difference ? ' · 源表差异' : ''}{product.channel === '月卡' ? ' · 上列为每日领取' : ''}</div>
       <small className="item-price-limit">{product.limit}</small>
       <div className="item-price-history"><span>{history?.primary}</span><small>{history?.secondary}</small></div>

@@ -16,6 +16,9 @@ export const itemValueDatasetSchema = z.object({
     basePrice: z.number().finite().nonnegative().nullable(), priceSource: z.string(), priceNote: z.string(),
     priceEstimate: z.object({ min: z.number().finite().nonnegative(), max: z.number().finite().nonnegative() }).optional(),
     stageId: z.string(), firstPlacement: z.string(), placementNote: z.string(), placementSources: z.array(z.string()),
+    exchangeUses: z.array(z.string()).optional(),
+    contents: z.array(z.object({ id: z.number().int(), name: z.string(), kind: z.enum(['guaranteed', 'choice', 'random']), source: z.string() })).optional(),
+    contentGaps: z.array(z.string()).optional(),
   })).max(10000),
 }).superRefine((d, ctx) => {
   if (new Set(d.items.map(i => i.id)).size !== d.items.length || new Set(d.stages.map(s => s.id)).size !== d.stages.length) ctx.addIssue({ code: 'custom', message: '道具或投放节点身份重复' })

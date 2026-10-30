@@ -87,6 +87,32 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
     wanted.update(r["cost"]["id"] for group in exchange for r in group["line"] if r.get("cost") and any(p["key"] == f'exchange:{group["type"]}:{r["item_id"]}' for p in products))
     wanted.update([300001, 300003])
     candidates = {i: [] for i in wanted}
+    # Follow Drop.WeightDrop.DropID, not an item ID. Keep candidate contents
+    # separate from direct merchandise rewards and never infer a base value.
+    pools = {d['id']: d for d in drops}
+    def contents(pool_id, trail=(), inherited='guaranteed'):
+        if pool_id in trail or pool_id not in pools:
+            return [], [f'掉落组 {pool_id} 缺失或循环引用']
+        pool = pools[pool_id]; result, gaps = [], []
+        for field, mode in [('sure_drop_award', 'guaranteed' if pool['sure_type'] == 1 else 'choice'), ('weight_drop_award', 'random')]:
+            for reward in pool.get(field, []):
+                if reward.get('num', 0) <= 0 or (field == 'weight_drop_award' and reward.get('weight', 0) <= 0):
+                    continue
+                kind = inherited if inherited != 'guaranteed' else mode
+                if field == 'weight_drop_award' and pool['weight_type'] == 2:
+                    children, missing = contents(reward['id'], (*trail, pool_id), kind)
+                    result.extend(children); gaps.extend(missing); continue
+                if field == 'weight_drop_award' and pool['weight_type'] != 1:
+                    gaps.append(f'掉落组 {pool_id} 使用类型 {pool["weight_type"]}，需核对专用对象映射'); continue
+                target = items.get(reward['id'])
+                if not target:
+                    gaps.append(f'掉落组 {pool_id} 的道具 {reward["id"]} 未匹配'); continue
+                name = target['name'] + ('碎片' if target.get('debris') == 1 and not target['name'].endswith('碎片') else '')
+                result.append({'id': target['id'], 'name': name, 'kind': kind,
+                    'source': f'tables_sysdrop_tbdrop.json / {" → ".join(map(str, (*trail, pool_id)))}.{field}'})
+        if pool.get('special_probability_drop_award'):
+            gaps.append(f'掉落组 {pool_id} 还有特殊概率规则，需核对条件')
+        return list({(r['id'], r['kind']): r for r in result}.values()), list(dict.fromkeys(gaps))
     mission_order = {m["missionID"]: m["missionLevel"] for m in missions if 100000 <= m["missionID"] < 200000}
 
     def add(item_id, order, label, source, kind="progress"):
@@ -177,12 +203,17 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
         # Names alone cannot identify named pets, weapon fragments, or hero skins.
         cat = {2: "英雄与碎片", 26: "皮肤", 30: "魔灵", 34: "武器与碎片"}.get(item.get("item_type"), cat)
         family = {2: "英雄碎片" if item.get("debris") == 1 else "英雄", 10: "英雄", 18: "专属武器碎片" if item.get("debris") == 1 else "专属武器", 22: "部位宝石", 26: "皮肤", 30: "魔灵", 33: "武器", 34: "武器碎片"}.get(item.get("item_type"))
+        pool_key = str(item.get('use_detail_value', ''))
+        content_rows, content_gaps = contents(int(pool_key)) if item.get('item_type') == 5 and item.get('use_value') == 1 and pool_key.isdigit() else ([], [])
+        exchange_uses = [f'exchange:{group["type"]}:{r["item_id"]}' for group in exchange for r in group['line'] if (r.get('cost') or {}).get('id') == item_id and any(p['key'] == f'exchange:{group["type"]}:{r["item_id"]}' for p in products)]
         result.append({"id": item_id, "name": name, "category": cat, "description": re.sub(r"<[^>]*>", "", item.get("desc", "")),
+            **({'contents': content_rows, 'contentGaps': content_gaps} if content_rows or content_gaps else {}),
+            **({'exchangeUses': exchange_uses} if exchange_uses else {}),
             **({"family": family, "quality": item["quality"]} if family else {}),
             "basePrice": value, "priceSource": price.get("source", ""), "priceNote": price.get("note", (f"现用道具定价页没有 ID {item_id} 的对应行。" + ("表内随机宝石与具体部位宝石不是同一道具，不能直接套价。" if item.get("item_type") == 22 else "该ID也不在当前道具配置中，需先确认身份。" if not item else "需补充该道具定价行或明确名称映射。")) if commercial_workbook else "缺现用数值表的基础定价；未采用旧草案或商品成交价。"),
             "stageId": stage, "firstPlacement": first["label"] if first else "首次投放位置待核验",
             "placementNote": "这是已核到的配置来源。尚未穷尽引导、邮件、任务、后台活动与个性化条件，不能据此断言全游戏最早获得时间。" if first else "缺少可定位到关卡或时间的有效奖励、商店或活动开放条件。",
-            "placementSources": list(dict.fromkeys(c["source"] for c in candidate))[:12]})
+            "placementSources": list(dict.fromkeys(c["source"] for c in candidate))})
     reviews = pricing_reviews(result, items, drops, price_data, products)
     if commercial_workbook and audit_output:
         audit["reviewGroups"] = reviews

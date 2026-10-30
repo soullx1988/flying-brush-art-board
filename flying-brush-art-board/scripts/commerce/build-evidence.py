@@ -81,12 +81,8 @@ def aggregate_orders(raw, products, database, source_hash):
             'byProduct':by_product,'unresolved':unresolved}
 
 
-def build(args):
-    data, raw = read(args.dataset), read(args.orders)
-    for value in data['sources'].values():
-        if digest(pathlib.Path(value['path'])) != value['sha256']:
-            raise ValueError(f"商品来源已变化，请先更新商品快照：{value['path']}")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+def item_icons(client, used):
+    """Resolve both rewarded items and spent currencies from the same game art."""
     assets, files, icons = {}, {}, {}
     def asset(path):
         b = path.read_bytes()
@@ -96,14 +92,12 @@ def build(args):
         assets[sha] = {'name':path.name,'path':str(path),'sha256':sha,'mime':'image/png','width':w,'height':h}
         files[sha] = base64.b64encode(b).decode()
         return sha
-    item_root = args.client/'Lucky/assets/AssetsPackage/GUI/Res/Item'
+    item_root = client/'Lucky/assets/AssetsPackage/GUI/Res/Item'
     atlases = []
     for name in ['item','item_fashion']:
         p=item_root/(name+'.plist')
         atlases.append((p,plistlib.loads(p.read_bytes())['frames']))
-    items={x['id']:x for x in read(args.client/'Lucky/assets/AssetsPackage/Datas/tables_sysitems_tbitems.json')}
-    used={a['id'] for p in data['products'] for a in p['rewards']+p.get('extraRewards',[])}
-    used.update([300001,300003,300004])
+    items={x['id']:x for x in read(client/'Lucky/assets/AssetsPackage/Datas/tables_sysitems_tbitems.json')}
     for item_id in sorted(used):
         icon=items.get(item_id,{}).get('icon','')
         if not icon:
@@ -122,6 +116,30 @@ def build(args):
             if p.is_file():
                 sha=asset(p);info=assets[sha]
                 icons[str(item_id)]={'asset':sha,'x':0,'y':0,'w':info['width'],'h':info['height'],'rotated':False}
+    return assets, files, icons
+
+
+def build(args):
+    data, raw = read(args.dataset), read(args.orders)
+    for value in data['sources'].values():
+        if digest(pathlib.Path(value['path'])) != value['sha256']:
+            raise ValueError(f"商品来源已变化，请先更新商品快照：{value['path']}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    used={a['id'] for p in data['products'] for a in p['rewards']+p.get('extraRewards',[])}
+    exchanges=read(args.client/'Lucky/assets/AssetsPackage/Datas/tables_sysshop_tbshopexchange.json')
+    used.update(r['cost']['id'] for group in exchanges for r in group['line'] if r.get('cost'))
+    used.update([300001,300003,300004])
+    # A routine image refresh must also refresh previously linked container contents.
+    used.update(map(int, data.get('evidence', {}).get('icons', {})))
+    assets, files, icons = item_icons(args.client, used)
+    def asset(path):
+        b=path.read_bytes()
+        if not b.startswith(b'\x89PNG\r\n\x1a\n'):
+            raise ValueError(f'当前只收录原始 PNG: {path}')
+        sha=hashlib.sha256(b).hexdigest(); w,h=struct.unpack('>II',b[16:24])
+        assets[sha]={'name':path.name,'path':str(path),'sha256':sha,'mime':'image/png','width':w,'height':h}
+        files[sha]=base64.b64encode(b).decode()
+        return sha
     placements={}
     for channel in ['日礼包','周礼包','月礼包','钻石充值','金币礼包','每日随机商店']:
         placements[channel]={'path':f'商城 → {channel}','evidence':'工程商城模块与礼包分类；实际开放还受功能与服务器配置影响。'}

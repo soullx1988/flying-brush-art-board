@@ -105,3 +105,17 @@ node --import tsx scripts/commerce/validate-item-placements.ts <导入后商品�
 ```
 
 按原“更新配图与历史”入口导入，原始资料与汇总报告保留在私有资料目录。入口名不能证明各服已开放；价格、奖励和历史不因命名更新而改变。默认关联图展示全部获得方式，付费、兑换和免费领取按需筛选；被筛选掉的数量及恢复全部入口持续可见。作为兑换消耗的货币不自动算成商品奖励，随机池内容不冒充确定发放。
+
+## 道具总览完整性复查
+
+先从原画板取得当前商品资料与道具资料，使用 `build-item-value-data.py` 重新读取正式《商业化产出》和客户端配置，再运行：
+
+```powershell
+python scripts/commerce/audit-item-completeness.py --dataset <商品资料.json> --before <原道具资料.json> --item-map <新道具资料.json> --client <客户端根目录> --assets-bundle <原完整配图包.json> --report <完整性报告.json> --output <补图包.json>
+node --import tsx scripts/commerce/validate-item-completeness.ts <商品资料.json> <原道具资料.json> <新道具资料.json> <补图包.json> <核验结果.json>
+python scripts/test-item-value-completeness.py
+```
+
+报告核对全部商品定义、直接奖励和额外奖励、兑换消耗、正式价格与用户批准值、原始游戏图标、来源清单及随机候选。候选使用 `Drop.WeightDrop` 区分物品 ID 和嵌套掉落组，遇到缺失、循环或专用对象类型时保留缺项；不按随机容器的价值给具体候选定价，也不自动算入必得商品关联。
+
+先按原“更新配图与历史”入口导入补图包，再在道具画板“更新数值资料”导入新道具资料。批准价格由现有导入逻辑保留。商品、历史支付、六月备份及历史差异必须保持原样；修改后在页面检查“收录与缺项”、货币消耗去向、随机候选展开、同类折叠及刷新保存。投放依据完整保留，不截取前若干条。全游戏首次时间、各服开放与全量业务流水仍需各自证据，不因覆盖检查通过而自动认定完整。
