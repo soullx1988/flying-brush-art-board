@@ -23,3 +23,30 @@
 .item-value-group-icons .commerce-item-icon { width:28px; height:28px; }
 .item-value-group-icons > small { font-size:11px; white-space:nowrap; color:var(--app-text-muted); }
 .item-value-group .item-value-node-foot strong { font-size:11px; }
+.item-price-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 16px; border-bottom:1px solid var(--app-border); font-size:12px; }
+.item-price-toolbar > span { color:var(--app-text-muted); }
+.item-price-select { width:180px; min-width:0; }
+.item-price-select > * { width:100% !important; }
+.item-price-card { box-sizing:border-box; pointer-events:all; display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:1px solid #d5ddea; border-radius:12px; background:var(--app-panel,#fff); color:var(--app-text,#223049); font:13px/1.4 'Microsoft YaHei',sans-serif; }
+.item-price-card h2,.item-price-card h3,.item-price-card p { margin:0; }
+.item-price-card h2 { font-size:21px; }
+.item-price-card h3 { font-size:16px; line-height:1.25; margin-top:3px; }
+.item-price-card small { font-size:11px; color:var(--app-text-muted); }
+.item-price-card > button { align-self:flex-start; margin-top:auto; }
+.item-price-item { background:linear-gradient(145deg,#f1f5ff,var(--app-panel,#fff)); border-color:#b5c8ef; }
+.item-price-hero { display:flex; gap:8px; align-items:center; }
+.item-price-hero .commerce-item-icon { width:42px; height:42px; flex:none; }
+.item-price-big { font-size:23px; line-height:1.25; color:#254f85; overflow-wrap:anywhere; }
+.item-price-big small { font-weight:400; font-size:12px; }
+.item-price-placement { display:grid; gap:4px; border-top:1px solid var(--app-border); padding-top:10px; margin-top:8px; }
+.item-price-placement span { font-size:12px; }
+.item-price-reward { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.item-price-reward .commerce-item-icon { width:28px; height:28px; flex:none; }
+.item-price-reward strong { font-weight:500; }
+.item-price-reward > span { width:100%; color:#52627c; font-size:11px; padding-left:34px; }
+.item-price-caption,.item-price-limit { font-size:11px; color:var(--app-text-muted); }
+.item-price-history { display:grid; gap:2px; border-top:1px solid var(--app-border); padding-top:5px; margin-top:auto; font-size:11px; }
+.item-price-price { border-left:3px solid #80a2cc; }
+.item-price-reference { color:#44678b; font-size:16px; }
+.item-price-tier { border-top:1px solid var(--app-border); padding-top:6px; font-size:11px; }
+.item-price-warning { font-size:11px; color:#90691e; }

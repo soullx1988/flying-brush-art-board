@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createBoardStore, loadSnapshotIntoStore } from '@infinite-board/tldraw-adapter'
 import { type TLGeoShape } from 'tldraw'
-import { ItemValueCanvas, ItemValueShape } from './ItemValueCanvas'
+import { ItemValueCanvas, ItemPriceChainShape } from './ItemValueCanvas'
 import { createItemValueSnapshot, focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueRecords, itemValueGroups, itemValueVisibility, keepApprovedPrices, readItemValueGroup, toggleItemValueGroup, PENDING_PAGE, readItemValueMap, readItemValueNode, updateItemValueData, valueBand, valuePages, VALUE_PAGE, type ItemValueDataset } from './item-value-map'
 import type { CommerceDataset } from './commerce-data'
 
@@ -126,13 +126,13 @@ describe('item value and first placement map', () => {
     const store = createBoardStore(); loadSnapshotIntoStore(store, createItemValueSnapshot(data))
     const loadSource = vi.fn(async () => ({ snapshot: { store: { doc: { typeName: 'document', meta: { commerceOverview: { version: 1, dataset: catalog } } } } }, revision: 1 }))
     const shape = store.get('shape:item-value-1' as TLGeoShape['id']) as TLGeoShape
-    render(<ItemValueCanvas store={store} editorRef={{ current: undefined }} loadSource={loadSource} canEdit={() => false}><ItemValueShape shape={shape} /></ItemValueCanvas>)
+    render(<ItemValueCanvas store={store} editorRef={{ current: undefined }} loadSource={loadSource} canEdit={() => false}><ItemPriceChainShape shape={{ ...shape, meta: { itemPriceNode: { kind: 'item', itemId: 1 } } }} /></ItemValueCanvas>)
     await waitFor(() => expect(loadSource).toHaveBeenCalledWith('source-board'))
     expect(screen.getByText('30 钻石')).toBeTruthy()
     expect(screen.queryByText('999 钻石')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '展开测试券' }))
+    fireEvent.click(screen.getByRole('button', { name: '基础价与投放依据 ↗' }))
     await waitFor(() => expect(screen.getByText('数值表!B2')).toBeTruthy())
-    expect(screen.getByText('第1关奖励')).toBeTruthy()
+    expect(screen.getAllByText('第1关奖励').length).toBeGreaterThan(0)
     expect(screen.queryByText('未生效礼包')).toBeNull()
   })
 })
