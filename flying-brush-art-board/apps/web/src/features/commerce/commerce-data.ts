@@ -25,7 +25,7 @@ export function readCommerceDataset(meta: unknown): CommerceDataset | undefined 
 export function filterProducts(data: CommerceDataset, need: string, kind: string, channel: string, query: string) {
   const q = query.trim().toLocaleLowerCase()
   return data.products.filter(p => isCatalogProduct(p) && (need === 'all' || p.needs.includes(need)) && (kind === 'all' || p.kind === kind) && (channel === 'all' || p.channel === channel)
-    && (!q || [p.key, p.sku, p.rid, p.title, p.channel, ...p.rewards.map(r => r.name)].join(' ').toLocaleLowerCase().includes(q)))
+    && (!q || [p.key, p.sku, p.rid, p.title, p.channel, p.placement?.name, p.placement?.path, ...p.rewards.map(r => r.name)].join(' ').toLocaleLowerCase().includes(q)))
 }
 export function relatedProducts(data: CommerceDataset, product: CommerceProduct) {
   const comparable = data.products.filter(p => p.key !== product.key && isCatalogProduct(p))

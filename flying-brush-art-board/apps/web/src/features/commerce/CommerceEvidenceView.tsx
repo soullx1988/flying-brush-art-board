@@ -13,8 +13,8 @@ export function GameItemIcon({ evidence, id, name }: { evidence?: CommerceEviden
 
 export function GamePlacement({ evidence, product }: { evidence?: CommerceEvidence | undefined; product: CommerceProduct }) {
   const placement = evidence?.placements[product.channel]
-  return <div className="commerce-placement"><p className="commerce-label">在哪里看到它</p><p>{placement?.path ?? `${product.channel} · 具体入口路径待核验`}</p>
-    {placement ? <p className="commerce-muted">{placement.evidence}</p> : null}
+  return <div className="commerce-placement"><p className="commerce-label">在哪里看到它</p><p>{product.placement?.path ?? placement?.path ?? `${product.channel} · 具体入口路径待核验`}</p>
+    {product.placement ? <p className="commerce-muted">{product.placement.source}</p> : placement ? <p className="commerce-muted">{placement.evidence}</p> : null}
     {placement?.reference ? <details><summary>查看游戏界面参考图</summary><figure><img className="commerce-screen-reference" src={`/api/assets/${placement.reference}`} alt={`${product.channel}工程界面参考`} loading="lazy" /><figcaption>{placement.referenceLabel}</figcaption></figure></details> : <p className="commerce-muted">当前实机入口截图待补。</p>}
   </div>
 }

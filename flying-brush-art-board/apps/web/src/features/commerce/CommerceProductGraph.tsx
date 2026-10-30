@@ -1,3 +1,4 @@
+import { productPlacement } from './commerce-catalog'
 import { useEffect, useRef, useState, type ComponentProps } from 'react'
 import { HTMLContainer, useValue, type TLGeoShape, type TLPage, type TLShapeId } from 'tldraw'
 import { Button, Drawer, Input, Select, toast } from '@ttqtt/liquid-glass-react'
@@ -74,7 +75,7 @@ export function CommerceProductGraphShape({shape}:{shape:TLGeoShape}) {
   const sameResource=facts.rewards.filter(r=>![300001,300003].includes(r.id)).map(r=>({r,count:resourceProductCount(data,r.id)})).filter(r=>r.count>1)
   const source=()=>c.open({kind:'product',key:p.key,entrance:s.entrance,canvas:true})
   return <HTMLContainer><article ref={contentRef} className="commerce-product-node" aria-label={`商品卡 ${p.key}`} style={style}>
-    <header><small>{entranceFor(p).name} · {p.channel} · {p.sku}</small><h2>{title}</h2><div className="commerce-product-price"><strong>{price}</strong>{priceRules.length?<small>{priceRules.join('；')}</small>:null}</div></header>
+    <header><small>{entranceFor(p).name} · {productPlacement(p)} · {p.sku}</small><h2>{title}</h2><div className="commerce-product-price"><strong>{price}</strong>{priceRules.length?<small>{priceRules.join('；')}</small>:null}</div></header>
     <div className="commerce-product-need"><b>需求</b><span>{needs.map(n=>n.name).join('、')||'待补'}<small>候选关联</small></span></div>
     <div className="commerce-product-rewards"><b>{p.channel==='月卡'?'每日获得':p.channel==='首充'?'分日奖励合计':'获得'}</b><div>{facts.rewards.map((r,i)=><span key={`${r.id}:${i}`}><GameItemIcon evidence={data.evidence} id={r.id} name={r.name}/>{r.name} × {r.n}</span>)}{p.extraRewards?.length?<small>购买即时：{p.extraRewards.map(r=>`${r.name} × ${r.n}`).join('、')}</small>:null}</div></div>
     <p className="commerce-product-limit">{p.limit}</p>

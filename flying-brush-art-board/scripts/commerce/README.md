@@ -93,3 +93,15 @@ python scripts/commerce/test_build_archived_revenue.py
 `status=missing/unmapped` 的引用、没有充值档位和奖励的现金空壳从正常浏览排除；原记录与历史统计不删除。未购买不是未生效的证据。Nacos 发布、SQL 草稿、逐服加载版本和历史实得分别记录，未绑定测试环境的 Nacos 快照不得冒充线上配置。
 
 新增日志解析能力时，保留旧 SQLite 备份，生成新备份并逐项核对差额。本轮 `validate-catalog-refresh.ts ... --complete-missing-rewards` 专门核对补入的 980 笔、336,870 钻石，要求所有既有商品购买行、现金／代金券、6 月历史与设计关联完全保留；普通刷新仍要求流水完全不变。
+
+## 道具包含关系与资源兑换入口
+
+`audit-item-placements.py` 复用 `audit-catalog.py` 的价格／奖励提取，对全部定义与道具表逐项检查（含额外奖励）。它从客户端 `ShopExchangeType` 与商店集合页签提取具体名称，写入商品的 `placement`；保留原 `channel`，不破坏商业模式大类和历史关联。新名称、筛选、商品卡共用这份元数据，不另建商品表。
+
+```powershell
+python scripts/commerce/audit-item-placements.py --dataset <商品快照.json> --item-map <道具价值资料.json> --client <客户端根目录> --assets-bundle <已有完整配图包.json> --report <核查报告.json> --output <入口更新包.json>
+node --import tsx scripts/commerce/validate-catalog-refresh.ts <商品快照.json> <入口更新包.json> <更新校验.json>
+node --import tsx scripts/commerce/validate-item-placements.ts <导入后商品快照.json> <道具价值资料.json>
+```
+
+按原“更新配图与历史”入口导入，原始资料与汇总报告保留在私有资料目录。入口名不能证明各服已开放；价格、奖励和历史不因命名更新而改变。默认关联图展示全部获得方式，付费、兑换和免费领取按需筛选；被筛选掉的数量及恢复全部入口持续可见。作为兑换消耗的货币不自动算成商品奖励，随机池内容不冒充确定发放。

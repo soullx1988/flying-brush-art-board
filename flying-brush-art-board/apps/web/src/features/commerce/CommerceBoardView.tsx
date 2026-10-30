@@ -1,3 +1,4 @@
+import { productPlacement } from './commerce-catalog'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Breadcrumb, Button, Card, Checkbox, Empty, Input, Select, Table, Tag, toast } from '@ttqtt/liquid-glass-react'
 import { ArrowLeft, ArrowRight, Storefront, Gift, Star, Lightning, Link, CalendarBlank } from '@phosphor-icons/react'
@@ -100,7 +101,7 @@ export function CommerceBoardView({ data, onOpenBoard, resources = [] }: { data:
       {report ? <HistoryScopeNotice data={data} group={revenueGroup} /> : null}
       {data.evidence?.ledger ? <div className="commerce-row"><Checkbox checked={differencesOnly} onCheckedChange={value=>resetLimit(()=>setDifferencesOnly(value))}>只看配置与流水差异 / 待核全</Checkbox></div> : null}
       <div className="commerce-product-table"><Table<CommerceProduct> aria-label="商品清单" size="sm" rowKey="key" data={products.slice(0, limit)} columns={[
-        { key: 'product', title: '商品 / 投放', width: '19%', render: p => <div className="commerce-product-name"><strong>{productName(p)}</strong><span className="commerce-muted">{p.channel === '通关礼包' ? '关卡礼包（配置名：通关礼包）' : p.channel} · {p.sku}</span><ProductAudit data={data} product={p} compact /></div> },
+        { key: 'product', title: '商品 / 投放', width: '19%', render: p => <div className="commerce-product-name"><strong>{productName(p)}</strong><span className="commerce-muted">{p.channel === '通关礼包' ? '关卡礼包（配置名：通关礼包）' : productPlacement(p)} · {p.sku}</span><ProductAudit data={data} product={p} compact /></div> },
         { key: 'rewards', title: '奖励 / 实际核对', width: '32%', render: p => <ProductFacts data={data} product={p} group={revenueGroup} compact /> },
         { key: 'price', title: '价格', width: '13%', render: p => <div className="commerce-table-status"><strong className="commerce-table-price">{productFacts(data,p,revenueGroup).price}</strong><span className="commerce-muted">{productFacts(data,p,revenueGroup).prices.length>0 ? '流水实扣' : '配置价格'}</span></div> },
         { key: 'limit', title: '限购 / 周期（配置）', width: '15%', dataIndex: 'limit' },

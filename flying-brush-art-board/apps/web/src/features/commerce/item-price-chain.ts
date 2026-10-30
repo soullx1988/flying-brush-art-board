@@ -2,9 +2,10 @@ import { z } from 'zod'
 import { Box, getIndexAbove, getIndices, toRichText, type Editor, type TLGeoShape, type TLPageId, type TLShapeId, type TLStore } from 'tldraw'
 import { isCatalogProduct, type CommerceDataset, type CommerceProduct } from './commerce-data'
 import { graphFacts } from './commerce-product-graph'
+import { productPlacement } from './commerce-catalog'
 
 export const PRICE_CHAIN_PAGE = 'page:item-price-chain' as TLPageId
-const selectionSchema = z.object({ itemId: z.number().int(), kind: z.enum(['paid', 'diamond', 'cash', 'other']).default('paid'), channel: z.string().default('all'), offset: z.number().int().nonnegative().default(0), compact: z.boolean().optional() })
+const selectionSchema = z.object({ itemId: z.number().int(), kind: z.enum(['all', 'paid', 'diamond', 'cash', 'resource', 'other']).default('all'), channel: z.string().default('all'), offset: z.number().int().nonnegative().default(0), compact: z.boolean().optional() })
 export type PriceSelection = z.infer<typeof selectionSchema>
 const nodeSchema = z.object({ kind: z.enum(['item', 'product', 'price']), itemId: z.number().int(), productKey: z.string().optional() })
 export function readPriceSelection(page: { meta: unknown } | undefined) {
@@ -43,16 +44,18 @@ export function priceLink(data: CommerceDataset, product: CommerceProduct) {
   })) }
 }
 export function priceProducts(data: CommerceDataset, s: PriceSelection) {
-  const eligible = data.products.filter(p => isCatalogProduct(p) && [...graphFacts(data, p).rewards, ...(p.extraRewards ?? [])].some(r => r.id === s.itemId))
-  const filtered = eligible.filter(p => (s.kind === 'paid' ? ['diamond', 'cash'].includes(p.kind) : s.kind === 'other' ? !['diamond', 'cash'].includes(p.kind) : p.kind === s.kind) && (s.channel === 'all' || p.channel === s.channel))
+  const eligible = data.products.filter(p => isCatalogProduct(p) && [...p.rewards, ...graphFacts(data, p).rewards, ...(p.extraRewards ?? [])].some(r => r.id === s.itemId))
+  const filtered = eligible.filter(p => (s.kind === 'all' || (s.kind === 'paid' ? ['diamond', 'cash'].includes(p.kind) : s.kind === 'other' ? !['diamond', 'cash'].includes(p.kind) : p.kind === s.kind)) && (s.channel === 'all' || p.channel === s.channel || productPlacement(p) === s.channel))
   const channels = ['日礼包', '周礼包', '月礼包', '首充', '月卡']
   const sort = (a: CommerceProduct, b: CommerceProduct) => {
     const rank = (p: CommerceProduct) => channels.includes(p.channel) ? channels.indexOf(p.channel) : 99
-    return rank(a) - rank(b) || (priceNumber(a.price, a.kind === 'cash' ? 'cash' : 'diamond') ?? Infinity) - (priceNumber(b.price, b.kind === 'cash' ? 'cash' : 'diamond') ?? Infinity) || a.key.localeCompare(b.key)
+    return rank(a) - rank(b) || (priceNumber(a.price, a.kind === 'cash' ? 'cash' : 'diamond') ?? Infinity) - (priceNumber(b.price, b.kind === 'cash' ? 'cash' : 'diamond') ?? Infinity) || productPlacement(a).localeCompare(productPlacement(b), 'zh-CN') || a.key.localeCompare(b.key)
   }
-  if (s.kind !== 'paid') return filtered.sort(sort)
-  const diamond = filtered.filter(p => p.kind === 'diamond').sort(sort), cash = filtered.filter(p => p.kind === 'cash').sort(sort)
-  return Array.from({ length: Math.max(diamond.length, cash.length) }, (_, i) => [diamond[i], cash[i]]).flat().filter((p): p is CommerceProduct => !!p)
+  if (s.kind !== 'paid' && s.kind !== 'all') return filtered.sort(sort)
+  // Show different acquisition routes together instead of burying exchanges after every paid bundle.
+  const kinds = s.kind === 'paid' ? ['diamond', 'cash'] : ['diamond', 'cash', 'resource', 'free', 'ad', 'mixed', 'unknown']
+  const groups = kinds.map(kind => filtered.filter(p => p.kind === kind).sort(sort))
+  return Array.from({ length: Math.max(0, ...groups.map(g => g.length)) }, (_, i) => groups.map(g => g[i])).flat().filter((p): p is CommerceProduct => !!p)
 }
 export function selectedQuantity(data: CommerceDataset, product: CommerceProduct, itemId: number) {
   const f = graphFacts(data, product)

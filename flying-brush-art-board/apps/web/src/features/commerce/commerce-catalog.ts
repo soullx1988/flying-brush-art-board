@@ -7,9 +7,12 @@ export const productSchema = z.object({
   price: z.string(), rid: z.number().nullable().optional(), rewards: z.array(rewardSchema),
   extraRewards: z.array(rewardSchema).optional(), limit: z.string(), note: z.string(),
   source: z.string(), row: z.number().optional(),
+  placement: z.object({ name: z.string().min(1), path: z.string().min(1), source: z.string().min(1) }).optional(),
   board: z.object({ id: z.string(), title: z.string() }).nullable().optional(),
   status: z.enum(['defined', 'missing', 'unmapped']), needs: z.array(z.string()).min(1),
 })
+// Keep broad commerce channels stable; the concrete in-game entrance is source metadata.
+export const productPlacement = (p: z.infer<typeof productSchema>) => p.placement?.name ?? p.channel
 export const catalogSourceSchema = z.object({ name: z.string(), path: z.string(), sha256: z.string(), checkedAt: z.string().optional(), revision: z.string().optional(), origin: z.string().optional() })
 export const catalogUpdateSchema = z.object({
   baseSources: z.record(z.string(), z.string()), baseProducts: z.array(productSchema),

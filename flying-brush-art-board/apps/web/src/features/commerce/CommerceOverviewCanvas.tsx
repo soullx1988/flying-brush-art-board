@@ -1,3 +1,4 @@
+import { productPlacement } from './commerce-catalog'
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { HTMLContainer, useValue, type Editor, type TLGeoShape, type TLShapeId, type TLStore } from 'tldraw'
 import { Button, Drawer, Input, Select, Tag, toast } from '@ttqtt/liquid-glass-react'
@@ -53,7 +54,7 @@ export function CommerceOverviewProvider({ data, error, store, editor, canEdit, 
         {error ? <Tag color="warning">引用未更新，当前为上次读取值</Tag> : null}
         {panel?.kind === 'design' ? design ? <CommerceDesignEditor key={panel.shapeId} value={pickDesign(design)} onSave={save} /> : <p>原设计已移除，需恢复关联。</p> : !data ? <p>{error || '正在读取商品与历史…'}</p> : panel?.kind === 'products' ? <OverviewProducts key={`${panel.entrance}:${panel.need ?? ''}`} data={data} entrance={panel.entrance} initialNeed={panel.need} initialQuery={panel.query} onSelect={(p, need, query) => setPanel({ kind: 'product', key: p.key, entrance: panel.entrance, query, ...(need !== 'all' ? { need } : {}) })} /> : product ? <>
           <Button size="sm" variant="ghost" onClick={() => panel?.kind==='product'&&panel.canvas ? setPanel(undefined) : setPanel({kind:'products',entrance:panel!.kind === 'product' ? panel!.entrance : 'all',...(panel?.kind === 'product' && panel.need ? {need:panel.need} : {}), ...(panel?.kind === 'product' && panel.query ? {query:panel.query} : {})})}>{panel?.kind==='product'&&panel.canvas?'← 返回商品画板':'← 返回商品清单'}</Button>
-          <div><Tag>{entranceFor(product).name}</Tag><h3>{product.title} <span>{productFacts(data, product).price}</span></h3><small>{product.channel} · {product.sku} · 配置核对 {data.created}</small></div>
+          <div><Tag>{entranceFor(product).name}</Tag><h3>{product.title} <span>{productFacts(data, product).price}</span></h3><small>{productPlacement(product)} · {product.sku} · 配置核对 {data.created}</small></div>
           {annotation?<section><Tag color="warning">{annotation.label} · {annotation.confirmed?'原因已确认':'待核验'}</Tag><p>{annotation.detail}</p></section>:null}
           {product.channel === '首充' || product.channel === '月卡' ? <strong>{product.channel === '首充' ? '分日奖励合计' : '每日奖励'}</strong> : null}
           <ProductFacts data={data} product={product} />
@@ -116,7 +117,7 @@ function OverviewProducts({ data, entrance, initialNeed, initialQuery, onSelect 
   const products=filterProducts({...data,products:entranceProducts(data,entrance)},need,'all','all',query), currentNeed=data.needs.find(n=>n.id===need)
   return <><div className="commerce-overview-filters"><Input aria-label="搜索分组商品" placeholder="找商品、资源或编号" value={query} onChange={e=>setQuery(e.currentTarget.value)}/><Select aria-label="共同需求" value={need} onChange={setNeed} options={[{value:'all',label:'全部需求'},...data.needs.map(n=>({value:n.id,label:n.name}))]}/></div>{currentNeed ? <p>{currentNeed.question}<br/><small>按资源用途关联，购买动机待确认。</small></p> : null}
     <CommercePagedTable scope={`${entrance}:${need}:${query}`} aria-label="分组商品清单" size="sm" rowKey="key" pageSize={8} data={products} columns={[
-      {key:'name',title:'商品 / 入口',width:'29%',render:p=><div><strong>{p.title}</strong><br/><small>{entranceFor(p).name} · {p.channel} · {p.sku}</small></div>},
+      {key:'name',title:'商品 / 入口',width:'29%',render:p=><div><strong>{p.title}</strong><br/><small>{entranceFor(p).name} · {productPlacement(p)} · {p.sku}</small></div>},
       {key:'reward',title:'奖励',width:'34%',render:p=><div className="commerce-overview-list-rewards">{productFacts(data,p).rewards.slice(0,3).map(r=><span key={r.id}><GameItemIcon evidence={data.evidence} id={r.id} name={r.name}/>{r.name} × {r.n}</span>)}{productFacts(data,p).rewards.length>3?<small>更多见详情</small>:null}</div>},
       {key:'price',title:'价格',render:p=>productFacts(data,p).price},
       {key:'open',title:'',render:p=><Button size="sm" variant="ghost" aria-label={`查看商品 ${p.key}`} onClick={()=>onSelect(p,need,query)}>查看 →</Button>},

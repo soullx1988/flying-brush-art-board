@@ -1,3 +1,4 @@
+import { productPlacement } from './commerce-catalog'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { GeoShapeUtil, Group2d, HTMLContainer, Rectangle2d, useValue, type Editor, type TLGeoShape, type TLShapeId, type TLStore } from 'tldraw'
 import { Button, Drawer, Tag, toast } from '@ttqtt/liquid-glass-react'
@@ -81,7 +82,7 @@ export function CommerceDesignCanvas({ sourceBoardId, loadSource, store, editorR
           {card.kind === 'validation' ? <div className="design-map-question"><Tag color="warning">效果待验证</Tag><h3>{design?.title ?? '关联设计已移除'}</h3><p>{design?.measure || '验证目标待补'}</p><p>{card.theme === 'first' ? '缺曝光、分日领奖、奖励使用及购后推进记录。' : '缺逐日领取、资源使用及购后持续游玩记录。'}</p></div> : null}
           {products.length !== card.productKeys.length ? <Tag color="warning">部分商品引用已失效，请核对来源</Tag> : null}
           {products.map(product => <section key={product.key} className="design-map-product-detail"><h3>{product.title} <span>{product.price}</span></h3>
-            {card.kind === 'implementation' ? <><small>{data.created} 配置 · {product.channel} · {product.sku}</small><RewardList data={data} product={product} /><p>{product.limit}</p><p>{product.note}</p><GamePlacement evidence={data.evidence} product={product} />{product.board && onOpenSource ? <Button variant="ghost" size="sm" onClick={() => onOpenSource(product.board!.id)}>原设计资料 ↗</Button> : null}</> : <><ProductLedger data={data} product={product} group="all" /><details><summary>全期商品统计（含代金券订单）</summary><TestProductResults data={data} product={product} group="all" /></details></>}
+            {card.kind === 'implementation' ? <><small>{data.created} 配置 · {productPlacement(product)} · {product.sku}</small><RewardList data={data} product={product} /><p>{product.limit}</p><p>{product.note}</p><GamePlacement evidence={data.evidence} product={product} />{product.board && onOpenSource ? <Button variant="ghost" size="sm" onClick={() => onOpenSource(product.board!.id)}>原设计资料 ↗</Button> : null}</> : <><ProductLedger data={data} product={product} group="all" /><details><summary>全期商品统计（含代金券订单）</summary><TestProductResults data={data} product={product} group="all" /></details></>}
           </section>)}
         </>}
       </div> : null}

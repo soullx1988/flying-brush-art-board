@@ -75,10 +75,7 @@ def pool_price(row,names):
     return resource_price(cost,names)
 
 
-def run(a):
-    before=read(a.dataset); data=copy.deepcopy(before); bundle=read(a.bundle)
-    for s in data['sources'].values():
-        if source(s['path'])['sha256']!=s['sha256']: raise ValueError('Source changed: '+s['path'])
+def expected_products(data):
     load=lambda name:read(data['sources'][name]['path'])
     names={x['id']:x['name'] for x in load('tables_sysitems_tbitems')}
     recharge={x['id']:x for x in load('tables_sysrecharge_tbrechargeconfig')}
@@ -115,6 +112,14 @@ def run(a):
             if x.get(field): expected[f"pass:{x['id']}:{field}"]={'price':cash_price(x[field]),'rewards':rewards([r for n in x['model'] for r in n.get(rw,[])],names)}
     for table,prefix,rw in [('tables_sysfund_tbfund','fund','premium_reward'),('tables_syssignin_tbweeklysignin','week','pay_reward')]:
         for x in load(table):expected[f"{prefix}:{x['id']}"]={'price':cash_price(x['recharge_id']),'rewards':rewards([r for n in x['model'] for r in n.get(rw,[])],names)}
+    return expected,price_rules,recharge,gifts,names
+
+
+def run(a):
+    before=read(a.dataset); data=copy.deepcopy(before); bundle=read(a.bundle)
+    for s in data['sources'].values():
+        if source(s['path'])['sha256']!=s['sha256']: raise ValueError('Source changed: '+s['path'])
+    expected,price_rules,recharge,gifts,names=expected_products(data)
     modifications=[]
     for p in data['products']:
         if p['status']!='defined': continue

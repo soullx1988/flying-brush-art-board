@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createBoardStore, loadSnapshotIntoStore } from '@infinite-board/tldraw-adapter'
 import type { TLGeoShape, TLPageId } from 'tldraw'
 import type { CommerceDataset, CommerceProduct } from './commerce-data'
-import { growPriceCard, openPriceChain, PRICE_CHAIN_PAGE, priceChainRecords, priceLink, priceNumber, priceProducts, rechargeBasis, selectedQuantity, type PriceSelection } from './item-price-chain'
+import { growPriceCard, openPriceChain, PRICE_CHAIN_PAGE, priceChainRecords, priceLink, priceNumber, priceProducts, readPriceSelection, rechargeBasis, selectedQuantity, type PriceSelection } from './item-price-chain'
 
 const reward = (id = 1, n = 20) => ({ id, n, name: id === 1 ? '测试券' : '钻石' })
 const product: CommerceProduct = { key: 'daily', sku: '1', title: '日礼包', channel: '日礼包', kind: 'diamond', price: '480 钻石', rewards: [reward()], limit: '2次 / 日', note: '', source: 's', status: 'defined', needs: ['hero'] }
@@ -47,6 +47,18 @@ describe('item → merchandise → price chain', () => {
     expect(priceProducts(data, { ...selection, kind: 'cash' }).map(p => p.key)).toEqual(['cash'])
     expect(priceProducts(data, { ...selection, channel: '日礼包', kind: 'other' }).map(p => p.key)).toEqual(['free'])
     expect(priceProducts(data, { ...selection, itemId: 999 })).toEqual([])
+  })
+  it('includes every acquisition route by default and can select a concrete exchange shop without changing its commerce channel', () => {
+    const exchange = { ...product, key: 'exchange:6:603', channel: '资源兑换商店', kind: 'resource' as const, price: '1000 星辰', placement: { name: '星辰商店', path: '商店集合 → 星辰商店', source: 'client' } }
+    const sources = { ...data, products: [...data.products, exchange, { ...exchange, key: 'exchange:5:502', placement: { ...exchange.placement, name: '星火秘宝商店' }, price: '6 永恒琥珀' }] }
+    const s = readPriceSelection({ meta: { itemPriceSelection: { itemId: 1 } } })!
+    expect(s.kind).toBe('all')
+    expect(new Set(priceProducts(sources, s).map(p => p.key))).toEqual(new Set(['daily', 'cash', 'free', 'exchange:6:603', 'exchange:5:502']))
+    expect(priceProducts(sources, { ...s, channel: '星辰商店' }).map(p => p.key)).toEqual(['exchange:6:603'])
+    expect(priceProducts(sources, { ...s, channel: '资源兑换商店' })).toHaveLength(2)
+    expect(priceProducts(sources, { ...s, kind: 'resource' })).toHaveLength(2)
+    expect(priceLink(sources, exchange)).toMatchObject({ cash: undefined, diamonds: [] })
+    expect(readPriceSelection({ meta: { itemPriceSelection: { ...s, kind: 'paid' } } })?.kind).toBe('paid')
   })
   it('stores only identities and bindings, with all visible cards separated', () => {
     const records = priceChainRecords(data, selection), cards = records.filter(r => r.type === 'geo') as unknown as TLGeoShape[]

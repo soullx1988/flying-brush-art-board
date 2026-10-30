@@ -50,3 +50,7 @@
 .item-price-reference { color:#44678b; font-size:16px; }
 .item-price-tier { border-top:1px solid var(--app-border); padding-top:6px; font-size:11px; }
 .item-price-warning { font-size:11px; color:#90691e; }
+
+.item-price-entries { display:flex; flex-wrap:wrap; gap:2px 6px; }
+.item-price-entries > small { width:100%; }
+.item-price-entries > button { white-space:normal; text-align:left; height:auto; min-height:28px; }

@@ -18,6 +18,12 @@ describe('commerce overview data', () => {
     expect(filterProducts(data, 'recruit', 'diamond', '日礼包', 'diamond:1').map(p => p.key)).toEqual(['diamond:1'])
     expect(filterProducts(data, 'unknown', 'cash', 'all', '')).toEqual([])
   })
+  it('preserves and searches concrete shop names while keeping the original commerce channel', () => {
+    const p = { ...product('exchange:6:603', 'resource'), channel: '资源兑换商店', placement: { name: '星辰商店', path: '商店集合 → 星辰商店', source: 'client' } }
+    const next = readCommerceDataset({ commerceOverview: { version: 1, dataset: { ...data, products: [p] } } })!
+    expect(filterProducts(next, 'all', 'all', 'all', '星辰商店')).toEqual([p])
+    expect(filterProducts(next, 'all', 'resource', '资源兑换商店', '')).toEqual([p])
+  })
   it('does not treat unclassified products or general currency as a common player need', () => {
     expect(relatedProducts(data, data.products[2]!)).toEqual([])
     const genericReward = { id: 300003, name: '钻石', n: 10 }
