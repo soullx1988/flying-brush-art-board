@@ -98,8 +98,10 @@ def item_icons(client, used):
         p=item_root/(name+'.plist')
         atlases.append((p,plistlib.loads(p.read_bytes())['frames']))
     items={x['id']:x for x in read(client/'Lucky/assets/AssetsPackage/Datas/tables_sysitems_tbitems.json')}
+    fashion_path=client/'Lucky/assets/AssetsPackage/Datas/tables_sysplayer_tbplayerfashion.json'
+    fashions={x['id']:x for x in read(fashion_path)} if fashion_path.exists() else {}
     for item_id in sorted(used):
-        icon=items.get(item_id,{}).get('icon','')
+        icon=items.get(item_id,{}).get('icon') or fashions.get(item_id,{}).get('icon','')
         if not icon:
             continue
         matched=False
@@ -113,6 +115,8 @@ def item_icons(client, used):
             break
         if not matched:
             p=item_root/'item_scattered'/f'item_{icon}.png'
+            if not p.is_file():
+                p=client/'fgui/LuckFGUI/LuckFGUI/assets/Item/img'/f'item_{icon}.png'
             if p.is_file():
                 sha=asset(p);info=assets[sha]
                 icons[str(item_id)]={'asset':sha,'x':0,'y':0,'w':info['width'],'h':info['height'],'rotated':False}

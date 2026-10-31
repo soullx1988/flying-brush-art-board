@@ -54,7 +54,7 @@ def pricing_reviews(result, items, drops, prices, products):
                 parents.setdefault(child["id"], []).append((parent, price, pool))
     groups = {}
     for item in result:
-        if item["basePrice"] is not None:
+        if item["basePrice"] is not None or item.get('appearance'):
             continue
         item_id = item["id"]
         candidate = parents.get(item_id, [])
@@ -103,11 +103,33 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
     functions = {r["id"]: r for r in load("tables_sysfunction_tbfunctionlist.json")}
     switches = {r["id"]: r["isOpen"] for r in load("tables_sysfunction_tbfunctionswitch.json")}
     exchange = load("tables_sysshop_tbshopexchange.json")
+    spec = importlib.util.spec_from_file_location('item_appearances', Path(__file__).with_name('item-appearances.py'))
+    appearance_reader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(appearance_reader)
+    fashions = load('tables_sysplayer_tbplayerfashion.json') if (root / 'tables_sysplayer_tbplayerfashion.json').exists() else []
+    skins = load('tables_sysheros_tbheroskins.json') if (root / 'tables_sysheros_tbheroskins.json').exists() else []
+    appearance = appearance_reader.appearances(items, fashions, skins)
+    commands = {r['id']: r for r in load('tables_syscommands_tbcommand.json')} if (root / 'tables_syscommands_tbcommand.json').exists() else {}
+    for item_id, a in appearance.items():
+        if not a['source']:
+            a['source'] = '、'.join(dict.fromkeys(commands[c]['name'] for c in items.get(item_id, {}).get('source', []) if c in commands))
     wanted = {r["id"] for p in products for r in p["rewards"] + p.get("extraRewards", [])}
+    wanted.update(appearance)
     # Include currencies spent by the same catalog, even when none of its bundles grants them.
     wanted.update(r["cost"]["id"] for group in exchange for r in group["line"] if r.get("cost") and any(p["key"] == f'exchange:{group["type"]}:{r["item_id"]}' for p in products))
     wanted.update([300001, 300003])
+    aliases = {alias: key for key, value in appearance.items() for alias in value['itemIds']}
+    wanted = {aliases.get(i, i) for i in wanted}
     candidates = {i: [] for i in wanted}
+    appearance_refs = {i: [] for i in appearance}
+    # These are configuration grants, not proof of deployment or successful claims.
+    for table in ['tables_sysactivity_tbactivityleaderboard.json', 'tables_sysactivity_tbactivitymail.json',
+                  'tables_sysactivity_tbactivitysignin.json', 'tables_sysactivity_tbdrinkgift.json',
+                  'tables_sysactivity_tbsparksgather.json', 'tables_sysarena_tbarenarankreward.json',
+                  'tables_sysrecharge_tbrechargecumulative.json']:
+        if (root / table).exists():
+            for item_id, path in appearance_reader.reward_references(load(table), aliases):
+                appearance_refs[aliases[item_id]].append(f'{table} / {path} → 道具 {item_id}')
     # Follow Drop.WeightDrop.DropID, not an item ID. Keep candidate contents
     # separate from direct merchandise rewards and never infer a base value.
     pools = {d['id']: d for d in drops}
@@ -137,6 +159,7 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
     mission_order = {m["missionID"]: m["missionLevel"] for m in missions if 100000 <= m["missionID"] < 200000}
 
     def add(item_id, order, label, source, kind="progress"):
+        item_id = aliases.get(item_id, item_id)
         if item_id in candidates:
             candidates[item_id].append({"order": order, "label": label, "source": source, "kind": kind})
 
@@ -225,21 +248,25 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
         content_rows, content_gaps = contents(int(pool_key)) if item.get('item_type') == 5 and item.get('use_value') == 1 and pool_key.isdigit() else ([], [])
         exchange_uses = [f'exchange:{group["type"]}:{r["item_id"]}' for group in exchange for r in group['line'] if (r.get('cost') or {}).get('id') == item_id and any(p['key'] == f'exchange:{group["type"]}:{r["item_id"]}' for p in products)]
         cat = item_category(item, name, bool(exchange_uses))
-        result.append({"id": item_id, "name": name, "category": cat, "description": re.sub(r"<[^>]*>", "", item.get("desc", "")),
+        a = appearance.get(item_id)
+        result.append({"id": item_id, "name": a['name'] if a else name, "category": a['kind'] if a else cat, "description": re.sub(r"<[^>]*>", "", a['description'] if a else (item.get("desc") or "")),
+            **({'appearance': {k: v for k, v in a.items() if k not in ('name', 'description')},
+                'family': a['kind'], 'quality': item.get('quality', 1)} if a else {}),
             **({'contents': content_rows, 'contentGaps': content_gaps} if content_rows or content_gaps else {}),
             **({'exchangeUses': exchange_uses} if exchange_uses else {}),
             **({"family": family, "quality": item["quality"]} if family else {}),
-            "basePrice": value, "priceSource": price.get("source", ""), "priceNote": price.get("note", (f"现用道具定价页没有 ID {item_id} 的对应行。" + ("表内随机宝石与具体部位宝石不是同一道具，不能直接套价。" if item.get("item_type") == 22 else "该ID也不在当前道具配置中，需先确认身份。" if not item else "需补充该道具定价行或明确名称映射。")) if commercial_workbook else "缺现用数值表的基础定价；未采用旧草案或商品成交价。"),
-            "stageId": stage, "firstPlacement": first["label"] if first else "首次投放位置待核验",
-            "placementNote": "这是已核到的配置来源。尚未穷尽引导、邮件、任务、后台活动与个性化条件，不能据此断言全游戏最早获得时间。" if first else "缺少可定位到关卡或时间的有效奖励、商店或活动开放条件。",
-            "placementSources": list(dict.fromkeys(c["source"] for c in candidate))})
+            "basePrice": value, "priceSource": price.get("source", ""), "priceNote": '无定价：现用道具定价页未找到对应基础价；不代表免费或价值为零。' if a and value is None else price.get("note", (f"现用道具定价页没有 ID {item_id} 的对应行。" + ("表内随机宝石与具体部位宝石不是同一道具，不能直接套价。" if item.get("item_type") == 22 else "该ID也不在当前道具配置中，需先确认身份。" if not item else "需补充该道具定价行或明确名称映射。")) if commercial_workbook else "缺现用数值表的基础定价；未采用旧草案或商品成交价。"),
+            "stageId": 'conditional' if not first and a and a['source'] else stage,
+            "firstPlacement": first["label"] if first else (a['source'] + ' · 配置线索' if a and a['source'] else "首次投放位置待核验"),
+            "placementNote": "这是已核到的配置来源。尚未穷尽引导、邮件、任务、后台活动与个性化条件，不能据此断言全游戏最早获得时间。" if first else ('仅有获得入口线索；活动开启时间、条件与实际领取待核验。' if a and a['source'] else "缺少可定位到关卡或时间的有效奖励、商店或活动开放条件。"),
+            "placementSources": list(dict.fromkeys([c["source"] for c in candidate] + ([a['configSource'], *appearance_refs[item_id], *[f'tables_syscommands_tbcommand.json / {c}' for c in item.get('source', []) if c in commands]] if a else [])))})
     reviews = pricing_reviews(result, items, drops, price_data, products)
     if commercial_workbook and audit_output:
         audit["reviewGroups"] = reviews
         audit["missingItems"] = [{"id": i["id"], "name": i["name"], "reason": i["priceNote"]} for i in result if i["basePrice"] is None]
         audit["plottedItems"] = [{"id": i["id"], "name": i["name"], "estimate": i.get("priceEstimate"), "value": i["basePrice"]} for i in result if i["basePrice"] is not None]
         Path(audit_output).write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"version": 1, "updated": datetime.now().strftime("%Y-%m-%d"), "sourceBoardId": source_board_id, "priceUnit": "钻石", "scope": "范围为关联商品总览中的有效商品奖励、即时奖励及兑换货币。基础价直接读取《商业化产出》道具定价页的钻石价值列；折扣留在商品总览。投放暂为已核到最早配置来源，未确认全游戏首次。", "sources": sources, "stages": stages, "items": result, "reviewGroups": reviews}
+    return {"version": 1, "updated": datetime.now().strftime("%Y-%m-%d"), "sourceBoardId": source_board_id, "priceUnit": "钻石", "scope": "关联商品奖励、即时奖励、兑换货币，以及当前配置的非默认头像框、聊天框、称号和可见皮肤。基础价直接读取《商业化产出》道具定价页；外观缺价标无定价。配置存在不代表当前开放；历史领取情况仍需流水核验。", "sources": sources, "stages": stages, "items": result, "reviewGroups": reviews}
 
 
 if __name__ == "__main__":

@@ -10,6 +10,21 @@ spec.loader.exec_module(builder)
 
 
 class Completeness(unittest.TestCase):
+    def test_appearance_identity_dedupes_inventory_aliases_and_excludes_defaults(self):
+        spec = importlib.util.spec_from_file_location('appearances', Path(__file__).with_name('item-appearances.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        items = {30: dict(id=30, item_type=13, use_detail_value='32'), 32: dict(id=32, item_type=21, use_detail_value='32'),
+                 7: dict(id=7, name='武器外观', item_type=27, refID=11), 43: dict(id=43, name='废弃别名', item_type=27, refID=11)}
+        fashions = [dict(id=1, type=1, unlock=1, name='默认'), dict(id=32, type=1, unlock=0, name='头像框', expireTime=7, attrs=[])]
+        skins = [dict(id=11, name='武器外观', type=3, noShow=0, unlockType=2, rank=[dict(unlockCost=[dict(id=7, num=1)], attr=[dict(type=3, value=100)])])]
+        result = module.appearances(items, fashions, skins)
+        self.assertEqual(set(result), {30, 7})
+        self.assertEqual(result[30]['itemIds'], [30, 32])
+        self.assertEqual(result[7]['kind'], '武器皮肤')
+        self.assertTrue(result[7]['hasAttributes'])
+        self.assertEqual(module.reward_references([dict(id=30, cost=dict(id=30, num=1), rewards=[dict(id=32, num=1)])], {30, 32}), [(32, '[0].rewards[0]')])
+
     def test_classification_uses_engine_identity_and_exchange_purpose(self):
         cases = [({'item_type': 33}, '火焰法杖', False, '武器与碎片'),
                  ({'item_type': 18}, '赛博量子球碎片', False, '武器与碎片'),

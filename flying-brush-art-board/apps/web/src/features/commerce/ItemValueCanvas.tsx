@@ -11,7 +11,7 @@ import { productPlacement } from './commerce-catalog'
 import { currentPricePage, focusPriceChain, growPriceCard, openPriceChain, pricePageSize, priceLink, priceProducts, readPriceNode, readPriceSelection, selectedQuantity, type PriceSelection } from './item-price-chain'
 import { productHistorySummary } from './commerce-product-graph'
 import { ItemPriceDrawer, ItemPriceProductDetail } from './ItemPriceDrawer'
-import { focusValueItem, focusItemValueOverview, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueGroups, readItemValueMap, readItemValueNode, readItemValueGroup, toggleItemValueGroup, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
+import { focusValueItem, focusItemValueOverview, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueGroups, isPlottedItem, needsBasePrice, readItemValueMap, readItemValueNode, readItemValueGroup, toggleItemValueGroup, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
 import './item-value-map.css'
 
 const Context = createContext<{ map?: ItemValueDataset | undefined; catalog?: CommerceDataset | undefined; open(id: number): void; chain(id: number, channel?: string): void; product(key: string): void; grow(id: TLShapeId, height: number): void; toggle(id: TLShapeId): void }>({ open: () => undefined, chain: () => undefined, product: () => undefined, grow: () => undefined, toggle: () => undefined })
@@ -77,14 +77,15 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     if (group?.expanded) {
       const shapes = ed.store.query.records('shape').get().filter(s => s.id === id || s.meta.itemValueGroupId === id)
       const bounds = shapes.flatMap(s => ed.getShapePageBounds(s.id) ?? [])
-      if (bounds.length) { const x = Math.min(...bounds.map(b => b.x)), y = Math.min(...bounds.map(b => b.y)); ed.zoomToBounds(new Box(x - 40, y - 40, Math.max(...bounds.map(b => b.maxX)) - x + 80, Math.max(...bounds.map(b => b.maxY)) - y + 80), { targetZoom: 1, animation: { duration: 200 } }) }
+      if (bounds.length) { const x = Math.min(...bounds.map(b => b.x)), y = Math.min(...bounds.map(b => b.y)); ed.zoomToBounds(new Box(x - 40, y - 40, Math.max(...bounds.map(b => b.maxX)) - x + 80, Math.min(720, Math.max(...bounds.map(b => b.maxY)) - y + 80)), { targetZoom: 1, animation: { duration: 200 } }) }
     }
   } }}>
     {map ? <div className="item-value-toolbar" role="region" aria-label="道具价值投放导航">
       <strong>道具价值投放总览</strong>
       <Button size="sm" variant="ghost" onClick={() => navigate('value')}>分类总览</Button>
       <Button size="sm" variant="ghost" disabled={!catalog} onClick={() => chain(readPriceSelection(currentPricePage(store))?.itemId ?? (map.items.some(i => i.id === 300004) ? 300004 : map.items[0]!.id))}>查看商品售价</Button>
-      <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(i => i.basePrice === null).length}</Button>
+      {map.items.some(i => i.appearance) ? <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; const item = map.items.find(i => i.appearance?.kind === '头像框'); if (!ed || !item) return; const group = ed.store.query.records('shape').get().find(s => readItemValueGroup(s)?.itemIds.includes(item.id)); if (group) { ed.setCurrentPage(group.parentId as import('tldraw').TLPageId); ed.selectNone(); ed.zoomToBounds(new Box(group.x - 536, group.y - 100, 1340, 560), { targetZoom: 1, animation: { duration: 200 } }) } else focusValueItem(ed, item.id) }}>外观与称号</Button> : null}
+      <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(needsBasePrice).length}</Button>
       <Button size="sm" variant="ghost" onClick={() => setCoverageOpen(true)}>收录与缺项</Button>
       {!priceSelection ? <><Select aria-label="定位同类" placeholder="定位同类" value="" options={itemValueGroups(map).map(g => ({ value: g.key, label: `${g.label} · ${g.items.length}项 · ${itemPriceLabel(map, g.items[0]!)}` }))} onChange={key => { const ed = editorRef.current; if (!ed) return; const shape = ed.store.query.records('shape').get().find(s => readItemValueGroup(s)?.key === key); if (!shape) return; ed.setCurrentPage(shape.parentId as import('tldraw').TLPageId); ed.selectNone(); const b = ed.getShapePageBounds(shape.id); if (b) ed.zoomToBounds(new Box(b.x - 160, b.y - 120, b.w + 320, b.h + 240), { targetZoom: 1, animation: { duration: 200 } }) }} />
       <Select aria-label="定位道具" placeholder="定位道具" value="" options={map.items.map(i => ({ value: String(i.id), label: `${i.name} · ${i.id}` }))} onChange={id => { const ed = editorRef.current; if (ed && !focusValueItem(ed, Number(id))) toast.error('道具图标已被移除，请整理坐标恢复') }} /></> : null}
@@ -101,7 +102,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
           updateItemValueData(store, next, ed); toast.success('基础价与投放资料已更新；商品总览保持原样')
         } catch (e) { toast.error(e instanceof Error ? e.message : '资料格式不正确') }
       }} />
-      <small role="status">{error || `${map.items.filter(i => i.basePrice !== null).length} 项已入图 · ${map.items.length} 项收录 · ${map.updated}`}</small>
+      <small role="status">{error || `${map.items.filter(isPlottedItem).length} 项已入图 · ${map.items.length} 项收录 · ${map.updated}`}</small>
     </div> : null}
     {priceSelection && map && catalog ? (() => {
       const all = priceProducts(catalog, { ...priceSelection, kind: 'all', channel: 'all' }), products = priceProducts(catalog, priceSelection), pageSize = pricePageSize(priceSelection)
@@ -122,9 +123,11 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     <div onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
       <Drawer open={coverageOpen} onOpenChange={setCoverageOpen} placement="right" size={580} title="收录与缺项">
         {map ? <div className="item-value-detail">
-          <section><h3>已收录 {map.items.length} 种道具与货币</h3><p>{map.items.filter(i => i.basePrice !== null).length} 项有基础价；{map.items.filter(i => i.approvedPrice).length} 项采用你已确认的补充定价。</p><p>商品奖励与即时奖励、兑换消耗货币均在范围内。随机道具的候选内容放在该道具详情中，不算必得奖励。</p></section>
+          <section><h3>已收录 {map.items.length} 种道具与货币</h3><p>{map.items.filter(i => i.basePrice !== null).length} 项有基础价；{map.items.filter(i => i.approvedPrice).length} 项采用你已确认的补充定价。</p><p>{map.scope}</p></section>
+          {map.coverageNotes?.length ? <section><h3>待核验内容</h3>{map.coverageNotes.map(note => <p key={note}>{note}</p>)}</section> : null}
           {[
-            { title: '基础价待补', items: map.items.filter(i => i.basePrice === null), note: '缺现用定价行；身份不明的道具需先确认 ID。' },
+            { title: '无定价 · 外观与称号', items: map.items.filter(i => i.appearance && i.basePrice === null), note: '已入总览；未以零价或免费代替。' },
+            { title: '基础价待补', items: map.items.filter(needsBasePrice), note: '缺现用定价行；身份不明的道具需先确认 ID。' },
             { title: '名称待核对', items: map.items.filter(i => map.reviewGroups?.some(g => g.kind === 'name' && g.itemIds.includes(i.id))), note: '同 ID 的工程名称与定价表名称不一致。' },
             { title: '图标待补', items: catalog ? map.items.filter(i => !catalog.evidence?.icons?.[i.id]) : [], note: catalog ? '当前游戏图标尚未匹配。' : '商品资料读取后检查图标。' },
             { title: '首次时间待核验', items: map.items.filter(i => ['unknown', 'conditional'].includes(i.stageId)), note: `${map.items.filter(i => i.stageId === 'conditional').length} 项只有入口／条件线索，${map.items.filter(i => i.stageId === 'unknown').length} 项尚未定位到首次节点。其余也仅是已核到的配置来源。` },
@@ -166,7 +169,7 @@ export function ItemValueShape({ shape }: { shape: TLGeoShape }) {
   const item = map?.items.find(i => i.id === node.itemId)
   return <HTMLContainer><article className="item-value-node" style={{ width: shape.props.w, height: shape.props.h }} aria-label={`道具 ${item?.name ?? node.itemId}`}>
     <div className="item-value-node-main">{catalog?.evidence?.icons?.[node.itemId] ? <GameItemIcon evidence={catalog.evidence} id={node.itemId} name={item?.name ?? String(node.itemId)} /> : <small className="item-value-icon-pending">图标<br />待补</small>}<span>{item?.name ?? `道具 ${node.itemId}`}</span></div>
-    <div className="item-value-node-foot"><strong>{map && item ? itemPriceLabel(map, item) : '读取中…'}</strong><Button variant="ghost" size="sm" aria-label={`查看${item?.name ?? node.itemId}的商品售价`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); chain(node.itemId) }}>售价 →</Button></div>
+    <div className="item-value-node-foot"><strong>{map && item ? itemPriceLabel(map, item) : '读取中…'}</strong><Button variant="ghost" size="sm" aria-label={`查看${item?.name ?? node.itemId}的商品售价`} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); chain(node.itemId) }}>{item?.appearance ? '详情 →' : '售价 →'}</Button></div>
   </article></HTMLContainer>
 }
 
@@ -182,7 +185,7 @@ export function ItemValueGroupShape({ shape }: { shape: TLGeoShape }) {
   return <HTMLContainer><article className="item-value-node item-value-group" style={{ width: shape.props.w, height: shape.props.h }} aria-label={`同类 ${group.label}`}>
     <header><strong>{group.label}</strong></header>
     <div className="item-value-group-icons">{items.slice(0, 3).map(i => <span key={i.id} title={i.name}>{catalog?.evidence?.icons?.[i.id] ? <GameItemIcon evidence={catalog.evidence} id={i.id} name={i.name} /> : <small className="item-value-icon-pending">图标待补</small>}</span>)}{items.length > 3 ? <span aria-label={`另外 ${items.length - 3} 项`}>…</span> : null}<small>{items.length}项</small></div>
-    <div className="item-value-node-foot"><strong>{map && items[0] ? `${itemPriceLabel(map, items[0])}/个` : '读取中…'}</strong><Button variant="ghost" size="sm" aria-label={`${group.expanded ? '收起' : '展开'}${group.label}（${items.length}项）`} aria-expanded={group.expanded} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); toggle(shape.id) }}>{group.expanded ? '收起' : '展开'}</Button></div>
+    <div className="item-value-node-foot"><strong>{map && items[0] ? `${itemPriceLabel(map, items[0])}${items[0].basePrice === null ? '' : '/个'}` : '读取中…'}</strong><Button variant="ghost" size="sm" aria-label={`${group.expanded ? '收起' : '展开'}${group.label}（${items.length}项）`} aria-expanded={group.expanded} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); toggle(shape.id) }}>{group.expanded ? '收起' : '展开'}</Button></div>
   </article></HTMLContainer>
 }
 

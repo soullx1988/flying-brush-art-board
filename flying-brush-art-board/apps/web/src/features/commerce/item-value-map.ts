@@ -7,11 +7,13 @@ const sourceSchema = z.object({ path: z.string(), sha256: z.string(), label: z.s
 export const itemValueDatasetSchema = z.object({
   version: z.literal(1), updated: z.string(), sourceBoardId: z.string().min(1),
   priceUnit: z.string().min(1), scope: z.string(), sources: z.array(sourceSchema),
+  coverageNotes: z.array(z.string()).optional(),
   stages: z.array(z.object({ id: z.string(), label: z.string(), order: z.number(), kind: z.enum(['progress', 'conditional', 'unknown']) })),
   reviewGroups: z.array(z.object({ id: z.string(), kind: z.enum(['price', 'name']), title: z.string(), itemIds: z.array(z.number().int()).min(1), question: z.string(), context: z.string(), sources: z.array(z.string()) })).optional(),
   items: z.array(z.object({
     id: z.number().int(), name: z.string(), category: z.string(), description: z.string(),
     family: z.string().optional(), quality: z.number().int().optional(),
+    appearance: z.object({ configId: z.number().int(), kind: z.string(), itemIds: z.array(z.number().int()), duration: z.string(), source: z.string(), hasAttributes: z.boolean(), attributes: z.array(z.object({ type: z.number(), value: z.number() })), configSource: z.string() }).optional(),
     approvedPrice: z.object({ value: z.number().finite().nonnegative(), source: z.string().min(1) }).optional(),
     basePrice: z.number().finite().nonnegative().nullable(), priceSource: z.string(), priceNote: z.string(),
     priceEstimate: z.object({ min: z.number().finite().nonnegative(), max: z.number().finite().nonnegative() }).optional(),
@@ -55,20 +57,22 @@ export function itemValueVisibility(shape: TLShape, editor: Editor): 'hidden' | 
   return group && !group.expanded ? 'hidden' : 'inherit'
 }
 const qualities = ['', '白色', '绿色', '蓝色', '紫色', '金色', '红色', '彩紫', '彩金', '彩红']
-const categoryOrder = ['货币与积分', '抽取与次数', '英雄与碎片', '武器与碎片', '宝石与原石', '魔灵', '养成材料', '皮肤']
+const categoryOrder = ['货币与积分', '抽取与次数', '英雄与碎片', '武器与碎片', '宝石与原石', '魔灵', '养成材料', '皮肤', '英雄皮肤', '武器皮肤', '头像框', '聊天框', '称号']
+export const needsBasePrice = (i: ValueItem) => i.basePrice === null && !i.appearance
+export const isPlottedItem = (i: ValueItem) => !needsBasePrice(i)
 export function itemValueColumns(data: ItemValueDataset) {
-  const present = new Set(data.items.filter(i => i.basePrice !== null).map(i => i.category))
+  const present = new Set(data.items.filter(isPlottedItem).map(i => i.category))
   return [...categoryOrder.filter(c => present.has(c)), ...[...present].filter(c => !categoryOrder.includes(c)).sort((a, b) => a.localeCompare(b, 'zh-CN'))]
 }
 export function itemValueGroups(data: ItemValueDataset) {
   const buckets = new Map<string, ValueItem[]>()
   for (const i of data.items) {
-    if (!i.family || !i.quality || i.basePrice === null) continue
-    const key = `${i.family}-${i.quality}-${i.basePrice}-${i.category}`
+    if (!i.family || !i.quality || needsBasePrice(i)) continue
+    const key = i.appearance && i.basePrice === null ? `unpriced-${i.category}` : `${i.family}-${i.quality}-${i.basePrice}-${i.category}`
     buckets.set(key, [...(buckets.get(key) ?? []), i])
   }
   return [...buckets].filter(([, items]) => items.length >= 2).map(([key, items]) => ({ key,
-    label: `${qualities[items[0]!.quality!] ?? `品质${items[0]!.quality}`}·${items[0]!.family}`, items: items.sort((a, b) => a.id - b.id) }))
+    label: items[0]!.basePrice === null ? items[0]!.category : `${qualities[items[0]!.quality!] ?? `品质${items[0]!.quality}`}·${items[0]!.family}`, items: items.sort((a, b) => a.id - b.id) }))
 }
 export function keepApprovedPrices(before: ItemValueDataset, next: ItemValueDataset): ItemValueDataset {
   const items = next.items.map(i => {
@@ -78,11 +82,11 @@ export function keepApprovedPrices(before: ItemValueDataset, next: ItemValueData
     return { ...i, approvedPrice: approval, basePrice: approval.value, priceSource: approval.source,
       priceNote: i.basePrice !== null && i.basePrice !== approval.value ? `已确认 ${approval.value} 钻；新资料为 ${i.basePrice} 钻，源表差异待核对。` : '按用户已确认的同品质统一定价；正式定价表尚未收录这些道具。' }
   })
-  return { ...next, items, ...(next.reviewGroups ? { reviewGroups: next.reviewGroups.map(g => g.kind === 'price' ? { ...g, itemIds: g.itemIds.filter(id => items.find(i => i.id === id)?.basePrice === null) } : g).filter(g => g.itemIds.length) } : {}) }
+  return { ...next, ...(next.coverageNotes ?? before.coverageNotes ? { coverageNotes: next.coverageNotes ?? before.coverageNotes } : {}), items, ...(next.reviewGroups ? { reviewGroups: next.reviewGroups.map(g => g.kind === 'price' ? { ...g, itemIds: g.itemIds.filter(id => { const item = items.find(i => i.id === id); return item && needsBasePrice(item) }) } : g).filter(g => g.itemIds.length) } : {}) }
 }
 export function itemPriceLabel(d: ItemValueDataset, i: ValueItem) {
   const number = (n: number) => n.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
-  if (i.basePrice === null) return '基础价待补'
+  if (i.basePrice === null) return i.appearance ? '无定价' : '基础价待补'
   if (i.priceEstimate) return '基础价待核验'
   return `${number(i.basePrice)} ${d.priceUnit}`
 }
@@ -115,7 +119,7 @@ export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_
   const line = (id: string, x: number, y: number, w: number, h: number) => records.push({ ...shape(id, VALUE_PAGE, x, y, true), type: 'geo', props: { w, h, geo: 'rectangle', dash: 'solid', growY: 0, url: '', scale: 1, color: 'grey', labelColor: 'black', fill: 'none', size: 's', font: 'sans', align: 'start', verticalAlign: 'start', richText: toRichText('') } })
   const node = (i: ValueItem, page: TLPageId, x: number, y: number, owner?: string) => records.push({ ...shape(itemShapeId(i.id), page, x, y), type: 'geo', meta: { itemValueNode: { version: 1, itemId: i.id }, ...(owner ? { itemValueGroupId: owner } : {}) }, props: { w: page === VALUE_PAGE ? 224 : 164, h: 88, geo: 'rectangle', dash: 'solid', growY: 0, url: '', scale: 1, color: 'grey', labelColor: 'black', fill: 'solid', size: 's', font: 'sans', align: 'start', verticalAlign: 'start', richText: toRichText(`${i.name}\n${itemPriceLabel(data, i)}`) } })
   const families = itemValueGroups(data), familyByItem = new Map(families.flatMap(g => g.items.map(i => [i.id, g] as const)))
-  const plotted = data.items.filter(i => i.basePrice !== null)
+  const plotted = data.items.filter(isPlottedItem)
   const columns = itemValueColumns(data)
   const colWidth = 248, left = 185
   text('shape:iv-title', VALUE_PAGE, 0, -114, '道具价值投放总览', 900, 'xl')
@@ -126,8 +130,8 @@ export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_
     records.at(-1)!.meta = { itemValueLayout: true, itemValueColumn: category }
   })
   let y = 72
-  for (const [b, band] of bands.entries()) {
-    const groups = columns.map(category => plotted.filter(i => i.category === category && valueBand(i.basePrice!) === b).sort((a, b) => b.basePrice! - a.basePrice! || a.id - b.id))
+  for (const [b, band] of [...bands, { min: -1, label: '无定价' }].entries()) {
+    const groups = columns.map(category => plotted.filter(i => i.category === category && (i.basePrice === null ? b === bands.length : valueBand(i.basePrice) === b)).sort((a, b) => (b.basePrice ?? -1) - (a.basePrice ?? -1) || a.id - b.id))
     if (!groups.some(g => g.length)) continue
     const layouts = groups.map(items => {
       let offset = 10
@@ -165,7 +169,7 @@ export function itemValueRecords(data: ItemValueDataset, pages = { value: VALUE_
     text('shape:iv-empty', VALUE_PAGE, left, y, '基础定价尚未核验。全部道具已收录在「基础价待核验」。', 1100, 'm')
     y += 100
   }
-  const pending = data.items.filter(i => i.basePrice === null).sort((a, b) => a.category.localeCompare(b.category, 'zh-CN') || a.id - b.id)
+  const pending = data.items.filter(needsBasePrice).sort((a, b) => a.category.localeCompare(b.category, 'zh-CN') || a.id - b.id)
   const reviews = data.reviewGroups ?? []
   text('shape:iv-pending-title', PENDING_PAGE, 0, -110, `定价待处理 · ${pending.length} 个道具`, 1200, 'xl')
   text('shape:iv-pending-note', PENDING_PAGE, 0, -40, reviews.length ? `${reviews.filter(g => g.kind === 'price').length} 项定价事项 · ${reviews.filter(g => g.kind === 'name').length} 项名称核对。参考价尚未写成这些道具的定价。` : '基础价缺失时不按零元绘图。点开道具查看缺项、投放条件与来源。', 1600)

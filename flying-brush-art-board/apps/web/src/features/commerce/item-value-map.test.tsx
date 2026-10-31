@@ -20,6 +20,23 @@ const catalog: CommerceDataset = { created: '2026-10-28', scope: '', sources: { 
 ] }
 afterEach(cleanup)
 describe('item type and price map', () => {
+  it('keeps unpriced appearances visible and separate from zero prices and unresolved resources', () => {
+    const appearance = { configId: 32, kind: '头像框', itemIds: [11, 32], duration: '7 天', source: '竞技场', hasAttributes: false, attributes: [], configSource: 'fashion/32' }
+    const frame = { ...data.items[1]!, id: 11, name: '冠军头像框', category: '头像框', family: '头像框', quality: 6, appearance }
+    const map = itemValueDatasetSchema.parse({ ...data, coverageNotes: ['熔炉待核验'], items: [...data.items, frame, { ...frame, id: 12, name: '亚军头像框', quality: 5 }] })
+    const groups = itemValueGroups(map)
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.label).toBe('头像框')
+    const records = itemValueRecords(map)
+    expect(records.find(r => r.id === 'shape:item-value-11')?.parentId).toBe(VALUE_PAGE)
+    expect(records.find(r => r.id === 'shape:item-value-2')?.parentId).toBe(PENDING_PAGE)
+    expect(Number(records.find(r => r.id === 'shape:item-value-11')?.y)).toBeGreaterThan(Number(records.find(r => r.id === 'shape:item-value-3')?.y))
+    expect(itemPriceLabel(map, frame)).toBe('无定价')
+    expect(keepApprovedPrices(map, data).coverageNotes).toEqual(['熔炉待核验'])
+    render(<ItemPriceDrawer data={catalog} map={map} itemId={11} onClose={() => undefined} />)
+    expect(screen.getByRole('region', { name: '外观与称号信息' })).toHaveTextContent('7 天')
+    expect(screen.getByText('当前配置；实际开放与领取记录待核验。')).toBeInTheDocument()
+  })
   it('groups matching families and prices across time stages; preserves members through expansion', () => {
     const items = Array.from({ length: 6 }, (_, n) => ({ ...data.items[0]!, id: 20 + n, name: `武器碎片${n}`, family: '武器碎片', quality: 4 }))
     const mixed = { ...data, items: [...items, { ...items[0]!, id: 31, family: '武器' }, { ...items[0]!, id: 32, quality: 5 }, { ...items[0]!, id: 33, basePrice: 40 }, { ...items[0]!, id: 34, stageId: 'unknown' }] }
@@ -53,6 +70,13 @@ describe('item type and price map', () => {
     expect(conflict.basePrice).toBe(40)
     expect(conflict.priceNote).toContain('新资料为 99 钻')
     expect(itemValueDatasetSchema.safeParse({ ...confirmed, items: [{ ...confirmed.items[0], basePrice: 20 }] }).success).toBe(false)
+  })
+  it('resolves both inventory aliases without counting a linked product twice', () => {
+    const frame = { ...data.items[1]!, id: 11, name: '头像框', appearance: { configId: 32, kind: '头像框', itemIds: [11, 32], duration: '永久', source: '活动', hasAttributes: false, attributes: [], configSource: 'fashion/32' } }
+    const products = [{ ...catalog.products[0]!, rewards: [{ id: 11, name: '头像框', n: 1 }], extraRewards: [{ id: 32, name: '头像框', n: 1 }] }]
+    render(<ItemPriceDrawer data={{ ...catalog, products }} map={{ ...data, items: [frame] }} itemId={11} onClose={() => undefined} />)
+    expect(screen.getByText('1 项关联商品')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '关联礼包' })).toBeInTheDocument()
   })
   it('retires legacy estimates and displays only the direct base value', () => {
     const item = { ...data.items[0]!, basePrice: 30, priceEstimate: { min: 29, max: 31 } }

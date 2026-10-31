@@ -55,8 +55,10 @@ export function ItemPriceDrawer({ data, map, itemId, initialChannel = 'all', onC
   const [limit, setLimit] = useState(12)
   const content = useRef<HTMLDivElement>(null), listScroll = useRef(0), previousProduct = useRef<string | undefined>(undefined)
   const item = map.items.find(i => i.id === itemId)
-  const all = priceProducts(data, { itemId, kind: 'all', channel: 'all', offset: 0 })
-  const products = priceProducts(data, { itemId, kind, channel, offset: 0 }).filter(p => kind !== 'other' || p.kind !== 'resource')
+  const linkedIds = item?.appearance ? item.appearance.itemIds : [itemId]
+  const linkedProducts = (kind: PriceSelection['kind'], channel: string) => [...new Map(linkedIds.flatMap(id => priceProducts(data, { itemId: id, kind, channel, offset: 0 })).map(p => [p.key, p])).values()]
+  const all = linkedProducts('all', 'all')
+  const products = linkedProducts(kind, channel).filter(p => kind !== 'other' || p.kind !== 'resource')
   const selected = productKey ? all.find(p => p.key === productKey) : all.length === 1 ? all[0] : undefined
   useLayoutEffect(() => {
     if (previousProduct.current === selected?.key) return
@@ -73,10 +75,11 @@ export function ItemPriceDrawer({ data, map, itemId, initialChannel = 'all', onC
   }, [selected?.key])
   const channels = [...new Set(all.map(productPlacement))]
   const reset = () => { setKind('all'); setChannel('all'); setLimit(12) }
-  return <Drawer open onOpenChange={open => { if (!open) onClose() }} placement="right" size={620} title={`${item?.name ?? itemId} · 商品售价`}>
+  return <Drawer open onOpenChange={open => { if (!open) onClose() }} placement="right" size={620} title={`${item?.name ?? itemId} · ${item?.appearance ? '外观详情' : '商品售价'}`}>
     <div ref={content} className="item-value-detail item-price-drawer" aria-label="道具商品售价侧栏">
-      <header className="item-price-drawer-item"><GameItemIcon evidence={data.evidence} id={itemId} name={item?.name ?? String(itemId)} /><div><b>{item?.name ?? itemId}</b><small>基础价 {item ? itemPriceLabel(map, item) : '待补'} / 个</small></div><Tag>{all.length} 项关联商品</Tag></header>
+      <header className="item-price-drawer-item"><GameItemIcon evidence={data.evidence} id={itemId} name={item?.name ?? String(itemId)} /><div><b>{item?.name ?? itemId}</b><small>{item?.basePrice === null && item.appearance ? '无定价' : `基础价 ${item ? itemPriceLabel(map, item) : '待补'} / 个`}</small></div><Tag>{all.length} 项关联商品</Tag></header>
       <section aria-label="道具描述"><small>道具描述</small><p className="item-price-drawer-description">{item?.description?.trim() || '道具描述待补'}</p></section>
+      {item?.appearance ? <section aria-label="外观与称号信息"><h3>{item.appearance.kind} · {item.appearance.duration}</h3><p>{item.appearance.source || '获得入口待核验'}</p><Tag color={item.appearance.hasAttributes ? 'warning' : 'default'}>{item.appearance.hasAttributes ? '含属性或技能加成' : item.appearance.kind.includes('皮肤') ? '效果待核验' : '外观展示'}</Tag><p><small>当前配置；实际开放与领取记录待核验。</small></p><details><summary>配置与奖励出处</summary><p>{item.appearance.configSource}</p><p>{item.appearance.itemIds.length ? `关联道具 ID：${item.appearance.itemIds.join('、')}` : `外观 ID：${item.appearance.configId}；未找到对应背包道具`}</p>{item.placementSources.filter(s => s !== item.appearance!.configSource).map(s => <p key={s}>{s}</p>)}</details></section> : null}
       {item ? <details><summary>基础价与投放依据</summary><p>{item.priceNote}</p><small>{item.priceSource || '定价来源待补'}</small><p>{item.firstPlacement}</p><small>{item.placementNote}</small></details> : null}
       {selected ? <>
         {all.length > 1 ? <Button variant="ghost" size="sm" onClick={() => setProductKey(undefined)}>← 返回关联商品（{products.length} 项）</Button> : null}
@@ -89,7 +92,7 @@ export function ItemPriceDrawer({ data, map, itemId, initialChannel = 'all', onC
         </div> : null}
         <div className="item-price-drawer-count"><span role="status">{products.length} 项{products.length > limit ? ` · 已显示 ${limit} 项` : ''}</span>{kind !== 'all' || channel !== 'all' ? <Button size="sm" variant="ghost" onClick={reset}>清除筛选</Button> : null}</div>
         {products.slice(0, limit).map(p => {
-          const facts = graphFacts(data, p), quantity = selectedQuantity(data, p, itemId), history = productHistorySummary(data, p)
+          const facts = graphFacts(data, p), quantity = linkedIds.map(id => selectedQuantity(data, p, id)).reduce((sum, q) => ({ regular: sum.regular + q.regular, extra: sum.extra + q.extra }), { regular: 0, extra: 0 }), history = productHistorySummary(data, p)
           return <article key={p.key} className="item-price-drawer-product" aria-label={`${p.title} · ${p.sku}`}>
             <small>{productPlacement(p)} · {p.sku}</small>
             <header><h3>{p.title}</h3><strong>{facts.price || '价格待核验'}</strong></header>
