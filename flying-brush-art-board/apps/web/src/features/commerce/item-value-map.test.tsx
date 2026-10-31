@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createBoardStore, loadSnapshotIntoStore } from '@infinite-board/tldraw-adapter'
 import { type TLGeoShape } from 'tldraw'
-import { ItemValueCanvas, ItemPriceChainShape } from './ItemValueCanvas'
+import { ItemValueCanvas, ItemPriceChainShape, ItemValueShape } from './ItemValueCanvas'
+import { ItemPriceDrawer } from './ItemPriceDrawer'
 import { createItemValueSnapshot, focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueRecords, itemValueGroups, itemValueVisibility, keepApprovedPrices, readItemValueGroup, toggleItemValueGroup, PENDING_PAGE, readItemValueMap, readItemValueNode, updateItemValueData, valueBand, valuePages, VALUE_PAGE, type ItemValueDataset } from './item-value-map'
 import type { CommerceDataset } from './commerce-data'
 
@@ -167,5 +168,48 @@ describe('item type and price map', () => {
     await waitFor(() => expect(screen.getByText('数值表!B2')).toBeTruthy())
     expect(screen.getAllByText('第1关奖励').length).toBeGreaterThan(0)
     expect(screen.queryByText('未生效礼包')).toBeNull()
+  })
+  it('opens prices in a drawer even in read-only mode, without creating a page or changing the store', async () => {
+    const store = createBoardStore(); loadSnapshotIntoStore(store, createItemValueSnapshot(data))
+    const before = JSON.stringify(store.allRecords())
+    const loadSource = vi.fn(async () => ({ snapshot: { store: { doc: { typeName: 'document', meta: { commerceOverview: { version: 1, dataset: catalog } } } } }, revision: 1 }))
+    const shape = store.get('shape:item-value-1' as TLGeoShape['id']) as TLGeoShape
+    render(<ItemValueCanvas store={store} editorRef={{ current: undefined }} loadSource={loadSource} canEdit={() => false}><ItemValueShape shape={shape} /></ItemValueCanvas>)
+    await waitFor(() => expect(screen.getByRole('button', { name: '查看商品售价' }).hasAttribute('disabled')).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: '查看测试券的商品售价' }))
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByText('999 钻石')).toBeTruthy()
+    expect(screen.getByText('测试券 × 8')).toBeTruthy()
+    expect(screen.queryByText('未生效礼包')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^(关闭|Close)$/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(JSON.stringify(store.allRecords())).toBe(before)
+  })
+  it('compares all acquisition routes in one drawer, preserves filters when returning, and handles empty matches', async () => {
+    const many = { ...catalog, products: [catalog.products[0]!, catalog.products[1]!,
+      { ...catalog.products[0]!, key: 'cash', sku: '3', title: '现金礼包', kind: 'cash' as const, price: '¥6', channel: '首充' },
+      { ...catalog.products[0]!, key: 'exchange', sku: '4', title: '星辰兑换', kind: 'resource' as const, price: '1000 星辰', channel: '星辰商店' },
+    ] }
+    render(<ItemPriceDrawer data={many} map={data} itemId={1} onClose={vi.fn()} />)
+    expect(screen.getByText('3 项关联商品')).toBeTruthy()
+    fireEvent.click(screen.getByRole('combobox', { name: '侧栏支付方式' }))
+    fireEvent.click(screen.getByText('资源兑换', { exact: true }))
+    expect(screen.queryByRole('article', { name: '现金礼包 · 3' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '查看星辰兑换（4）价格与历史' }))
+    expect(screen.getByText('资源兑换，不折算人民币或现金收入。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '← 返回关联商品（1 项）' }))
+    expect(screen.queryByRole('article', { name: '现金礼包 · 3' })).toBeNull()
+    fireEvent.click(screen.getByRole('combobox', { name: '侧栏支付方式' }))
+    fireEvent.click(screen.getByText('免费 / 广告等', { exact: true }))
+    expect(screen.queryByRole('article', { name: '星辰兑换 · 4' })).toBeNull()
+    fireEvent.click(screen.getByRole('combobox', { name: '侧栏支付方式' }))
+    fireEvent.click(screen.getByText('资源兑换', { exact: true }))
+    fireEvent.click(screen.getByRole('combobox', { name: '侧栏投放入口' }))
+    fireEvent.click(screen.getByText('首充', { exact: true }))
+    expect(screen.getByText('当前筛选没有匹配商品，可清除筛选查看全部。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '清除筛选' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看现金礼包（3）价格与历史' }))
+    expect(screen.getByText('人民币 ¥6 档；实际现金与代金券分开见下方历史。')).toBeTruthy()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
   })
 })

@@ -10,8 +10,7 @@ import { productFacts } from './commerce-facts'
 import { productPlacement } from './commerce-catalog'
 import { currentPricePage, focusPriceChain, growPriceCard, openPriceChain, pricePageSize, priceLink, priceProducts, readPriceNode, readPriceSelection, selectedQuantity, type PriceSelection } from './item-price-chain'
 import { productHistorySummary } from './commerce-product-graph'
-import { ProductFacts } from './CommerceFactsView'
-import { TestProductResults } from './CommerceRevenueView'
+import { ItemPriceDrawer, ItemPriceProductDetail } from './ItemPriceDrawer'
 import { focusValueItem, focusItemValueOverview, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueGroups, readItemValueMap, readItemValueNode, readItemValueGroup, toggleItemValueGroup, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
 import './item-value-map.css'
 
@@ -25,6 +24,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
   const [catalog, setCatalog] = useState<CommerceDataset>(), [error, setError] = useState(''), [busy, setBusy] = useState(false)
   const [selectedId, setSelectedId] = useState<number>(), file = useRef<HTMLInputElement>(null)
   const [productKey, setProductKey] = useState<string>()
+  const [priceDrawer, setPriceDrawer] = useState<{ itemId: number; channel: string }>()
   const [coverageOpen, setCoverageOpen] = useState(false)
   const selectedProduct = catalog?.products.find(p => p.key === productKey)
   const priceSelection = useValue('active item price chain', () => { const id = store.query.records('instance').get()[0]?.currentPageId; return id ? readPriceSelection(store.get(id)) : undefined }, [store])
@@ -33,7 +33,10 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     if (!ed || !catalog || !canEdit()) { toast.error('商品引用尚未就绪或当前不可编辑'); return }
     try { openPriceChain(ed, catalog, selection); focusPriceChain(ed); setSelectedId(undefined) } catch (e) { toast.error(e instanceof Error ? e.message : '关联图打开失败') }
   }
-  const chain = (itemId: number, channel = 'all') => showChain({ itemId, kind: 'all', channel, offset: 0, compact: priceSelection?.compact ?? (editorRef.current?.getViewportScreenBounds().h ?? 1000) < 600 })
+  const chain = (itemId: number, channel = 'all') => {
+    if (!catalog) { toast.error('商品引用尚未就绪，请稍后重试'); return }
+    setSelectedId(undefined); setProductKey(undefined); setPriceDrawer({ itemId, channel })
+  }
   useEffect(() => {
     const ed = editorRef.current, page = currentPricePage(store), s = readPriceSelection(page)
     if (ed && catalog && s && ed.getCurrentPageId() === page?.id && canEdit()) openPriceChain(ed, catalog, s)
@@ -43,7 +46,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
   const review = map?.reviewGroups?.find(g => g.itemIds.includes(selectedId ?? -1))
   useEffect(() => {
     let alive = true, pending = false
-    setCatalog(undefined); setError(''); setSelectedId(undefined)
+    setCatalog(undefined); setError(''); setSelectedId(undefined); setPriceDrawer(undefined); setProductKey(undefined)
     const load = async (notify = false) => {
       if (!map || !loadSource || pending || !alive) return
       pending = true; setBusy(true)
@@ -80,7 +83,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     {map ? <div className="item-value-toolbar" role="region" aria-label="道具价值投放导航">
       <strong>道具价值投放总览</strong>
       <Button size="sm" variant="ghost" onClick={() => navigate('value')}>分类总览</Button>
-      <Button size="sm" variant={priceSelection ? 'glass' : 'ghost'} disabled={!catalog} onClick={() => { const saved = readPriceSelection(currentPricePage(store)); saved ? showChain(saved) : chain(map.items.some(i => i.id === 300004) ? 300004 : map.items[0]!.id) }}>道具 → 商品售价</Button>
+      <Button size="sm" variant="ghost" disabled={!catalog} onClick={() => chain(readPriceSelection(currentPricePage(store))?.itemId ?? (map.items.some(i => i.id === 300004) ? 300004 : map.items[0]!.id))}>查看商品售价</Button>
       <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(i => i.basePrice === null).length}</Button>
       <Button size="sm" variant="ghost" onClick={() => setCoverageOpen(true)}>收录与缺项</Button>
       {!priceSelection ? <><Select aria-label="定位同类" placeholder="定位同类" value="" options={itemValueGroups(map).map(g => ({ value: g.key, label: `${g.label} · ${g.items.length}项 · ${itemPriceLabel(map, g.items[0]!)}` }))} onChange={key => { const ed = editorRef.current; if (!ed) return; const shape = ed.store.query.records('shape').get().find(s => readItemValueGroup(s)?.key === key); if (!shape) return; ed.setCurrentPage(shape.parentId as import('tldraw').TLPageId); ed.selectNone(); const b = ed.getShapePageBounds(shape.id); if (b) ed.zoomToBounds(new Box(b.x - 160, b.y - 120, b.w + 320, b.h + 240), { targetZoom: 1, animation: { duration: 200 } }) }} />
@@ -146,13 +149,14 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
           {selected.contents?.length ? <section><h3>打开后可能获得 · {selected.contents.length} 种</h3><p>候选内容来自掉落配置；不表示一次全得，也不继承容器的基础价。</p><details><summary>查看内容与来源</summary>{selected.contents.map(r => <div key={`${r.id}-${r.kind}`} className="item-value-content"><GameItemIcon evidence={catalog?.evidence} id={r.id} name={r.name} /><div>{r.name} · {r.id}<small>{r.kind === 'random' ? '随机候选' : r.kind === 'choice' ? '自选候选' : '固定内容'} · {r.source}</small></div></div>)}</details></section> : null}
           {selected.contentGaps?.length ? <section><h3>内容规则待核验</h3>{selected.contentGaps.map(g => <p key={g}>{g}</p>)}</section> : null}
           {selected.exchangeUses?.length ? <section><h3>兑换消耗去向 · {selected.exchangeUses.length} 项</h3><p>这里是花掉该货币的商品，不是获得该货币的来源。</p><details><summary>查看兑换商品</summary>{selected.exchangeUses.map(key => { const p = catalog?.products.find(p => p.key === key); return p ? <p key={key}><Button variant="ghost" size="sm" onClick={() => { setSelectedId(undefined); setProductKey(key) }}>{productPlacement(p)} · {p.title} · {p.price} ↗</Button></p> : <p key={key}>{key} · 商品引用待更新</p> })}</details></section> : null}
-          <section><h3>关联商品 · {itemProducts(catalog, selected.id).length}</h3><Button variant="glass" disabled={!catalog} onClick={() => chain(selected.id)}>展开商品售价关联图 →</Button><small>在画布上比较人民币、钻石与资源兑换等全部获得方式。</small>{onOpenSource ? <Button variant="ghost" onClick={() => onOpenSource(map.sourceBoardId)}>商品总览 · 折扣与完整历史 ↗</Button> : null}</section>
+          <section><h3>关联商品 · {itemProducts(catalog, selected.id).length}</h3><Button variant="glass" disabled={!catalog} onClick={() => chain(selected.id)}>查看关联商品售价 →</Button>{onOpenSource ? <Button variant="ghost" onClick={() => onOpenSource(map.sourceBoardId)}>商品总览 · 折扣与完整历史 ↗</Button> : null}</section>
           <details><summary>来源与范围</summary><p>{map.scope}</p>{map.sources.map(s => <p key={s.path}>{s.label}<br />{s.path}<br /><small>SHA-256：{s.sha256}</small></p>)}</details>
         </div> : null}
       </Drawer>
       <Drawer open={Boolean(selectedProduct)} onOpenChange={open => { if (!open) setProductKey(undefined) }} placement="right" size={580} title={selectedProduct?.title ?? '商品'}>
-        {selectedProduct && catalog ? <div className="item-value-detail"><strong>{selectedProduct.price} · {productPlacement(selectedProduct)} · {selectedProduct.sku}</strong><ProductFacts data={catalog} product={selectedProduct} />{selectedProduct.extraRewards?.length ? <section><h3>{selectedProduct.channel === '月卡' ? '购买即时奖励' : '额外奖励 · 配置快照'}</h3>{selectedProduct.extraRewards.map(r => <div className="commerce-reward" key={r.id}><GameItemIcon evidence={catalog.evidence} id={r.id} name={r.name} /><span>{r.name} × {r.n}</span></div>)}</section> : null}<p>{selectedProduct.limit}</p>{selectedProduct.placement ? <section><h3>游戏内入口</h3><p>{selectedProduct.placement.path}</p><small>{selectedProduct.placement.source}</small></section> : null}<p>{selectedProduct.note}</p><TestProductResults data={catalog} product={selectedProduct} group="all" />{onOpenSource && map ? <Button onClick={() => onOpenSource(map.sourceBoardId)}>商品总览 · 折扣与完整历史 ↗</Button> : null}<details><summary>配置价格来源</summary><p>{catalog.sources[selectedProduct.source]?.path} · {selectedProduct.row ? `第 ${selectedProduct.row} 行` : `商品 ${selectedProduct.sku}`}</p><p>{catalog.created} 配置快照；各服当前生效仍以发布记录为准。</p></details></div> : null}
+        {selectedProduct && catalog ? <ItemPriceProductDetail data={catalog} product={selectedProduct} onOpenSource={onOpenSource && map ? () => onOpenSource(map.sourceBoardId) : undefined} /> : null}
       </Drawer>
+      {priceDrawer && catalog && map ? <ItemPriceDrawer key={`${priceDrawer.itemId}:${priceDrawer.channel}`} data={catalog} map={map} itemId={priceDrawer.itemId} initialChannel={priceDrawer.channel} onClose={() => setPriceDrawer(undefined)} onOpenSource={onOpenSource ? () => onOpenSource(map.sourceBoardId) : undefined} /> : null}
     </div>
   </Context.Provider>
 }
