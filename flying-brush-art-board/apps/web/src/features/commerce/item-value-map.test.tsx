@@ -18,12 +18,12 @@ const catalog: CommerceDataset = { created: '2026-10-28', scope: '', sources: { 
   { key: 'hidden', sku: '2', title: '未生效礼包', channel: '触发礼包缺项', kind: 'unknown', price: '', rewards: [{ id: 1, name: '测试券', n: 9 }], limit: '', note: '', source: 's', status: 'missing', needs: ['n'] },
 ] }
 afterEach(cleanup)
-describe('item value and first placement map', () => {
-  it('groups only matching kind, quality, unit price and placement; preserves members through expansion', () => {
+describe('item type and price map', () => {
+  it('groups matching families and prices across time stages; preserves members through expansion', () => {
     const items = Array.from({ length: 6 }, (_, n) => ({ ...data.items[0]!, id: 20 + n, name: `武器碎片${n}`, family: '武器碎片', quality: 4 }))
     const mixed = { ...data, items: [...items, { ...items[0]!, id: 31, family: '武器' }, { ...items[0]!, id: 32, quality: 5 }, { ...items[0]!, id: 33, basePrice: 40 }, { ...items[0]!, id: 34, stageId: 'unknown' }] }
     expect(itemValueGroups(mixed)).toHaveLength(1)
-    expect(itemValueGroups(mixed)[0]?.items).toHaveLength(6)
+    expect(itemValueGroups(mixed)[0]?.items).toHaveLength(7)
     const store = createBoardStore(); loadSnapshotIntoStore(store, createItemValueSnapshot(mixed))
     const group = store.query.records('shape').get().find(s => readItemValueGroup(s))! as TLGeoShape
     const member = store.get('shape:item-value-20' as TLGeoShape['id'])! as TLGeoShape
@@ -110,7 +110,7 @@ describe('item value and first placement map', () => {
     expect(repriced.parentId).toBe('page:imported-item-value-map')
     expect(() => updateItemValueData(store, { ...data, sourceBoardId: 'another-board' }, updater as never)).toThrow('资料不属于当前道具总览')
   })
-  it('never overlaps nodes even when one time/price cell is crowded', () => {
+  it('never overlaps nodes even when one type/price cell is crowded', () => {
     const crowded = { ...data, items: Array.from({ length: 121 }, (_, n) => ({ ...data.items[0]!, id: n + 10 })) }
     const nodes = itemValueRecords(crowded).filter(r => readItemValueNode(r as { meta: unknown })) as unknown as TLGeoShape[]
     for (let a = 0; a < nodes.length; a++) for (let b = a + 1; b < nodes.length; b++) {
@@ -121,6 +121,39 @@ describe('item value and first placement map', () => {
   it('includes immediate rewards and excludes unimplemented product references', () => {
     expect(itemProducts(catalog, 1).map(p => p.key)).toEqual(['p'])
     expect(itemProducts({ ...catalog, products: [{ ...catalog.products[0]!, rewards: [], extraRewards: [{ id: 1, name: '测试券', n: 1 }] }] }, 1)).toHaveLength(1)
+  })
+  it('keeps each type in one column and orders prices across and within descending bands', () => {
+    const items = [30, 300, 12, 3000, 100, 0, 0.1, 40].map((price, n) => ({ ...data.items[0]!, id: 10 + n,
+      basePrice: price, category: n < 6 ? '武器与碎片' : '货币与积分', stageId: n % 2 ? 'unknown' : 'first' }))
+    const records = itemValueRecords({ ...data, items })
+    const nodes = records.filter(r => readItemValueNode(r as { meta: unknown })) as unknown as TLGeoShape[]
+    const xValues: number[] = []
+    for (const category of ['武器与碎片', '货币与积分']) {
+      const subset = nodes.filter(s => items.find(i => i.id === readItemValueNode(s)?.itemId)!.category === category).sort((a,b) => a.y-b.y)
+      expect(new Set(subset.map(s => s.x)).size).toBe(1)
+      xValues.push(subset[0]!.x)
+      const prices = subset.map(s => items.find(i => i.id === readItemValueNode(s)?.itemId)!.basePrice)
+      expect(prices).toEqual([...prices].sort((a,b) => b-a))
+    }
+    expect(new Set(xValues).size).toBe(2)
+    expect(records.some(r => String(r.id).startsWith('shape:iv-stage-'))).toBe(false)
+    expect(records.filter(r => String(r.id).startsWith('shape:iv-band-')).length).toBeGreaterThan(1)
+  })
+  it('migrates old group identities and leaves source data and free notes intact', () => {
+    const grouped = { ...data, items: [0,1].map(n => ({ ...data.items[0]!, id: 20+n, family: '武器碎片', quality: 4 })) }
+    const store = createBoardStore(); loadSnapshotIntoStore(store, createItemValueSnapshot(grouped))
+    const group = store.query.records('shape').get().find(s => readItemValueGroup(s))! as TLGeoShape
+    const first = store.query.records('shape').get().find(s => readItemValueNode(s))! as TLGeoShape
+    store.put([{ ...group, meta: { ...group.meta, itemValueGroup: { ...readItemValueGroup(group)!, key: '武器碎片-4-30-first' } } },
+      { ...first, id: 'shape:free-note' as TLGeoShape['id'], meta: { note: 'preserve' }, x: -300 }])
+    const next = { ...grouped, items: grouped.items.map(i => ({ ...i, category: '武器与碎片' })) }
+    const editor = { store, markHistoryStoppingPoint: vi.fn(), run: (fn: () => void) => fn() }
+    updateItemValueData(store, next, editor as never)
+    const updatedGroup = store.query.records('shape').get().find(s => readItemValueGroup(s))!
+    expect(updatedGroup.id).toBe(group.id)
+    expect(store.query.records('shape').get().filter(s => readItemValueNode(s)).every(s => s.meta.itemValueGroupId === group.id)).toBe(true)
+    expect(readItemValueMap(store.query.records('document').get()[0]!.meta)).toEqual(next)
+    expect(store.get('shape:free-note' as TLGeoShape['id'])?.meta).toEqual({ note: 'preserve' })
   })
   it('opens item evidence while retaining the table base price when merchandise changes', async () => {
     const store = createBoardStore(); loadSnapshotIntoStore(store, createItemValueSnapshot(data))

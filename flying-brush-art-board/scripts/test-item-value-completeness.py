@@ -10,6 +10,20 @@ spec.loader.exec_module(builder)
 
 
 class Completeness(unittest.TestCase):
+    def test_classification_uses_engine_identity_and_exchange_purpose(self):
+        cases = [({'item_type': 33}, '火焰法杖', False, '武器与碎片'),
+                 ({'item_type': 18}, '赛博量子球碎片', False, '武器与碎片'),
+                 ({'item_type': 10}, '哪吒', False, '英雄与碎片'),
+                 ({'item_type': 1}, '永恒琥珀', True, '货币与积分'),
+                 ({'item_type': 1}, '武器积分', True, '货币与积分'),
+                 ({'item_type': 1}, '武器精粹', False, '养成材料'),
+                 ({'item_type': 25}, '英雄经验', False, '养成材料'),
+                 ({'item_type': 1}, '星火之匙', False, '抽取与次数'),
+                 ({'item_type': 5}, '随机神话英雄', False, '英雄与碎片'),
+                 ({}, '道具6001001', False, '其他道具')]
+        for item, name, exchange_currency, expected in cases:
+            self.assertEqual(builder.item_category(item, name, exchange_currency), expected, name)
+
     def build(self, drops, missions=()):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -14,6 +14,27 @@ from datetime import datetime
 from pathlib import Path
 
 
+def item_category(item, name, exchange_currency=False):
+    """One classification for the map and subsequent source refreshes."""
+    typed = {2: "英雄与碎片", 10: "英雄与碎片", 18: "武器与碎片", 33: "武器与碎片", 34: "武器与碎片",
+             22: "宝石与原石", 26: "皮肤", 30: "魔灵"}.get(item.get("item_type"))
+    if typed:
+        return typed
+    if (item.get("item_type") == 1 and exchange_currency) or any(w in name for w in ["币", "钻石", "星辰", "声望", "积分", "友情点"]):
+        return "货币与积分"
+    if any(w in name for w in ["券", "钥", "之匙", "体力", "凭证"]):
+        return "抽取与次数"
+    if any(w in name for w in ["宝石", "原石"]):
+        return "宝石与原石"
+    if any(w in name for w in ["魔灵", "魔核", "魔晶"]):
+        return "魔灵"
+    if item.get("item_type") == 25 or any(w in name for w in ["经验", "合金", "陨铁", "精髓", "精粹", "蓝图", "合成石"]):
+        return "养成材料"
+    if "英雄" in name:
+        return "英雄与碎片"
+    return "其他道具"
+
+
 def pricing_reviews(result, items, drops, prices, products):
     """Questions are generated from missing direct rows, never new price assumptions."""
     pools = {d["id"]: d for d in drops}
@@ -199,13 +220,11 @@ def build(catalog_snapshot, config_dir, source_board_id, prices=None, commercial
         value = price.get("value")
         if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0 or not price.get("source")):
             raise ValueError(f"Invalid base price evidence: {item_id}")
-        cat = "货币" if any(w in name for w in ["币", "钻石", "星辰", "声望", "公会货币"]) else "抽取与次数" if any(w in name for w in ["券", "钥", "体力"]) else "宝石与原石" if any(w in name for w in ["宝石", "原石"]) else "魔灵" if any(w in name for w in ["魔灵", "魔核", "魔晶"]) else "装备与材料" if any(w in name for w in ["武器", "陨铁", "精髓", "精粹", "蓝图"]) else "英雄与其他"
-        # Names alone cannot identify named pets, weapon fragments, or hero skins.
-        cat = {2: "英雄与碎片", 26: "皮肤", 30: "魔灵", 34: "武器与碎片"}.get(item.get("item_type"), cat)
         family = {2: "英雄碎片" if item.get("debris") == 1 else "英雄", 10: "英雄", 18: "专属武器碎片" if item.get("debris") == 1 else "专属武器", 22: "部位宝石", 26: "皮肤", 30: "魔灵", 33: "武器", 34: "武器碎片"}.get(item.get("item_type"))
         pool_key = str(item.get('use_detail_value', ''))
         content_rows, content_gaps = contents(int(pool_key)) if item.get('item_type') == 5 and item.get('use_value') == 1 and pool_key.isdigit() else ([], [])
         exchange_uses = [f'exchange:{group["type"]}:{r["item_id"]}' for group in exchange for r in group['line'] if (r.get('cost') or {}).get('id') == item_id and any(p['key'] == f'exchange:{group["type"]}:{r["item_id"]}' for p in products)]
+        cat = item_category(item, name, bool(exchange_uses))
         result.append({"id": item_id, "name": name, "category": cat, "description": re.sub(r"<[^>]*>", "", item.get("desc", "")),
             **({'contents': content_rows, 'contentGaps': content_gaps} if content_rows or content_gaps else {}),
             **({'exchangeUses': exchange_uses} if exchange_uses else {}),

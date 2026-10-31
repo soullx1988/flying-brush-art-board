@@ -12,7 +12,7 @@ import { currentPricePage, focusPriceChain, growPriceCard, openPriceChain, price
 import { productHistorySummary } from './commerce-product-graph'
 import { ProductFacts } from './CommerceFactsView'
 import { TestProductResults } from './CommerceRevenueView'
-import { focusValueItem, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueGroups, readItemValueMap, readItemValueNode, readItemValueGroup, toggleItemValueGroup, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
+import { focusValueItem, focusItemValueOverview, itemPriceLabel, itemProducts, itemValueDatasetSchema, itemValueGroups, readItemValueMap, readItemValueNode, readItemValueGroup, toggleItemValueGroup, updateItemValueData, valuePages, type ItemValueDataset } from './item-value-map'
 import './item-value-map.css'
 
 const Context = createContext<{ map?: ItemValueDataset | undefined; catalog?: CommerceDataset | undefined; open(id: number): void; chain(id: number, channel?: string): void; product(key: string): void; grow(id: TLShapeId, height: number): void; toggle(id: TLShapeId): void }>({ open: () => undefined, chain: () => undefined, product: () => undefined, grow: () => undefined, toggle: () => undefined })
@@ -65,7 +65,7 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
     if (!page) { toast.error('总览页面缺失'); return }
     ed.setCurrentPage(page); ed.selectNone()
     if (kind === 'pending') ed.zoomToBounds(map?.reviewGroups?.length ? new Box(-40, -150, 1700, 900) : new Box(-40, -150, 1160, 720), { targetZoom: 1, animation: { duration: 200 } })
-    else ed.zoomToFit({ animation: { duration: 200 } })
+    else focusItemValueOverview(ed)
   }
   return <Context.Provider value={{ map, catalog, open: setSelectedId, chain, product: setProductKey, grow: (id, height) => { const ed = editorRef.current; if (ed && canEdit()) growPriceCard(ed, id, height) }, toggle: id => {
     const ed = editorRef.current; if (!ed || !canEdit()) return
@@ -79,13 +79,13 @@ export function ItemValueCanvas({ store, editorRef, loadSource, canEdit, onOpenS
   } }}>
     {map ? <div className="item-value-toolbar" role="region" aria-label="道具价值投放导航">
       <strong>道具价值投放总览</strong>
-      <Button size="sm" variant="ghost" onClick={() => navigate('value')}>二维总览</Button>
+      <Button size="sm" variant="ghost" onClick={() => navigate('value')}>分类总览</Button>
       <Button size="sm" variant={priceSelection ? 'glass' : 'ghost'} disabled={!catalog} onClick={() => { const saved = readPriceSelection(currentPricePage(store)); saved ? showChain(saved) : chain(map.items.some(i => i.id === 300004) ? 300004 : map.items[0]!.id) }}>道具 → 商品售价</Button>
       <Button size="sm" variant="ghost" onClick={() => navigate('pending')}>定价待处理 · {map.items.filter(i => i.basePrice === null).length}</Button>
       <Button size="sm" variant="ghost" onClick={() => setCoverageOpen(true)}>收录与缺项</Button>
       {!priceSelection ? <><Select aria-label="定位同类" placeholder="定位同类" value="" options={itemValueGroups(map).map(g => ({ value: g.key, label: `${g.label} · ${g.items.length}项 · ${itemPriceLabel(map, g.items[0]!)}` }))} onChange={key => { const ed = editorRef.current; if (!ed) return; const shape = ed.store.query.records('shape').get().find(s => readItemValueGroup(s)?.key === key); if (!shape) return; ed.setCurrentPage(shape.parentId as import('tldraw').TLPageId); ed.selectNone(); const b = ed.getShapePageBounds(shape.id); if (b) ed.zoomToBounds(new Box(b.x - 160, b.y - 120, b.w + 320, b.h + 240), { targetZoom: 1, animation: { duration: 200 } }) }} />
       <Select aria-label="定位道具" placeholder="定位道具" value="" options={map.items.map(i => ({ value: String(i.id), label: `${i.name} · ${i.id}` }))} onChange={id => { const ed = editorRef.current; if (ed && !focusValueItem(ed, Number(id))) toast.error('道具图标已被移除，请整理坐标恢复') }} /></> : null}
-      {!priceSelection ? <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; if (ed && canEdit()) { updateItemValueData(store, map, ed); ed.zoomToFit(); toast.success('已按基础价与投放条件整理坐标') } }}>整理坐标</Button> : null}
+      {!priceSelection ? <Button size="sm" variant="ghost" onClick={() => { const ed = editorRef.current; if (ed && canEdit()) { updateItemValueData(store, map, ed); focusItemValueOverview(ed); toast.success('已按类型分列、价格分档降序排列') } }}>整理坐标</Button> : null}
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh.current(true)}>{busy ? '读取中…' : '刷新商品引用'}</Button>
       <Button size="sm" variant="ghost" onClick={() => file.current?.click()}>更新数值资料</Button>
       <input ref={file} hidden type="file" accept=".json" aria-label="导入道具价值资料" onChange={async e => {
