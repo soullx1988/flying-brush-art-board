@@ -76,6 +76,7 @@ export function ItemPriceDrawer({ data, map, itemId, initialChannel = 'all', onC
   return <Drawer open onOpenChange={open => { if (!open) onClose() }} placement="right" size={620} title={`${item?.name ?? itemId} · 商品售价`}>
     <div ref={content} className="item-value-detail item-price-drawer" aria-label="道具商品售价侧栏">
       <header className="item-price-drawer-item"><GameItemIcon evidence={data.evidence} id={itemId} name={item?.name ?? String(itemId)} /><div><b>{item?.name ?? itemId}</b><small>基础价 {item ? itemPriceLabel(map, item) : '待补'} / 个</small></div><Tag>{all.length} 项关联商品</Tag></header>
+      <section aria-label="道具描述"><small>道具描述</small><p className="item-price-drawer-description">{item?.description?.trim() || '道具描述待补'}</p></section>
       {item ? <details><summary>基础价与投放依据</summary><p>{item.priceNote}</p><small>{item.priceSource || '定价来源待补'}</small><p>{item.firstPlacement}</p><small>{item.placementNote}</small></details> : null}
       {selected ? <>
         {all.length > 1 ? <Button variant="ghost" size="sm" onClick={() => setProductKey(undefined)}>← 返回关联商品（{products.length} 项）</Button> : null}

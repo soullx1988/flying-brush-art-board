@@ -60,6 +60,7 @@
 .item-price-drawer-item { display:flex; align-items:center; gap:12px; padding-bottom:14px; border-bottom:1px solid var(--app-border); }
 .item-price-drawer-item .commerce-item-icon { width:42px; height:42px; flex:none; }
 .item-price-drawer-item > div { flex:1; min-width:0; }
+.item-price-drawer-description { white-space:pre-line; }
 .item-price-drawer-filters { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .item-price-drawer-filters > * { min-width:0; width:100% !important; }
 .item-price-drawer-count { display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--app-text-muted); }
